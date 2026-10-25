@@ -27,7 +27,7 @@ window.MODULES = [
     title: 'Transformer 架构',
     desc: '最高频模块。Attention、位置编码、整体结构、参数与 FLOPs 估算、MoE、FlashAttention、tokenizer。',
     topics: '√d 缩放 · MHA/MQA/GQA/MLA · RoPE · Pre/Post-Norm · 6ND · MoE · FlashAttention · BPE' },
-  { id: 'm05', num: '05', phase: 'p2', pri: 1, status: 'planned', file: 'modules/m05-pretraining.html',
+  { id: 'm05', num: '05', phase: 'p2', pri: 1, status: 'ready', file: 'modules/m05-pretraining.html',
     title: '预训练',
     desc: 'Scaling laws、数据、训练稳定性、超参迁移、长上下文、退火与中期训练。',
     topics: 'Kaplan vs Chinchilla · 数据配比与去重 · loss spike · μP · 长上下文扩展 · annealing' },

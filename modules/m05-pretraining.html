@@ -1,0 +1,1100 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05 · 预训练 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m05">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 05 · Phase 2</div>
+<h1 class="title">预训练：<em>算力、数据与稳定性</em></h1>
+<p class="lede">预训练是把几万亿个 token 压进一组参数里的过程。面试官想确认三件事：你知道 loss 为什么会随算力按幂律下降、你能为一个固定预算定出模型大小和数据量；你知道数据管线每一步在做什么、为什么；你在 loss spike 半夜出现时知道先看什么。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完你应该能：(1) 从 next-token prediction 推到"为什么会出现通用能力"，并讲清 packing / loss mask 的细节；(2) 白板推出 Chinchilla 的最优 \(N, D\)，解释 Kaplan 和 Chinchilla 为什么结论不同，说出什么时候应该 over-train；(3) 画出一条从 Common Crawl 到训练 token 的数据管线，手讲 MinHash/LSH；(4) 给出一套能用的 AdamW + 学习率 schedule 超参，并解释 μP 为什么能跨宽度迁移学习率；(5) 走一遍"loss spike 怎么 debug"；(6) 说清 annealing / mid-training、长上下文扩展、蒸馏预训练这些现代 recipe 的位置。<br><br>
+<b>建议顺序：</b>§1 → §2（最高频，必须能推导）→ §4 → §5 → §3 → §7 → §10 场景题（出声练）→ 其余。<br>
+<b>和其他模块的关系：</b>架构细节（RoPE、RMSNorm、GQA）在 <a href="m04-transformer.html">04</a>；并行与 FP8、context parallel 在 <a href="m09-distributed.html">09</a>；SFT/RL 在 <a href="m06-rl-posttraining.html">06</a>；评估方法论在 <a href="m13-eval.html">13</a>。</div>
+
+<!-- ============================ §1 ============================ -->
+<h2 class="sec" id="s-objective"><span class="num">§1 · OBJECTIVE</span>预训练目标</h2>
+<p class="sec-intro">一切从一个极简的目标开始：给前文，预测下一个 token。理解它为什么够用、在工程上怎么正确实现（shift、mask、packing），以及有哪些替代目标。</p>
+
+<section class="concept" id="c-ntp">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Next-token prediction 与 NLL</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>自回归 LM 用链式法则把序列概率分解成逐 token 条件概率，训练就是最小化真实下一个 token 的负对数似然（交叉熵），这等价于最小化数据分布到模型分布的 KL，也等价于学一个最好的压缩器。</p><p class="en">Autoregressive pretraining minimizes the negative log-likelihood of each next token, which is the same as minimizing KL to the data distribution and the same as learning a good compressor.</p></div>
+  <div class="deep">
+    <p><b>公式。</b>链式法则（没有任何近似）：</p>
+    $$p_\theta(x_1,\dots,x_T)=\prod_{t=1}^{T} p_\theta(x_t\mid x_{\lt t}),\qquad \mathcal{L}(\theta)=-\frac{1}{T}\sum_{t=1}^{T}\log p_\theta(x_t\mid x_{\lt t}).$$
+    <p>对数据分布取期望：\(\mathbb{E}_{x\sim p_{\text{data}}}[-\log p_\theta(x)] = H(p_{\text{data}}) + \mathrm{KL}(p_{\text{data}}\,\|\,p_\theta)\)。第一项是数据本身的熵，和 \(\theta\) 无关，所以最小化 NLL = 最小化 forward KL。这也解释了 scaling law 里为什么有一个不可约项 \(E\)：loss 不可能低于数据的熵。</p>
+    <p><b>Teacher forcing。</b>训练时位置 \(t\) 的输入永远是<em>真实</em>前缀 \(x_{\lt t}\)，不是模型自己采样出来的。好处：一次前向就能并行算出所有 \(T\) 个位置的 loss（causal mask 保证位置 \(t\) 看不到未来）。代价：训练和推理分布不一致（exposure bias）——推理时模型要在自己的输出上继续写，错误会累积。这是后面 RL post-training 的动机之一（在模型自己的分布上优化）。</p>
+    <p><b>Perplexity。</b>\(\mathrm{PPL}=\exp(\mathcal{L})\)，直觉是"模型平均在多少个等可能的选项里犹豫"。loss 2.0 nats ≈ PPL 7.4。注意 PPL 依赖 tokenizer（见 <a href="#c-ppl">§8</a>）。</p>
+    <div class="box why"><span class="lbl">直觉：为什么只预测下一个词就能学到通用能力？</span>
+      <ul>
+        <li><b>压缩视角：</b>用算术编码，一个模型给 token 的概率 \(p\) 对应 \(-\log_2 p\) 比特的编码长度。所以平均 NLL 就是"用这个模型压缩语料需要的比特数"。要把互联网文本压得更短，模型必须捕捉越来越深的规律：语法 → 事实 → 推理链 → 作者意图。<a href="https://arxiv.org/abs/2309.10668" target="_blank" rel="noreferrer">Delétang et al. 2023 (Language Modeling Is Compression)</a> 显示 Chinchilla 70B 作为通用压缩器，在图像块和音频上都胜过 PNG / FLAC。</li>
+        <li><b>多任务视角：</b>网页文本里天然混着翻译、问答、代码、数学证明、对话。预测下一个 token 在不同上下文里就是在做不同任务，所以 NTP 是一个隐式的、规模极大的多任务学习（GPT-2 "Language Models are Unsupervised Multitask Learners" 的论点）。</li>
+        <li><b>表示视角：</b>为了在困难位置（比如数学题答案、代码的下一行）降低 loss，模型需要内部表示世界状态和中间计算；loss 继续下降的"最后几个 nats"恰恰来自这些困难 token。</li>
+      </ul>
+    </div>
+  </div>
+  <details class="deep"><summary>代码：带 shift、loss mask 和 z-loss 的 LM loss（PyTorch）</summary><div class="inner">
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def lm_loss(logits, input_ids, loss_mask, z_coef=1e-4):
+    # logits: (B, T, V); input_ids, loss_mask: (B, T)
+    lg = logits[:, :-1].float()          # 位置 t 的输出用来预测 token t+1
+    tgt = input_ids[:, 1:]
+    m = loss_mask[:, 1:].float()         # 目标 token 是否计入 loss
+    nll = F.cross_entropy(lg.reshape(-1, lg.size(-1)), tgt.reshape(-1),
+                          reduction='none').view_as(m)
+    logZ = torch.logsumexp(lg, dim=-1)   # softmax 归一化常数的 log
+    ce = (nll * m).sum() / m.sum()       # 按有效 token 平均
+    z = (logZ.pow(2) * m).sum() / m.sum()
+    return ce + z_coef * z, ce.detach(), z.detach()
+</code></pre>
+<p>要点：(1) <b>shift</b>：logits 去掉最后一位，targets 去掉第一位，这是最常见的 off-by-one bug 来源；HuggingFace 的 <code>labels</code> 约定是"传入和 input_ids 一样的张量，模型内部自己 shift"。(2) <b>按有效 token 数平均</b>，而不是按 batch 平均后再平均——否则短序列的 token 权重更大；做 gradient accumulation 时要用<em>全局</em>有效 token 数归一化，这是一个真实出现过的 bug（不同 micro-batch 的 token 数不同时，"每个 micro-batch 内平均再平均"会偏）。(3) <b>logits 转 fp32</b> 再算 softmax，bf16 下 logsumexp 精度不够。(4) z-loss 见 <a href="#c-mitigate">§5</a>。</p>
+<p>验证：已用等价 numpy 实现与逐位置暴力求和对比（误差 &lt; 1e-9）；torch 版本另存为测试文件，待 torch 可用后运行。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>"NTP 只是学统计共现"——低 loss 区域需要的是建模生成过程，而不是表层 n-gram；n-gram 模型的 loss 远远停在上方。</li>
+      <li>把 forward KL 的性质搞反：最小化 \(\mathrm{KL}(p_{\text{data}}\|p_\theta)\) 是 <b>mode-covering</b>（模型必须给所有数据出现过的东西都留概率），这就是为什么预训练模型"什么都会说一点"，包括不想要的东西。RLHF 的 reverse KL 才是 mode-seeking。</li>
+      <li>忘记 PPL 不能跨 tokenizer 比较。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Pretraining is just maximum likelihood on next-token prediction: by the chain rule the sequence probability factorizes exactly, so we minimize the average negative log-probability of each true next token, using teacher forcing so all positions are computed in parallel. In expectation that's the data entropy plus the KL from the data distribution to the model, so the entropy term is the irreducible floor you see in scaling laws. The reason such a simple objective gives broad capabilities is that it's a compression objective over an enormously diverse corpus: to keep lowering the loss on hard tokens, like the answer to a math problem or the next line of code, the model has to represent facts, reasoning steps and intent. And because the web contains translation, QA, code and dialogue, next-token prediction is implicitly a massive multitask objective.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What's the connection between cross-entropy loss and compression, concretely?</b><details><summary>思路</summary><div class="inner">算术编码可以用 \(\lceil -\log_2 p(x_t\mid x_{\lt t})\rceil\) 级别的比特编码每个 token，总长度 ≈ 序列 NLL（以 bit 计）+ 2 bit。所以"模型的交叉熵 = 压缩率"。一个有趣的推论：模型参数本身也要算进描述长度（MDL），而在线学习的 prequential code 视角下，训练曲线下的面积就是压缩整个数据集的代价——这是"大模型学得更快 ⇒ 压缩更好"的一种说法。</div></details></li>
+    <li><b>Why does teacher forcing cause exposure bias, and does it matter for LLMs?</b><details><summary>思路</summary><div class="inner">训练时从不看到自己的错误前缀，推理时一旦生成偏离就进入训练没见过的状态，错误累积。对大模型而言，因为训练分布非常广，实际影响比 RNN 时代小；但在长推理链、agent 长 horizon 任务里仍然明显，这是 RL（on-policy 采样）和 self-correction 训练的动机之一。</div></details></li>
+    <li><b>Is the loss on all tokens equally informative?</b><details><summary>思路</summary><div class="inner">不。大部分 token（停用词、格式）很快就学会了，loss 后期的下降集中在少数"难 token"上。有工作据此做 token 级别的选择性训练（只在高 excess loss 的 token 上算 loss，例如 Rho-1），但这属于加分话题，不要把细节说死。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-packing">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Packing、跨文档 mask 与 loss mask</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把很多短文档用 EOS 连起来切成固定长度的序列以消除 padding 浪费；可选地用块对角 attention mask 和重置 position id 防止跨文档"串味"；用 loss mask 指定哪些 token 计入梯度。</p><p class="en">Packing concatenates documents with EOS separators into fixed-length sequences to avoid padding waste; document masking prevents attention across document boundaries; loss masks choose which tokens contribute gradient.</p></div>
+  <div class="deep">
+    <p><b>为什么要 packing。</b>网页文档长度是长尾分布，中位数可能只有几百 token，而训练 context 是 4K–8K。如果每条序列只放一篇文档再 pad，大部分算力浪费在 pad 上。Packing：把文档流按 <code>doc1 &lt;eos&gt; doc2 &lt;eos&gt; doc3 ...</code> 拼接，然后每 \(T\) 个 token 切一刀。被切断的文档剩下部分进入下一条序列。</p>
+    <p><b>两种 attention 方式：</b></p>
+    <div class="table-wrap"><table>
+      <tr><th></th><th>朴素 packing（普通 causal mask）</th><th>Document masking（块对角 causal）</th></tr>
+      <tr><td>做法</td><td>整条序列一个 causal mask，doc2 的 token 能看到 doc1</td><td>只允许 attend 同一文档内、更早的位置；position id 在每个文档开头归零</td></tr>
+      <tr><td>优点</td><td>实现最简单，任何 attention kernel 都能用</td><td>没有跨文档噪声；训练分布和推理（单文档）一致；对长上下文训练尤其重要</td></tr>
+      <tr><td>缺点</td><td>模型要学会"看到 EOS 就忽略之前的内容"；短文档被随机上下文干扰</td><td>需要 varlen attention（FlashAttention 的 <code>cu_seqlens</code> 接口，或 FlexAttention 的 block mask）</td></tr>
+      <tr><td>谁在用</td><td>GPT-3 时代的默认做法</td><td>Llama 3 报告使用了阻止同一序列内不同文档互相 attend 的 mask，并称它在标准预训练中影响有限、在超长序列的继续预训练中很重要</td></tr>
+    </table></div>
+    <p><b>Loss mask。</b>预训练通常对所有 token 算 loss，但有几种例外：(1) padding 永远 mask 掉；(2) document masking 下，"预测下一篇文档第一个 token"的那个位置没有可用的上下文，通常 mask 掉（也有人保留 EOS→BOS 的预测）；(3) SFT/mid-training 中的对话数据通常只在 assistant 回复上算 loss（prompt 部分 mask 掉）；(4) 有时会 mask 掉被识别为模板/重复样板的片段。</p>
+    <div class="box why"><span class="lbl">直觉</span>packing 的本质是"让每个 FLOP 都花在真实 token 上"，document mask 的本质是"别让模型学一个推理时根本不会出现的条件分布 \(p(\text{doc2}\mid\text{doc1})\)"。两篇随机网页之间没有关系，跨文档 attention 学到的只能是"学会忽略"。</div>
+  </div>
+  <details class="deep"><summary>代码：块对角 mask 与 position id 重置</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+def packed_attention_mask(doc_ids):          # doc_ids: (T,) 每个位置属于第几篇文档
+    T = doc_ids.size(0)
+    causal = torch.ones(T, T, dtype=torch.bool).tril()
+    same_doc = doc_ids[:, None] == doc_ids[None, :]
+    return causal &amp; same_doc                 # True = 允许 attend
+
+def packed_position_ids(doc_ids):            # 每篇文档内部从 0 开始数
+    T = doc_ids.size(0)
+    idx = torch.arange(T)
+    is_start = torch.ones(T, dtype=torch.bool)
+    is_start[1:] = doc_ids[1:] != doc_ids[:-1]
+    seg_start = torch.cummax(torch.where(is_start, idx, torch.zeros_like(idx)), dim=0).values
+    return idx - seg_start
+
+def boundary_loss_mask(doc_ids):             # 位置 t 预测 t+1：跨文档的预测不计 loss
+    m = torch.zeros_like(doc_ids, dtype=torch.bool)
+    m[:-1] = doc_ids[1:] == doc_ids[:-1]
+    return m
+
+d = torch.tensor([0, 0, 0, 1, 1, 2, 2, 2])
+print(packed_position_ids(d))   # tensor([0, 1, 2, 0, 1, 0, 1, 2])
+print(boundary_loss_mask(d))    # [T, T, F, T, F, T, T, F]
+</code></pre>
+<p>实际训练里不会构造 \(T\times T\) 的 dense mask（\(T=8192\) 时 6700 万个元素/样本），而是把每篇文档的起止位置（<code>cu_seqlens</code>）交给 varlen FlashAttention，按块跳过不需要算的部分——document mask 反而<em>省</em>算力。上面的 dense 版本只用于理解和单元测试。（numpy 等价实现已运行通过；torch 版存为测试文件。）注意这里 <code>boundary_loss_mask</code> 是"对齐到输出位置"的写法；和上面 <code>lm_loss</code>（对齐到目标位置，<code>loss_mask[:, 1:]</code>）搭配时要先右移一位，别混用两种约定。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>packing 后忘了 EOS：模型就学不会"文档结束"，生成时停不下来。</li>
+      <li>做了 document mask 但 position id 没重置（或反过来）：两者应该一致，否则模型看到的位置分布和推理时不同。</li>
+      <li>以为 packing 会"让模型学到跨文档关联"所以更好——没有证据支持随机拼接带来收益；有意义的跨文档上下文（如按相关性拼接文档，In-Context Pretraining 一类工作）是另一回事。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Documents have a long-tailed length distribution, so instead of padding we pack them: concatenate documents with EOS tokens and chunk the stream into fixed-length sequences, so every FLOP goes to real tokens. With plain packing, a token can attend to an unrelated previous document, which is noise the model has to learn to ignore. Many modern recipes therefore use document masking, a block-diagonal causal mask with position ids reset at each document start, implemented with variable-length FlashAttention so it actually saves compute. Separately, the loss mask controls which targets get gradient: padding is always masked, and in chat or SFT data we usually only train on the assistant tokens.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you implement gradient accumulation correctly when micro-batches have different numbers of valid tokens?</b><details><summary>思路</summary><div class="inner">每个 micro-batch 返回 loss 的<em>和</em>（不是均值）以及有效 token 数；累积完后除以全局 token 总数（数据并行时还要 all-reduce token 数）。或者事先算好全局 token 数，每个 micro-batch 用 <code>sum / global_count</code>。"每个 micro-batch 求均值再平均"会让 token 少的 micro-batch 权重过大。</div></details></li>
+    <li><b>Does document masking matter more for short or long context training?</b><details><summary>思路</summary><div class="inner">长上下文更重要：序列越长，一个位置前面混进的无关文档越多；而且长上下文阶段如果用拼接的短文档凑长度，没有 document mask 时模型学到的"长距离依赖"其实是假的。短 context 下两者差距通常很小。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-objectives">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>替代目标：MLM、span corruption、FIM、multi-token prediction</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>MLM/span corruption 用双向上下文做去噪，适合理解与 encoder-decoder；生成模型最终统一到 causal LM，但会在其上叠加 FIM（代码补全）和 multi-token prediction（更强的表示与投机解码）。</p><p class="en">Denoising objectives like MLM and span corruption use bidirectional context; decoder-only causal LM won for generation, often augmented with fill-in-the-middle and multi-token prediction.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>目标</th><th>做法</th><th>优点</th><th>缺点 / 现状</th></tr>
+      <tr><td><b>MLM</b>（BERT）</td><td>随机 mask 15% token，用双向上下文预测</td><td>双向表示，分类/检索强</td><td>每个样本只有 15% 位置有监督信号；不能直接生成；预训练/微调 [MASK] 不一致</td></tr>
+      <tr><td><b>Span corruption</b>（T5）</td><td>删掉连续 span 换成哨兵 token，decoder 生成被删内容</td><td>encoder-decoder 下高效；适合 seq2seq</td><td>生成能力和 scaling 便利性不如 decoder-only；如今主要用于 encoder-decoder 和检索/embedding 模型</td></tr>
+      <tr><td><b>Causal LM</b>（GPT）</td><td>预测下一个 token</td><td>每个位置都有监督；天然能生成；训练/推理一致；KV cache 友好</td><td>单向；看不到后文</td></tr>
+      <tr><td><b>FIM</b>（<a href="https://arxiv.org/abs/2207.14255" target="_blank" rel="noreferrer">Bavarian et al. 2022</a>）</td><td>把文档切成 prefix/middle/suffix，重排为 <code>&lt;PRE&gt; prefix &lt;SUF&gt; suffix &lt;MID&gt; middle</code> 再做普通 causal LM</td><td>零架构改动就能做 infilling（IDE 补全光标处代码）；论文发现大比例 FIM 数据几乎不损害左到右能力</td><td>代码模型的标配</td></tr>
+      <tr><td><b>Multi-token prediction</b>（<a href="https://arxiv.org/abs/2404.19737" target="_blank" rel="noreferrer">Gloeckle et al. 2024</a>）</td><td>共享主干，多个输出 head 同时预测 \(t+1,\dots,t+n\)</td><td>样本效率更高（论文在代码上 13B 规模收益明显）；额外 head 可用于自投机解码加速（报告 4-token 模型推理最高 3×）</td><td>小模型上可能变差；DeepSeek-V3 也采用了一种顺序式 MTP 作为训练目标</td></tr>
+    </table></div>
+    <p><b>为什么 decoder-only causal LM 赢了？</b>(1) 每个 token 都是训练信号（MLM 只有 15%）；(2) 生成和 in-context learning 是一等公民，一个模型解决所有任务；(3) 工程简单：KV cache、推理、scaling 研究都围绕它；(4) 在足够规模下，"看不到后文"的劣势可以靠 prompt 格式（如把问题放在前面）补偿。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>不要说"BERT 过时了所以 MLM 没用"——embedding / reranker 模型仍大量使用双向编码器；也不要说"MTP 一定更好"，收益依赖规模和领域。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Masked language modeling and T5-style span corruption are denoising objectives that use bidirectional context, which is great for understanding and embeddings but only gives supervision on the masked fraction and doesn't generate natively. Decoder-only causal LM won for general-purpose models because every position is a training signal, generation and in-context learning come for free, and the inference stack is simple. On top of it people add fill-in-the-middle, which just reorders prefix, suffix and middle so a causal model can infill code, and multi-token prediction, where extra heads predict several future tokens, improving sample efficiency at scale and enabling self-speculative decoding.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does FIM barely hurt left-to-right performance?</b><details><summary>思路</summary><div class="inner">FIM 变换后的样本仍然是一个合法的 causal LM 样本，只是 token 顺序不同；模型容量足够时可以同时学两种"模式"，由哨兵 token 指示当前处于哪种。论文把这称为接近 "free" 的能力，但也要注意 FIM 比例、按字符还是按 token 切分等超参会影响效果。</div></details></li>
+    <li><b>How does multi-token prediction help inference?</b><details><summary>思路</summary><div class="inner">额外 head 可以一次 draft 出后面几个 token，再由主 head 验证（self-speculative decoding）：验证是一次并行前向，接受的 token 越多，解码越快，且输出分布不变（若用标准的接受-拒绝规则）。详见 <a href="m08-inference.html">08</a>。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ §2 ============================ -->
+<h2 class="sec" id="s-scaling"><span class="num">§2 · SCALING LAWS</span>Scaling laws</h2>
+<p class="sec-intro">Scaling law 是预训练里最"可面试"的部分：有公式、有可推导的最优解、有历史争议、有工程用法。核心问题只有一个——<b>给定算力 \(C\)，参数量 \(N\) 和数据量 \(D\) 应该怎么分？</b></p>
+
+<section class="concept" id="c-6nd">
+  <div class="concept-head"><span class="pri p1">★</span><h3>训练算力 \(C \approx 6ND\)</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>dense Transformer 每个训练 token 约需 6N FLOPs：前向 2N（每个参数一次乘加），反向 4N（对激活和对权重各求一次梯度）；推理每个生成 token 约 2N。</p><p class="en">Training costs about 6N FLOPs per token: 2N forward, one multiply-add per parameter, and 4N backward for activation and weight gradients. Inference is about 2N per token.</p></div>
+  <div class="deep">
+    <p><b>推导。</b>一个线性层 \(y = Wx\)，\(W\in\mathbb{R}^{m\times n}\)，前向是 \(mn\) 次乘加 = \(2mn\) FLOPs = 2 × 参数数。反向需要两个矩阵乘：\(\partial L/\partial x = W^\top \delta\)（\(2mn\)）和 \(\partial L/\partial W = \delta x^\top\)（\(2mn\)），合计 \(4mn\)。所以每 token 每参数 6 FLOPs。Transformer 的绝大多数参数在线性层里，于是 \(C\approx 6ND\)。</p>
+    <p><b>Attention 的额外项。</b>\(QK^\top\) 和 \(AV\) 不含参数，但有计算：每层每 token 前向：\(QK^\top\) 和 \(AV\) 各约 \(2n_{\text{ctx}}d\) FLOPs，合计约 \(4n_{\text{ctx}}d\)，causal mask 下平均约减半。Kaplan 写作 \(C_{\text{fwd}}\approx 2N + 2 n_{\text{layer}} n_{\text{ctx}} d_{\text{attn}}\)。当 \(d_{\text{model}} \gg n_{\text{ctx}}/12\) 时可以忽略；长上下文（\(n_{\text{ctx}}\) 和 \(d\) 同量级甚至更大）时不能忽略。</p>
+    <p><b>常用数字。</b></p>
+    <ul>
+      <li>Chinchilla：\(6 \times 70\text{B}\times 1.4\text{T} \approx 5.9\times 10^{23}\) FLOPs。</li>
+      <li>一块 H100 dense BF16 峰值约 \(10^{15}\) FLOP/s 量级（约 989 TFLOPS），MFU 40% 时每天约 \(3.4\times10^{19}\) FLOPs。所以 \(10^{23}\) FLOPs ≈ 3000 H100·天 ≈ 1000 卡跑 3 天。</li>
+      <li>MoE：\(N\) 应该用<b>激活参数</b>（每 token 实际参与计算的参数）而不是总参数。</li>
+      <li>Activation recomputation（重算）会让<em>硬件</em> FLOPs 变成约 8N，但 MFU 按 6N 计（见 <a href="#c-mfu">§9</a>）。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把 embedding 参数也算进 6N：embedding 查表不是矩阵乘，几乎没有 FLOPs（但 tied 的 output projection 是有的）。Kaplan 用 non-embedding 参数，Chinchilla 用总参数——这个差别本身就是两者结论不同的原因之一（见下）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For a dense transformer, training compute is roughly six times parameters times tokens. The forward pass does one multiply-add per parameter per token, which is 2N FLOPs, and the backward pass does two matmuls of the same size, one for the activation gradient and one for the weight gradient, so another 4N. Attention scores add a term proportional to context length times width, which you can ignore at short context but not for long-context training. For MoE you plug in active parameters. As a sanity number, Chinchilla was about six times ten to the twenty-three FLOPs.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Estimate how long it takes to train a 7B model on 2T tokens on 512 H100s.</b><details><summary>思路</summary><div class="inner">\(C = 6\times 7\times10^9 \times 2\times10^{12} = 8.4\times10^{22}\)。512 × 989e12 × 0.4 ≈ \(2.0\times10^{17}\) FLOP/s。时间 ≈ \(4.2\times10^5\) s ≈ 4.9 天。面试时把 MFU 假设说出来（35–50%），并提一句还要算上 checkpoint、故障重启的开销。</div></details></li>
+    <li><b>Why is inference 2N per token but long-context inference much more expensive than that suggests?</b><details><summary>思路</summary><div class="inner">2N 只算了矩阵乘的 FLOPs。decode 阶段是 memory-bound：每步要读全部权重和整个 KV cache，KV cache 随上下文线性增长，带宽成为瓶颈；attention FLOPs 也随上下文线性增长。见 <a href="m08-inference.html">08</a>。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-kaplan">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Kaplan 2020：幂律与"模型优先"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Kaplan et al. 发现 loss 对 \(N\)、\(D\)、\(C\) 各自是跨越多个数量级的平滑幂律，形状等架构细节影响很小；他们的拟合建议算力增加时主要加大模型（\(N\propto C^{0.73}\)），数据只需缓慢增加。</p><p class="en">Kaplan et al. found smooth power laws in N, D and C, insensitive to architecture shape, and concluded that most extra compute should go into model size, roughly N proportional to C to the 0.73.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2001.08361" target="_blank" rel="noreferrer">Scaling Laws for Neural Language Models (Kaplan et al., 2020)</a> 的主要结论：</p>
+    <ul>
+      <li>\(L(N)=(N_c/N)^{\alpha_N}\)，\(\alpha_N\approx 0.076\)（\(N\) 是 non-embedding 参数，数据充足、训练到收敛）。</li>
+      <li>\(L(D)=(D_c/D)^{\alpha_D}\)，\(\alpha_D\approx 0.095\)（大模型、early stopping）。</li>
+      <li>\(L(C_{\min})\propto C_{\min}^{-0.050}\)。</li>
+      <li>联合形式 \(L(N,D)=\left[(N_c/N)^{\alpha_N/\alpha_D}+D_c/D\right]^{\alpha_D}\)，可以预测过拟合程度。</li>
+      <li>算力最优分配：\(N\propto C^{0.73}\)，\(D\propto C^{0.27}\)（论文还给出 batch \(\propto C^{0.24}\)、步数 \(\propto C^{0.03}\)）。即"大模型 + 不训练到收敛"最划算。</li>
+      <li>在固定 \(N\) 下，depth/width 比例在很宽范围内对 loss 影响不大；大模型更 sample-efficient。</li>
+      <li>临界 batch size 只取决于当前 loss：\(B_{\text{crit}}(L)\approx B_*/L^{1/\alpha_B}\)。</li>
+    </ul>
+    <p>这个结论直接影响了 GPT-3（175B 只训 300B tokens）和 Gopher（280B / 300B tokens）的设计——事后看都严重"欠训练"。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Kaplan et al. showed that language model loss follows clean power laws in parameters, data and compute over many orders of magnitude, and that architectural details like depth versus width matter much less than scale. Their fitted allocation said that as compute grows you should mostly grow the model, with N scaling like compute to the 0.73 and data only to the 0.27, and stop well before convergence. That shaped GPT-3 and Gopher, which in hindsight were undertrained.</p></div>
+</section>
+
+<section class="concept" id="c-chinchilla">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Chinchilla：参数与数据等比例扩展（≈20 tokens/param）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Hoffmann et al. 2022 用三种方法得出 \(N_{\text{opt}}\propto C^{\approx0.5}\)、\(D_{\text{opt}}\propto C^{\approx0.5}\)，即模型翻倍数据也翻倍，最优大约每参数 20 个 token；70B 的 Chinchilla 用和 280B Gopher 相同的算力、4 倍数据全面超过 Gopher。</p><p class="en">Chinchilla found that parameters and tokens should scale equally with compute, about 20 tokens per parameter; a 70B model on 1.4T tokens beat the 280B Gopher at equal compute.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2203.15556" target="_blank" rel="noreferrer">Training Compute-Optimal Large Language Models (Hoffmann et al., 2022)</a> 训练了 400+ 个模型（70M 到 16B 参数，5B 到 500B tokens），用三种方法估计最优分配：</p>
+    <div class="table-wrap"><table>
+      <tr><th>方法</th><th>做法</th><th>\(N_{\text{opt}}\propto C^{a}\)</th></tr>
+      <tr><td>1. 固定模型大小，变训练长度</td><td>对每个 \(N\) 训练多个不同 token 数的 run（每个 run 的 cosine 周期匹配其长度），取每个 FLOPs 水平下 loss 最低的包络线</td><td>\(a\approx0.50\)</td></tr>
+      <tr><td>2. IsoFLOP profiles</td><td>固定若干个 FLOPs 预算，每个预算下扫 \(N\)（\(D=C/6N\)），loss 对 \(\log N\) 呈 U 形，拟合抛物线取谷底，再对谷底做 \(N_{\text{opt}}\) vs \(C\) 的幂律拟合</td><td>\(a\approx0.49\)</td></tr>
+      <tr><td>3. 参数化拟合</td><td>直接拟合 \(L(N,D)=E+A/N^{\alpha}+B/D^{\beta}\)（Huber loss，在 log 空间）</td><td>\(a\approx0.46\)</td></tr>
+      <tr><td>Kaplan（对照）</td><td></td><td>\(0.73\)</td></tr>
+    </table></div>
+    <p><b>参数化形式的含义：</b>\(E\) 是不可约 loss（数据熵）；\(A/N^\alpha\) 是"模型有限容量"带来的误差（即使无限数据）；\(B/D^\beta\) 是"有限数据/有限优化步数"带来的误差（即使无限模型）。两项相加是一个近似假设。</p>
+    <p><b>"20 tokens/param" 从哪来：</b>用方法 1/2 的结果在 Chinchilla 规模附近算出的比例约 20。注意比例 \(D/N\) 会随 \(C\) 缓慢变化（当 \(a\ne 0.5\) 时），所以 20 是一个经验数字，不是常数。</p>
+    <p><b>方法 3 的复现争议：</b><a href="https://arxiv.org/abs/2404.10102" target="_blank" rel="noreferrer">Besiroglu et al. 2024 (Epoch AI) "Chinchilla Scaling: A replication attempt"</a> 从论文图中提取数据重拟方法 3，发现原文报的参数（\(E=1.69, A=406.4, B=410.7, \alpha=0.34, \beta=0.28\)）拟合不好、置信区间过窄，且隐含约 70 tokens/param，和方法 1/2 矛盾；他们重拟得到 \(E\approx1.82, A\approx482, B\approx2085, \alpha\approx0.35, \beta\approx0.37\)，隐含约 20 tokens/param，与方法 1/2 一致。下面的推导和代码都用这组重估值。</p>
+  </div>
+  <details class="deep" open><summary>推导：固定 \(C=6ND\) 下的最优 \(N^*, D^*\)</summary><div class="inner">
+    <p>代入 \(D = C/(6N)\)：</p>
+    $$L(N)=E+A N^{-\alpha}+B\left(\tfrac{C}{6}\right)^{-\beta}N^{\beta}.$$
+    <p>对 \(N\) 求导并令其为 0：</p>
+    $$\frac{dL}{dN}=-\alpha A N^{-\alpha-1}+\beta B\left(\tfrac{C}{6}\right)^{-\beta}N^{\beta-1}=0
+    \;\Longrightarrow\; \alpha A N^{-\alpha}=\beta B\left(\tfrac{C}{6}\right)^{-\beta}N^{\beta}.$$
+    <p>整理：</p>
+    $$N^{\alpha+\beta}=\frac{\alpha A}{\beta B}\left(\tfrac{C}{6}\right)^{\beta}
+    \;\Longrightarrow\;
+    N^*=G\left(\tfrac{C}{6}\right)^{\frac{\beta}{\alpha+\beta}},\quad
+    D^*=\frac{C}{6N^*}=G^{-1}\left(\tfrac{C}{6}\right)^{\frac{\alpha}{\alpha+\beta}},\quad
+    G=\left(\frac{\alpha A}{\beta B}\right)^{\frac{1}{\alpha+\beta}}.$$
+    <p>二阶导 \(\alpha(\alpha+1)AN^{-\alpha-2}+\beta(\beta-1)B(C/6)^{-\beta}N^{\beta-2}\)：在驻点处用一阶条件替换第二项，得 \(\alpha AN^{-\alpha-2}(\alpha+1+\beta-1)=\alpha(\alpha+\beta)AN^{-\alpha-2}>0\)，是最小值。</p>
+    <p><b>关键结论：</b>指数 \(a=\beta/(\alpha+\beta)\)，\(b=\alpha/(\alpha+\beta)\)，\(a+b=1\)。\(\alpha\approx\beta\) ⇒ \(a\approx b\approx 0.5\) ⇒ 等比例扩展。直觉：两项误差的"下降速度"差不多，所以算力应该平分。另外在最优点两项误差之比为常数：\(\frac{\text{model term}}{\text{data term}}=\frac{AN^{-\alpha}}{BD^{-\beta}}=\frac{\beta}{\alpha}\)。</p>
+    <p><b>快速估算（面试版）：</b>用 \(D=20N\)：\(C=6\cdot N\cdot 20N=120N^2\Rightarrow N=\sqrt{C/120}\)。例如 \(C=10^{23}\)：\(N\approx\sqrt{8.3\times10^{20}}\approx 2.9\times10^{10}\)（29B），\(D\approx 5.8\times10^{11}\)（580B tokens）。用 Epoch 重估参数精确解：\(N^*\approx 29.5\)B，\(D^*\approx 565\)B（下方代码输出），两者吻合。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>"Chinchilla 说每个模型都应该训 20 tokens/param"——不对，它只说<b>训练算力最优</b>。如果模型要被大量部署，推理成本占主导，应该训得更小更久（见下一个 concept）。</li>
+      <li>"Chinchilla-optimal 的模型 loss 最低"——是<em>给定训练算力</em>下 loss 最低；给定参数量时多训永远更好（直到数据重复太多）。</li>
+      <li>直接用原论文方法 3 的系数做外推：会得到约 70 tokens/param，与正文结论矛盾（复现争议）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Chinchilla revisited the allocation question with over four hundred runs and three independent methods: lower envelopes of training curves, IsoFLOP profiles, and fitting a parametric loss of the form E plus A over N to the alpha plus B over D to the beta. If you minimize that loss subject to C equals 6ND, the optimal N scales as compute to the beta over alpha plus beta, and since alpha and beta come out similar, both N and D scale roughly as the square root of compute. That gives the rule of thumb of about twenty tokens per parameter. The headline result was a 70B model on 1.4 trillion tokens beating the 280B Gopher at the same compute. One caveat worth knowing: a later replication by Epoch found the paper's parametric fit was inconsistent with its other two methods, and a refit agrees with the twenty-tokens-per-parameter answer.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Derive the compute-optimal N on the whiteboard.</b><details><summary>思路</summary><div class="inner">见上面的推导框：代入约束、求导、整理成 \(N^*=G(C/6)^{\beta/(\alpha+\beta)}\)。说出 "exponent = β/(α+β), so equal exponents means equal scaling"。</div></details></li>
+    <li><b>Why might the optimal tokens-per-parameter ratio differ across datasets or architectures?</b><details><summary>思路</summary><div class="inner">\(A,B,\alpha,\beta\) 都依赖数据分布和架构/训练 recipe：数据质量更高 → 数据项系数不同；MoE 改变了"参数"的含义；更好的优化器改变 \(B/D^\beta\)。例如 MiniCPM 在自己的 setting 下拟合出远高于 20 的比例（作者自称粗略）。所以每个团队通常会在自己的数据和架构上重新做 IsoFLOP。</div></details></li>
+    <li><b>At the optimum, what is the ratio between the model-limited and data-limited error terms?</b><details><summary>思路</summary><div class="inner">由一阶条件 \(\alpha AN^{-\alpha}=\beta BD^{-\beta}\)（注意 \(B(C/6)^{-\beta}N^\beta=BD^{-\beta}\)），所以 \(AN^{-\alpha}/(BD^{-\beta})=\beta/\alpha\)。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-kaplan-vs-chin">
+  <div class="concept-head"><span class="pri p1">★</span><h3>为什么 Kaplan 和 Chinchilla 结论不同？</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>主要是实验方法差异：Kaplan 用 non-embedding 参数并在较小规模上拟合、对所有模型用固定的 warmup 和不随规模调的超参、学习率 schedule 没有匹配训练长度；后续工作复现时修正这些因素后得到 Chinchilla 的结论。</p><p class="en">Mostly methodology: Kaplan counted non-embedding parameters at small scale, used a long fixed warmup and untuned per-scale hyperparameters, and didn't match the LR schedule to run length. Fixing these recovers Chinchilla.</p></div>
+  <div class="deep">
+    <ol>
+      <li><b>学习率 schedule 与训练长度（Chinchilla 论文的解释）：</b>Kaplan 的中间 checkpoint 来自 cosine 周期远长于当前 token 数的 run，那时学习率还没衰减，loss 偏高，于是"少数据"的点被低估，结论偏向大模型少数据。Chinchilla 方法 1 让每个 run 的 cosine 周期匹配其长度。</li>
+      <li><b>Non-embedding 参数 + 小规模：</b><a href="https://arxiv.org/abs/2406.12907" target="_blank" rel="noreferrer">Pearce &amp; Song 2024</a> 指出小模型里 embedding 参数占比大，只数 non-embedding 参数会扭曲小规模的 \(N\)–\(C\) 关系；在 Chinchilla 设定下模拟 Kaplan 的做法能复现接近 0.73 的指数。</li>
+      <li><b>最后一层算力、warmup、按规模调优：</b><a href="https://arxiv.org/abs/2406.19146" target="_blank" rel="noreferrer">Porian et al. 2024</a> 把差异归因于三点：没算最后一层（output projection）的计算量、warmup 太长（对小模型占比过大）、优化器超参没有随规模调整（小模型的 lr/batch 次优）。修正后与 Chinchilla 吻合，并发现精细的 lr decay 并非必须——这与 Chinchilla 原本的假设不同。</li>
+    </ol>
+    <div class="box why"><span class="lbl">教训（面试官真正想听的）</span>scaling law 的指数对实验细节非常敏感：怎么数参数、怎么数 FLOPs、每个规模的超参是否调到最优、schedule 是否匹配长度。<b>小模型如果没调好，它们的 loss 偏高，拟合出来的曲线就会"偏爱"大模型。</b>这也是为什么 μP / 每个规模单独调 lr 对做 scaling 研究很重要。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The discrepancy turned out to be largely methodological. Chinchilla's own explanation was that Kaplan read off losses from intermediate checkpoints whose cosine schedule hadn't decayed yet, which penalizes small-data points. Later work found additional factors: Kaplan counted only non-embedding parameters and fit at small scales where embeddings are a big fraction, ignored the compute of the final projection layer, used a warmup that was too long for small models, and didn't retune hyperparameters per scale. Correct those and you recover the Chinchilla allocation. The lesson is that scaling exponents are very sensitive to how you count and whether each scale is well tuned.</p></div>
+</section>
+
+<section class="concept" id="c-overtrain">
+  <div class="concept-head"><span class="pri p1">★</span><h3>考虑推理成本：over-training</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Chinchilla 只最小化训练成本；如果模型要服务海量请求，总成本 = 训练 + 推理，最优解是训练一个比 Chinchilla-optimal 更小的模型并用远多于 20 tokens/param 的数据——这就是 Llama 系列 8B 训 15T tokens 的逻辑。</p><p class="en">If the model will serve lots of inference, minimize training plus inference cost; that favors smaller models trained far beyond 20 tokens per parameter.</p></div>
+  <div class="deep">
+    <p><b>形式化：</b>目标是达到某个 loss \(\ell\)，最小化 \(6ND_{\text{train}} + 2N D_{\text{inf}}\)，约束 \(L(N,D_{\text{train}})=\ell\)。推理 token 数 \(D_{\text{inf}}\) 越大，减小 \(N\) 的价值越大，代价是需要更多训练 token 补回 loss。<a href="https://arxiv.org/abs/2401.00448" target="_blank" rel="noreferrer">Sardana et al. 2024 (Beyond Chinchilla-Optimal)</a> 做了这个修正，并用 47 个模型观察到模型质量在极端比例（最高 10,000 tokens/param）下仍在提升；同时指出只用常规比例拟合的 scaling law 会<em>高估</em>极端比例下额外 token 的收益。</p>
+    <p><b>实际例子：</b>Llama 3 8B 用约 15T tokens 训练，约 1,900 tokens/param，是 Chinchilla 比例的近 100 倍。原因：8B 模型会被大量部署，推理便宜的价值远超多花的训练算力。</p>
+    <p><b>为什么还能继续变好：</b>在固定 \(N\) 下，\(L(N,D)=E+A/N^\alpha+B/D^\beta\) 关于 \(D\) 单调递减，渐近到 \(E+A/N^\alpha\)。over-training 是在用"算力效率"换"参数效率"。直到数据不够、开始大量重复（见 data-constrained）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Chinchilla-optimal minimizes training compute for a target loss, but a deployed model's lifetime cost is dominated by inference, which scales with parameter count. If you add inference tokens to the objective, the optimum shifts toward smaller models trained much longer. That's why Llama 3 8B saw around fifteen trillion tokens, roughly a hundred times the Chinchilla ratio. Loss at fixed size keeps decreasing with more data, just with diminishing returns, so you're trading training efficiency for cheaper serving. Sardana and colleagues formalized this and found quality still improving even at thousands of tokens per parameter.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your team will serve a model to 100M users. How do you choose its size?</b><details><summary>思路</summary><div class="inner">估计生命周期推理 token 数 \(D_{\text{inf}}\)、延迟/显存约束（决定最大 \(N\)）、可用的高质量数据量（决定最大 \(D\)）。在 \(L(N,D)\) 上找满足目标质量、总成本最小的点；通常还考虑蒸馏（大模型教小模型）和 MoE（降低每 token 激活参数）。最后用小规模 run 验证 over-training 区域的 scaling 拟合，因为常规比例拟合在极端比例下会偏乐观。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-dataconstrained">
+  <div class="concept-head"><span class="pri p1">★</span><h3>数据受限的 scaling：重复数据值多少？</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Muennighoff et al. 2023 发现在数据受限时，重复约 4 个 epoch 几乎和全新数据一样好；继续重复收益递减，最终额外算力的价值趋近于零。</p><p class="en">Repeating data for up to about four epochs is nearly as good as fresh data; beyond that returns diminish and eventually extra compute stops helping.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2305.16264" target="_blank" rel="noreferrer">Scaling Data-Constrained Language Models (Muennighoff et al., 2023)</a> 把"重复的 token"建模为有效数据量递减的数据：第 \(k\) 次见到同一数据的价值按指数衰减。主要结论：</p>
+    <ul>
+      <li>≤4 epoch：loss 变化可忽略，可以放心重复。</li>
+      <li>更多 epoch：边际收益快速下降；最优策略是把额外算力更多地分给参数（\(N\)）而不是 epoch。</li>
+      <li>补充数据的手段：加入代码数据（对自然语言任务也不伤害）、放松过滤阈值（用更多但质量稍低的数据）。</li>
+    </ul>
+    <p><b>面试应用：</b>"高质量数据只有 100B tokens，要训 1T tokens 怎么办？"——高质量数据可以重复几个 epoch（尤其放在 annealing 阶段上采样），其余用较低质量但更大的池子补齐；同时考虑合成数据改写（rephrasing）扩充，注意防止记忆化和质量崩溃。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>When unique data runs out, repetition is a reasonable lever: Muennighoff and colleagues found that up to about four epochs is nearly as good as fresh data, but returns fall off quickly after that, and with many epochs extra compute is better spent on parameters. Practically, you'd repeat your highest-quality subsets a few times, often concentrated in the annealing phase, and fill the rest with a larger, somewhat lower-quality pool, code, or carefully filtered synthetic rephrasings.</p></div>
+</section>
+
+<section class="concept" id="c-emergence">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>涌现能力之争</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Wei et al. 2022 记录了一些任务在某个规模突然从随机水平跃升；Schaeffer et al. 2023 认为很多"涌现"来自不连续的评测指标（如 exact match），换成连续指标（如 token 级概率）后提升是平滑可预测的。</p><p class="en">Wei et al. documented abilities that appear abruptly with scale; Schaeffer et al. argued many are artifacts of discontinuous metrics and look smooth under continuous ones.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2206.07682" target="_blank" rel="noreferrer">Emergent Abilities of Large Language Models (Wei et al., 2022)</a>：在 BIG-Bench 等任务上，小模型接近随机，超过某规模后突然变好（如多步算术、某些 few-shot 任务），并认为这种能力无法从小模型外推。</p>
+    <p><a href="https://arxiv.org/abs/2304.15004" target="_blank" rel="noreferrer">Are Emergent Abilities of LLMs a Mirage? (Schaeffer et al., 2023)</a>：如果每个 token 正确率 \(p\) 随规模平滑上升，一个需要 \(k\) 个 token 全对的 exact-match 指标是 \(p^k\)，在对数坐标下看起来就像"突然跳起"。换成 edit distance 或 log-likelihood 后曲线是平滑的。</p>
+    <p><b>平衡的观点：</b>(1) 指标选择确实制造了很多表观跳变，所以做预测时应该看连续指标（例如正确答案的 log-prob）；(2) 但用户关心的往往就是离散指标（答对没有），所以"在某个规模突然变得可用"对产品是真实的；(3) 实践启示：用小模型的<em>连续</em>代理指标来预测大模型的下游能力（见 <a href="#c-loss-downstream">§8</a>）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Wei et al. showed tasks where performance stays near chance and then jumps at some scale, calling them emergent abilities. Schaeffer et al. pointed out that if per-token accuracy improves smoothly, an exact-match metric over a k-token answer behaves like p to the k, which looks like a sudden jump on a log-scale plot; with continuous metrics the curves are smooth. My take is that both are right in a sense: for forecasting you should track continuous metrics like the log-probability of the correct answer, but for users the discrete threshold of actually getting it right is what matters.</p></div>
+</section>
+
+<section class="concept" id="c-fit">
+  <div class="concept-head"><span class="pri p1">★</span><h3>怎么实际拟合一条 scaling law</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在 3–5 个算力预算上各扫 5–10 个模型大小（IsoFLOP），每个 run 都用匹配长度的 schedule 和调好的超参；对每个预算拟合 loss–log N 抛物线取最优点，再在 log-log 上回归 \(N_{\text{opt}}(C)\)；最后留出最大的点检验外推。</p><p class="en">Run IsoFLOP sweeps at several compute budgets with properly tuned, length-matched runs, fit a parabola in log N per budget, regress the optima in log-log, and hold out the largest scale to check extrapolation.</p></div>
+  <div class="deep">
+    <p><b>步骤：</b></p>
+    <ol>
+      <li>选 3–5 个预算，间隔约 3–10 倍（如 1e18, 3e18, 1e19, 3e19, 1e20）。</li>
+      <li>每个预算扫 \(N\)（\(D=C/6N\)），覆盖谷底两侧。每个 run 的 lr schedule 和训练长度匹配（或用 WSD 一次训练多个长度，见 <a href="#c-lr-schedule">§4</a>）；lr 用 μP 迁移或每个规模单独扫。</li>
+      <li>在<b>同一个</b> held-out 验证集上评估 loss。</li>
+      <li>每个预算：拟合 \(L\) 关于 \(\log N\) 的二次函数，取顶点 \(N_{\text{opt}}(C)\)。</li>
+      <li>在 \(\log N_{\text{opt}}\) vs \(\log C\) 上做线性回归得指数 \(a\)。</li>
+      <li>也可以直接拟合 \(L(C)=E+aC^{-b}\) 来预测最终 loss；带 \(E\) 的幂律不是 log-log 线性的，需要非线性拟合（或对 \(E\) 网格搜索）。</li>
+      <li>用 bootstrap 给出置信区间；用一个更大规模的 run 验证预测。</li>
+    </ol>
+  </div>
+  <details class="deep"><summary>代码：numpy 拟合 \(L(C)=E+aC^{-b}\) 和 IsoFLOP（已运行）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(0)
+
+# ---- 1) 拟合 L(C) = E + a * C^(-b)：对 E 网格搜索，log 空间线性回归 ----
+E_true, a_true, b_true = 1.8, 2.0e3, 0.155
+C = np.logspace(18, 22, 12)                          # 12 个小规模 run 的 FLOPs
+L = E_true + a_true * C**(-b_true)
+L = L * (1 + 0.003 * rng.standard_normal(C.size))    # 0.3% 噪声
+
+def fit_power_law(C, L, E_grid):
+    best = None
+    for E in E_grid:
+        y = L - E
+        if np.any(y &lt;= 0):
+            continue
+        # log(L - E) = log a - b log C   → 普通最小二乘
+        X = np.stack([np.ones_like(C), -np.log(C)], axis=1)
+        coef, *_ = np.linalg.lstsq(X, np.log(y), rcond=None)
+        pred = E + np.exp(coef[0]) * C**(-coef[1])
+        err = np.mean((np.log(pred) - np.log(L))**2)  # 在 log L 上算误差
+        if best is None or err &lt; best[0]:
+            best = (err, E, np.exp(coef[0]), coef[1])
+    return best[1:]
+
+E_hat, a_hat, b_hat = fit_power_law(C, L, np.linspace(0.0, L.min() - 1e-3, 2000))
+print(f"E={E_hat:.3f} a={a_hat:.3g} b={b_hat:.4f}")   # E=1.772 a=1.83e+03 b=0.1527
+C_big = 1e24
+print("extrapolated L(1e24):", E_hat + a_hat * C_big**(-b_hat),
+      " true:", E_true + a_true * C_big**(-b_true))   # 2.168 vs 2.181
+
+# ---- 2) IsoFLOP（Chinchilla Approach 2）----
+E, A, B, alpha, beta = 1.82, 482.0, 2085.0, 0.348, 0.366   # Epoch 重估值当作"真实世界"
+def loss(N, D):
+    return E + A / N**alpha + B / D**beta
+
+budgets = np.logspace(19, 22, 7)
+N_opts = []
+for Cb in budgets:
+    N = np.logspace(np.log10(Cb)/2 - 2.5, np.log10(Cb)/2 + 0.5, 25)  # 扫模型大小
+    D = Cb / (6 * N)                                                 # 同一预算 C = 6ND
+    Ls = loss(N, D) * (1 + 0.002 * rng.standard_normal(N.size))
+    p = np.polyfit(np.log(N), Ls, 2)                                 # loss vs log N 抛物线
+    N_opts.append(np.exp(-p[1] / (2 * p[0])))                        # 顶点
+N_opts = np.array(N_opts)
+slope, intercept = np.polyfit(np.log(budgets), np.log(N_opts), 1)
+print(f"N_opt ∝ C^{slope:.3f}  (理论 β/(α+β) = {beta/(alpha+beta):.3f})")  # 0.515 vs 0.513
+
+# 解析解：N* = G (C/6)^(β/(α+β)),  G = (αA/(βB))^(1/(α+β))
+G = (alpha * A / (beta * B)) ** (1 / (alpha + beta))
+for Cb in [1e21, 1e23, 5.88e23]:
+    N_star = G * (Cb / 6) ** (beta / (alpha + beta))
+    D_star = Cb / (6 * N_star)
+    print(f"C={Cb:.2e}: N*={N_star:.3g}, D*={D_star:.3g}, D/N={D_star/N_star:.1f}")
+# C=1.00e+21: N*=2.78e+09, D*=5.99e+10, D/N=21.5
+# C=1.00e+23: N*=2.95e+10, D*=5.65e+11, D/N=19.2
+# C=5.88e+23: N*=7.31e+10, D*=1.34e+12, D/N=18.3   ← 正好是 Chinchilla 70B / 1.4T 附近
+</code></pre>
+<p>观察：(1) 0.3% 的噪声就让 \(E\) 的估计偏了约 0.03，外推到 100 倍算力时 loss 预测偏 0.013——<b>不可约项 \(E\) 和指数 \(b\) 强相关</b>，这是 scaling law 外推的主要不确定性来源；(2) 因为 \(\beta\) 略大于 \(\alpha\)，最优 D/N 比例随算力缓慢下降；(3) 实际工作里常用 <code>scipy.optimize.curve_fit</code> 或 L-BFGS + Huber loss 直接优化全部参数，网格搜索 \(E\) 只是一个透明、稳健的教学版本。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>在 log-log 上直接线性拟合 \(L\) vs \(C\)（忽略 \(E\)）：近处看还行，外推时系统性低估 loss。</li>
+      <li>小规模 run 的 lr 没调好 → 小模型 loss 偏高 → 指数被扭曲（Kaplan 教训）。</li>
+      <li>用 cosine 的中间 checkpoint 当"更短训练"的结果。</li>
+      <li>只用一个 seed、没有置信区间就外推两个数量级。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd run IsoFLOP sweeps: pick three to five compute budgets spaced a few x apart, and at each budget train five to ten model sizes with tokens set by C over 6N. Each run needs a schedule matched to its length and a well-tuned learning rate, otherwise small models look artificially bad and bias the exponent. For each budget I fit a parabola of loss against log N and take the minimum, then regress the optimal N against compute in log-log space. To predict loss itself I'd fit E plus a times C to the minus b, which needs a nonlinear fit because of the irreducible term, and I'd bootstrap confidence intervals and hold out the largest run to validate the extrapolation.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your scaling-law fit predicts 2.1 at the target scale but you get 2.2. What could be wrong?</b><details><summary>思路</summary><div class="inner">(1) 小规模的超参在大规模不再最优（lr、batch 没按规律调）；(2) 大规模出现了小规模没有的训练不稳定（loss spike 后没完全恢复）；(3) 数据在大规模开始重复或分布变化；(4) 拟合本身的不确定性（\(E\) 与 \(b\) 的耦合）；(5) 数值问题（精度、通信）；(6) 估错了实际 FLOPs（例如 attention 项、MoE 负载不均）。逐项排查：先看是否有不稳定，再在中间规模补点检查拟合。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ §3 ============================ -->
+<h2 class="sec" id="s-data"><span class="num">§3 · DATA</span>数据：从 Common Crawl 到训练 token</h2>
+<p class="sec-intro">算力相同时，数据质量常常是模型差距的最大来源。面试里最常见的形式是"设计一条数据管线"。记住顺序：<b>来源 → 抽取 → 语言识别 → 启发式过滤 → 去重 → 模型打分过滤 → 安全/PII → 去污染 → 配比 → tokenize</b>，并且能说出每一步为什么、怎么评估。</p>
+
+<section class="concept" id="c-pipeline">
+  <div class="concept-head"><span class="pri p1">★</span><h3>数据来源与清洗管线</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>网页（Common Crawl）提供规模，代码、书、论文、百科、数学、对话等提供质量和特定能力；管线用越来越贵的过滤器层层筛选，每一步都用小模型训练的下游效果来评估。</p><p class="en">Web crawl provides scale; curated sources provide quality and specific skills. The pipeline applies progressively more expensive filters, and every step is validated by training small models and measuring downstream metrics.</p></div>
+  <div class="deep">
+    <p><b>典型来源：</b>Common Crawl 网页（量最大，质量参差）、代码（GitHub 等，带许可证过滤）、学术论文（arXiv 等）、书籍、百科、数学网页、问答社区、多语言网页、以及合成数据。Llama 3 报告的最终预训练配比大约是：通用知识 50%、数学与推理 25%、代码 17%、多语言 8%。</p>
+    <p><b>管线各步：</b></p>
+    <div class="table-wrap"><table>
+      <tr><th>步骤</th><th>做什么</th><th>要点</th></tr>
+      <tr><td>URL 过滤</td><td>屏蔽成人、垃圾、恶意域名</td><td>最便宜，先做</td></tr>
+      <tr><td>文本抽取</td><td>从 HTML（WARC）抽正文，去掉导航栏、页脚、广告</td><td>用 trafilatura 等抽取器比直接用 CC 的 WET 纯文本好；数学公式和代码块要专门保留</td></tr>
+      <tr><td>语言识别</td><td>fastText LID 分类器，按阈值保留目标语言</td><td>短文本和混合语言容易错；低资源语言阈值要单独调</td></tr>
+      <tr><td>启发式过滤</td><td>Gopher / C4 风格规则：字数范围、平均词长、符号比例、以省略号结尾的行比例、重复行/段落/n-gram 比例、停用词出现等</td><td>便宜、可解释；规则过严会误删代码/数学/方言</td></tr>
+      <tr><td>去重</td><td>精确去重（hash）+ 模糊去重（MinHash-LSH）+ 子串去重（suffix array）</td><td>见下一个 concept</td></tr>
+      <tr><td>模型打分过滤</td><td>用分类器给"质量/教育价值"打分</td><td>见 FineWeb-Edu / DCLM</td></tr>
+      <tr><td>安全与 PII</td><td>毒性分类器、PII（邮箱、电话、IP）正则替换或删除</td><td>过度过滤毒性会损害模型识别有害内容的能力，以及方言/少数群体文本</td></tr>
+      <tr><td>去污染</td><td>删除与评测集重叠的文档</td><td>见下</td></tr>
+      <tr><td>配比与 tokenize</td><td>按领域权重采样，tokenize 成二进制 shard，打乱</td><td>见 DoReMi / RegMix</td></tr>
+    </table></div>
+    <p><b>怎么评估一个过滤步骤？</b>"数据消融"：用相同 recipe 训练小模型（例如 1B 参数、几十 B tokens），对比加/不加该过滤的下游指标。要选在小规模上就有信号的 benchmark（如 HellaSwag、ARC、MMLU 的 cloze 格式），并用多个 seed 估计噪声。FineWeb 论文对每一个过滤决策都是这么做的。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A typical web pipeline starts with URL blocklists, then extracts main text from raw HTML, because extraction quality matters a lot, then language identification with a fastText classifier, then heuristic filters like the Gopher and C4 rules on length, symbol ratios and repetition. Next comes deduplication, exact and fuzzy with MinHash, then model-based quality filtering, toxicity and PII handling, and decontamination against eval sets. Finally you choose a mixture across sources and tokenize. The key discipline is that every step is justified by ablations: train small models on data with and without the step and compare downstream metrics that have signal at small scale.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Heuristic filters removed most of the code and math. What happened and what do you do?</b><details><summary>思路</summary><div class="inner">代码/数学的统计特征（符号比例高、行短、停用词少）触发了为散文设计的规则。做法：在过滤前先把代码/数学识别出来走单独的管线（专门的抽取器保留 LaTeX/代码块、专门的质量分类器），或对这些领域放宽规则；用领域内 benchmark 做消融确认。</div></details></li>
+    <li><b>How do you choose small-scale benchmarks for data ablations?</b><details><summary>思路</summary><div class="inner">要求：小模型上高于随机且单调提升、seed 间方差小、和大模型能力相关。多选题用 cloze 格式（比较选项的 log-prob）比生成式 MC 格式在小模型上信号更好。可同时看 held-out loss 在不同领域的变化。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-quality">
+  <div class="concept-head"><span class="pri p1">★</span><h3>基于模型的质量过滤：FineWeb-Edu 与 DCLM</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用强 LLM 给少量网页打"质量/教育价值"标签，蒸馏成一个便宜的分类器，再给全量网页打分并按阈值保留；FineWeb-Edu 和 DCLM 都证明这种模型过滤比纯规则有显著提升。</p><p class="en">Label a sample with a strong LLM, distill into a cheap classifier, score the whole crawl and keep the top; FineWeb-Edu and DCLM show model-based filtering beats heuristics alone.</p></div>
+  <div class="deep">
+    <p><b>FineWeb / FineWeb-Edu</b>（<a href="https://arxiv.org/abs/2406.17557" target="_blank" rel="noreferrer">Penedo et al. 2024</a>）：FineWeb 是从 96 个 Common Crawl 快照得到的 15T token 数据集。FineWeb-Edu 的做法：用 Llama-3-70B-Instruct 给约 46 万个网页按 0–5 分标注教育价值；在 embedding 模型上训练一个线性回归分类器；对全量打分，保留 ≥3 分的文档，得到 1.3T tokens。它在 MMLU、ARC 等知识/推理类 benchmark 上提升明显。</p>
+    <p><b>DCLM</b>（<a href="https://arxiv.org/abs/2406.11794" target="_blank" rel="noreferrer">Li et al. 2024, DataComp-LM</a>）：一个固定训练 recipe、比较数据集的基准。结论之一是"模型过滤是构建高质量训练集的关键"；他们的 DCLM-Baseline 用一个 fastText 二分类器（正样本是高质量指令/问答类文本，负样本是普通网页）过滤，7B 模型在 2.6T tokens 上达到 5-shot MMLU 64%。</p>
+    <div class="box why"><span class="lbl">直觉与风险</span>分类器定义了"什么是好数据"，它的偏见会被放大：偏向教育性文本可能伤害创意写作、口语、方言、小众领域的覆盖；过度追求 benchmark 相关的风格还会造成隐性"对 benchmark 过拟合"。所以常见做法是对不同来源用不同阈值、保留一部分未过滤数据维持多样性，并看更广泛的评测。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为"越严的过滤越好"：保留比例过小会让数据量不足，导致需要多 epoch 重复；在数据受限时，质量与数量之间存在最优折中（FineWeb-Edu 在知识类任务强，但在部分常识类任务上不一定胜过更大的 FineWeb）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Model-based filtering is now standard. For FineWeb-Edu, Hugging Face had Llama-3-70B-Instruct rate about four hundred sixty thousand web pages for educational value on a zero to five scale, trained a small regressor on embeddings to mimic those scores, ran it over the whole crawl, and kept pages scoring three or above, which gave about 1.3 trillion tokens with big gains on knowledge and reasoning benchmarks. DCLM found the same thing with a simple fastText classifier trained to separate instruction-like high-quality text from random web pages. The risk is that the classifier's notion of quality narrows diversity, so you tune thresholds per source and evaluate broadly.</p></div>
+</section>
+
+<section class="concept" id="c-dedup">
+  <div class="concept-head"><span class="pri p1">★</span><h3>去重：精确去重与 MinHash / LSH</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>MinHash 用"随机排列下集合的最小元素相同的概率 = Jaccard 相似度"把每篇文档压成一个短签名；LSH 把签名分成 b 个 band，每个 band r 行，任何一个 band 完全相同就成为候选对，从而避免两两比较。</p><p class="en">MinHash compresses each document to a signature where the probability two signatures agree in a slot equals their Jaccard similarity; LSH bands the signature so only likely near-duplicates are compared.</p></div>
+  <div class="deep">
+    <p><b>为什么要去重：</b><a href="https://arxiv.org/abs/2107.06499" target="_blank" rel="noreferrer">Lee et al. 2022 (Deduplicating Training Data Makes Language Models Better)</a>：C4 里有一个 61 词的英文句子出现了 6 万多次；去重后模型逐字输出记忆文本的频率约降低 10 倍，而且训练更高效、评测更可信（也减少了训练–测试重叠）。重复内容会浪费算力、加剧记忆化（隐私和版权风险），也会让模型过度偏向模板化文本。</p>
+    <p><b>三个层次：</b></p>
+    <ul>
+      <li><b>精确去重：</b>对规范化后的文本（或 URL）取 hash，相同就删。便宜，但对一个字符的差别都无能为力。</li>
+      <li><b>模糊去重（MinHash-LSH）：</b>近似重复的文档（模板页、转载、少量改动）。</li>
+      <li><b>子串去重：</b>用 suffix array 找出跨文档重复出现的长子串（如 ≥50 token），删掉重复片段（Lee et al. 的 ExactSubstr）。</li>
+    </ul>
+    <p><b>MinHash 原理：</b></p>
+    <ol>
+      <li>把文档变成 shingle 集合 \(S\)（例如单词 5-gram）。两文档的相似度用 Jaccard：\(J(S_1,S_2)=|S_1\cap S_2|/|S_1\cup S_2|\)。</li>
+      <li>取一个随机哈希 \(h\)（近似随机排列），定义 \(m_h(S)=\min_{x\in S}h(x)\)。</li>
+      <li><b>关键性质：</b>\(\Pr[m_h(S_1)=m_h(S_2)]=J(S_1,S_2)\)。证明：在 \(S_1\cup S_2\) 中哈希值最小的元素是均匀随机的一个；两个最小值相等当且仅当这个元素落在交集里，概率为 \(|S_1\cap S_2|/|S_1\cup S_2|\)。</li>
+      <li>用 \(K\) 个独立哈希得到签名 \((m_{h_1},\dots,m_{h_K})\)。签名中相同位置的比例是 \(J\) 的无偏估计，标准差约 \(\sqrt{J(1-J)/K}\)。</li>
+    </ol>
+    <p><b>LSH 分桶：</b>两两比较 \(n\) 篇文档是 \(O(n^2)\)，对数十亿文档不可行。把签名切成 \(b\) 个 band，每个 band \(r\) 行（\(K=br\)），对每个 band 的 \(r\) 个值整体 hash 进桶；只有在某个 band 撞桶的文档对才成为候选。相似度为 \(s\) 的一对成为候选的概率：</p>
+    $$P(s)=1-\left(1-s^{r}\right)^{b}.$$
+    <p>这是一条 S 形曲线，阈值大约在 \(s\approx(1/b)^{1/r}\)。FineWeb 用 5-gram、112 个哈希 = 14 个 band × 8 行，目标是找出相似度约 75% 以上的文档：</p>
+    <div class="table-wrap"><table>
+      <tr><th>\(s\)</th><td>0.5</td><td>0.6</td><td>0.7</td><td>0.75</td><td>0.8</td><td>0.9</td></tr>
+      <tr><th>\(P\)（b=14, r=8）</th><td>0.05</td><td>0.21</td><td>0.57</td><td>0.77</td><td>0.92</td><td>≈1.00</td></tr>
+    </table></div>
+    <p>增大 \(r\) 让曲线更陡、阈值右移（更少误报）；增大 \(b\) 让阈值左移（更少漏报）。候选对之后可以再算真实 Jaccard 确认，然后在重复簇中只保留一篇。</p>
+    <p><b>一个反直觉的发现：</b>FineWeb 发现跨全部 96 个快照做全局去重反而效果不好——剩下的数据质量更差（被反复抓取的往往是好页面）；他们改为<b>每个快照内部</b>去重。所以"去重越彻底越好"并不总成立，要用消融验证。</p>
+  </div>
+  <details class="deep"><summary>代码：MinHash + LSH 教学版（numpy，已运行）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np, re, zlib
+
+def shingles(text, n=5):
+    w = re.findall(r"\w+", text.lower())
+    return {" ".join(w[i:i+n]) for i in range(max(1, len(w) - n + 1))}
+
+P = (1 &lt;&lt; 61) - 1                       # 一个大素数（Mersenne prime）
+rng = np.random.default_rng(0)
+K = 112                                 # 哈希个数（FineWeb: 112 = 14 band × 8 row）
+a = rng.integers(1, P, size=K, dtype=np.uint64)
+b = rng.integers(0, P, size=K, dtype=np.uint64)
+
+def minhash(sh):
+    # 每个 shingle 先映射到 32-bit 整数，再用 K 个 h_k(x) = (a_k x + b_k) mod P 打散，各取最小
+    x = [zlib.crc32(s.encode()) for s in sh]
+    # 用 Python int 避免 uint64 乘法溢出（教学版：慢但正确）
+    return np.array([min((int(ak) * xi + int(bk)) % P for xi in x)
+                     for ak, bk in zip(a, b)], dtype=object)
+
+def jaccard(s1, s2):
+    return len(s1 &amp; s2) / len(s1 | s2)
+
+def lsh_candidates(sigs, bands=14, rows=8):
+    buckets = {}
+    for doc_id, sig in enumerate(sigs):
+        for bi in range(bands):
+            key = (bi, tuple(sig[bi*rows:(bi+1)*rows]))  # 一个 band 的 8 个值全相同才同桶
+            buckets.setdefault(key, set()).add(doc_id)
+    pairs = set()
+    for ids in buckets.values():
+        ids = sorted(ids)
+        pairs |= {(i, j) for k, i in enumerate(ids) for j in ids[k+1:]}
+    return pairs
+
+base = ("the quick brown fox jumps over the lazy dog while the cat watches from the window "
+        "and the bird sings a song about the long summer days in the old village near the river")
+docs = [base,
+        base.replace("old village", "small village"),      # 近重复
+        base + " and then everyone went home",              # 近重复（追加）
+        "scaling laws predict the loss of language models as a power law in compute data and "
+        "parameters which lets researchers extrapolate from small runs to large runs"]
+S = [shingles(d) for d in docs]
+sigs = [minhash(s) for s in S]
+for i, j in [(0, 1), (0, 2), (0, 3)]:
+    print(f"doc{i} vs doc{j}: J={jaccard(S[i], S[j]):.3f}  est={np.mean(sigs[i] == sigs[j]):.3f}")
+# doc0 vs doc1: J=0.714  est=0.652
+# doc0 vs doc2: J=0.857  est=0.911
+# doc0 vs doc3: J=0.000  est=0.000
+print(sorted(lsh_candidates(sigs)))     # [(0, 2)]
+for s in [0.5, 0.7, 0.75, 0.8, 0.9]:
+    print(s, round(1 - (1 - s**8)**14, 3))   # S 曲线
+</code></pre>
+<p>注意 doc0/doc1（\(J\approx0.71\)）这次没有成为候选：按 S 曲线它成为候选的概率只有约 0.6，这正是 LSH 的概率性。生产环境用 datatrove、text-dedup 等工具，在 Spark/Ray 上分布式运行，并用 64-bit 哈希的向量化实现。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>把 MinHash 说成"embedding 相似度"：MinHash 衡量的是 shingle 集合的<em>表面</em>重叠，语义相同但措辞不同的文本它检测不到（那需要 embedding 去重，如 SemDeDup，成本更高）。</li>
+      <li>只做精确去重：模板页、转载页只差几个词就逃过去了。</li>
+      <li>以为签名越长阈值越高：阈值由 \(b, r\) 的组合决定，不是 \(K\) 本身。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd do exact dedup by hashing normalized text first, then fuzzy dedup with MinHash and LSH. Each document becomes a set of word five-grams; for a random hash function, the probability that two sets have the same minimum hash equals their Jaccard similarity, because the minimum over the union is a uniformly random element and they agree exactly when it lies in the intersection. With, say, 112 hashes you get a short signature that estimates Jaccard. To avoid comparing all pairs, LSH splits the signature into bands, for example 14 bands of 8, and two documents become candidates if any band matches exactly; the collision probability is one minus one minus s to the r, all to the b, an S-curve with a threshold around 0.75 here. Then you keep one document per duplicate cluster.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you choose b and r?</b><details><summary>思路</summary><div class="inner">先定目标阈值 \(s^*\)（想删掉多相似的）和误报/漏报的代价。阈值约 \((1/b)^{1/r}\)；\(r\) 越大曲线越陡。在固定 \(K=br\)（决定计算与存储成本）下，画出 \(P(s)\) 选最合适的组合；漏报（重复没删掉）一般比误报（删掉几篇不同文档）代价小还是大取决于数据量是否紧张。</div></details></li>
+    <li><b>What's the memory/compute cost of MinHash at 10B documents?</b><details><summary>思路</summary><div class="inner">签名：10B × 112 × 8 bytes ≈ 9 TB（可用 32-bit 减半）；LSH：每个 band 一个桶 key，14 × 10B 个 (key, doc_id)，需要分布式 shuffle/sort 按 key 聚合；之后用 union-find 合并重复簇。整体是几轮 MapReduce，瓶颈是 shuffle。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-decontam">
+  <div class="concept-head"><span class="pri p1">★</span><h3>去污染（decontamination）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>从训练数据中删除与评测集重叠的内容（通常用长 n-gram 匹配），否则 benchmark 分数会被记忆抬高，无法反映泛化能力。</p><p class="en">Remove training documents overlapping evaluation sets, usually via long n-gram matching, so benchmark scores reflect generalization rather than memorization.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>方法：</b>对评测集的问题和答案做 n-gram（如 13-gram，GPT-3 的做法）或更长子串匹配；命中的训练文档删除（或删除命中片段）。也可以用 embedding 检测改写过的泄漏。</li>
+      <li><b>难点：</b>(1) 改写、翻译、格式变化的泄漏 n-gram 抓不到；(2) benchmark 题目本身可能来自网页（如考试题），"污染"和"正常知识"边界模糊；(3) 太短的 n-gram 误删大量正常文本；(4) 对后训练数据和合成数据同样需要做。</li>
+      <li><b>事后检测：</b>比较模型在原始题 vs 改写题 / 新题上的表现差异；看模型能否续写出题目原文；用发布时间晚于训练截止日期的题目评测。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Decontamination means removing training data that overlaps your evaluation sets, typically by matching long n-grams, like thirteen-grams, from the benchmark questions and answers, and dropping or trimming those documents. N-gram matching misses paraphrases and translations, so for important evals you can add embedding-based detection, and after training you can probe contamination by comparing performance on original versus rewritten or newer questions. It applies to post-training and synthetic data too, which are easy places for leakage.</p></div>
+</section>
+
+<section class="concept" id="c-mixture">
+  <div class="concept-head"><span class="pri p1">★</span><h3>数据配比优化：DoReMi、RegMix 与经验做法</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>领域权重会显著影响模型能力；DoReMi 用小代理模型做 Group DRO 学权重，RegMix 训练几百个极小模型拟合"配比 → 性能"的回归模型再搜索最优配比；工业界大多结合小规模消融与经验调整。</p><p class="en">Domain weights matter a lot; DoReMi learns them with Group DRO on a small proxy, RegMix fits a regression from mixture to performance using hundreds of tiny runs, and practitioners combine ablations with judgment.</p></div>
+  <div class="deep">
+    <p><b>DoReMi</b>（<a href="https://arxiv.org/abs/2305.10429" target="_blank" rel="noreferrer">Xie et al. 2023</a>）：先用默认配比训练一个小参考模型；再训练一个 280M 代理模型，用 Group DRO 动态上调"代理模型 loss 比参考模型高得最多（excess loss 大）"的领域权重；把训练过程中的平均权重拿来训练大模型。在 The Pile 上，8B 模型平均 few-shot 准确率提升 6.5 个百分点，达到基线准确率所需步数少 2.6 倍。直觉：把数据预算花在"还能学到东西"的领域，而不是已经学会或根本学不会（高熵噪声）的领域。</p>
+    <p><b>RegMix</b>（<a href="https://arxiv.org/abs/2407.01492" target="_blank" rel="noreferrer">Liu et al. 2024</a>）：随机采样 512 种配比，各训练一个 1M 参数的模型、1B tokens；拟合回归模型（如 LightGBM）预测某个目标指标；在配比空间搜索预测最好的配比，用于大模型。报告的结果：选出的配比训练 1B/25B tokens 的模型胜过 64 个其他候选配比，计算量约为 DoReMi 的 10%。他们还发现网页数据与下游性能的相关性比 Wikipedia 等"高质量"来源更强，以及领域间的交互常常反直觉。</p>
+    <p><b>经验做法：</b></p>
+    <ul>
+      <li>代码比例适度提高通常也有助于推理类任务；数学和代码在后期上采样。</li>
+      <li>多语言：按语言的 token 数做温度采样 \(p_i\propto n_i^{1/\tau}\)（\(\tau>1\) 上采样低资源语言），并限制每种语言的最大 epoch 数。</li>
+      <li>配比不必固定：Llama 3 在训练过程中调整了配比（例如后期上采样数学、增加近期网页数据、下采样低质量子集）。</li>
+      <li>小规模找到的最优配比不一定能迁移到大规模（大模型能吸收更多困难数据）——要在 2–3 个规模上验证趋势。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Mixture weights across domains have a big effect, and there are two well-known automated approaches. DoReMi trains a small proxy with Group DRO, upweighting domains where the proxy's loss most exceeds a reference model's, and then uses the averaged weights for the big run; on the Pile it gave a sizable few-shot gain and reached baseline accuracy with 2.6 times fewer steps. RegMix trains hundreds of tiny models on random mixtures, fits a regression from mixture to a target metric, and picks the predicted best. In practice teams combine these with ablations and judgment, change the mixture over training, upsampling math and code late, and check that the optimum transfers across at least a couple of scales.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why use excess loss rather than raw loss to pick domains?</b><details><summary>思路</summary><div class="inner">原始 loss 高可能只是因为领域本身熵高（噪声、随机字符串），再多数据也学不会；excess loss = 代理 loss − 参考 loss，衡量的是"可学但还没学会"的部分，避免把预算浪费在不可约噪声上。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-synthetic">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>课程学习、合成数据与模型崩溃</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>粗粒度课程（后期上采样高质量数据）有效，细粒度"由易到难"在预训练中证据有限；合成数据在数学、代码、改写上很有用，但如果每一代都用上一代的输出<b>替换</b>真实数据，分布尾部会消失（模型崩溃）；把合成数据<b>累积</b>在真实数据之上可以避免。</p><p class="en">Coarse curricula like late high-quality upsampling help; synthetic data helps for math, code and rephrasing, but replacing real data with model outputs across generations causes collapse, while accumulating avoids it.</p></div>
+  <div class="deep">
+    <p><b>课程学习：</b>最被广泛采用的形式是阶段性配比——在学习率衰减阶段集中投放高质量数据（见 <a href="#c-anneal">§7 annealing</a>）。逐样本按"难度"排序在 LLM 预训练中收益不稳定，也会破坏数据打乱带来的 i.i.d. 假设。</p>
+    <p><b>合成数据的常见用途：</b>改写网页为更清晰的格式（如问答、教科书风格）以提高数据利用率；生成带解答的数学/代码题，可用执行或验证器过滤；把长文档转成多种视角的问答；为低资源语言做翻译。</p>
+    <p><b>模型崩溃：</b><a href="https://arxiv.org/abs/2305.17493" target="_blank" rel="noreferrer">Shumailov et al. 2023 (The Curse of Recursion)</a> 发现递归地在模型生成数据上训练会使原始分布的尾部消失，逐代退化。<a href="https://arxiv.org/abs/2404.01413" target="_blank" rel="noreferrer">Gerstgrasser et al. 2024</a> 指出这依赖"替换"设定：如果每一代的合成数据是<b>加</b>在原始真实数据上，测试误差有有限上界，崩溃可以避免。直觉：采样会低估低概率事件（有限样本里尾部事件更可能一次都没出现），每一代都丢掉一点尾部；保留真实数据就锚定了分布。</p>
+    <p><b>实践要点：</b>合成数据要多样化（多种 prompt、persona、种子文档）、可验证时用验证器过滤、与真实数据混合、去重和去污染（教师模型可能见过 benchmark）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Synthetic data is genuinely useful in pretraining, especially rephrasing web text into cleaner formats and generating verifiable math and code. The known risk is model collapse: Shumailov and colleagues showed that if each generation trains only on the previous generation's outputs, the tails of the distribution disappear, because sampling under-represents rare events. Later work showed that if you accumulate synthetic data alongside the original real data instead of replacing it, error stays bounded. So I'd keep real data as an anchor, maximize diversity, filter with verifiers where possible, and decontaminate, since teacher models may have seen the benchmarks.</p></div>
+</section>
+
+<!-- ============================ §4 ============================ -->
+<h2 class="sec" id="s-optim"><span class="num">§4 · OPTIMIZATION</span>优化器与超参数</h2>
+<p class="sec-intro">面试常问"给我一套能用的 LLM 预训练超参并解释每个"。你需要能脱口而出：AdamW（β1=0.9, β2=0.95, ε=1e-8, wd=0.1）、梯度裁剪 1.0、warmup + cosine 或 WSD、batch 以 token 计（百万级）、lr 随模型变大而变小——并能解释为什么。</p>
+
+<section class="concept" id="c-adamw">
+  <div class="concept-head"><span class="pri p1">★</span><h3>AdamW 与标准超参</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>LLM 预训练几乎都用 AdamW：β1=0.9、β2=0.95（比默认 0.999 小，二阶矩对梯度分布变化反应更快、更稳定）、解耦权重衰减约 0.1、梯度范数裁剪 1.0；norm 参数与 bias（常常还有 embedding）不做 weight decay。</p><p class="en">AdamW with beta1 0.9, beta2 0.95, decoupled weight decay around 0.1, gradient clipping at 1.0, and no decay on norms and biases is the de facto pretraining default.</p></div>
+  <div class="deep">
+    <p><b>更新规则：</b></p>
+    $$m_t=\beta_1 m_{t-1}+(1-\beta_1)g_t,\quad v_t=\beta_2 v_{t-1}+(1-\beta_2)g_t^2,\quad \hat m_t=\frac{m_t}{1-\beta_1^t},\ \hat v_t=\frac{v_t}{1-\beta_2^t}$$
+    $$\theta_t=\theta_{t-1}-\eta_t\left(\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon}+\lambda\,\theta_{t-1}\right).$$
+    <p><b>为什么是"解耦" weight decay（AdamW vs Adam + L2）：</b>如果把 L2 正则 \(\frac{\lambda}{2}\|\theta\|^2\) 加进 loss，它的梯度 \(\lambda\theta\) 会被 \(\sqrt{\hat v}\) 除——梯度大的参数衰减反而更弱，正则效果被扭曲。AdamW 把衰减直接加在更新上，与自适应缩放无关。注意 PyTorch 实现里衰减项是乘以 \(\eta_t\lambda\) 的，所以有效衰减强度随 lr schedule 变化。</p>
+    <p><b>β2=0.95 的原因：</b>\(v_t\) 的有效平均窗口约 \(1/(1-\beta_2)\) 步：0.999 是约 1000 步，0.95 是约 20 步。LLM 训练中梯度分布会突变（比如遇到罕见 token 或分布转移），如果 \(v\) 反应太慢，某个参数突然出现大梯度时分母还很小，更新量 \(m/\sqrt v\) 会暴增，导致 loss spike。较小的 β2 让分母更快跟上。</p>
+    <p><b>ε：</b>防止除零；当梯度极小（深层、大模型、bf16）时，\(\epsilon\) 会主导分母使更新变小。有观察指出大规模下 ε 过大会削弱更新、过小可能放大噪声，常见取值 1e-8（也有人用 1e-5 或更小，视规模而定）。</p>
+    <p><b>典型数值（量级参考）：</b></p>
+    <div class="table-wrap"><table>
+      <tr><th>超参</th><th>典型值</th><th>说明</th></tr>
+      <tr><td>峰值 lr</td><td>小模型 ~1e-3 量级；7–8B ~3e-4；70B ~1.5e-4；405B 8e-5</td><td>后三者是 Llama 3 报告的数；模型越宽 lr 越小（SP 下），μP 可以解决</td></tr>
+      <tr><td>β1, β2</td><td>0.9, 0.95</td><td></td></tr>
+      <tr><td>weight decay</td><td>0.1</td><td>norm/bias 不衰减；embedding 是否衰减各家不同（OLMo 2 去掉了 embedding 的 weight decay）</td></tr>
+      <tr><td>grad clip</td><td>1.0（全局 L2 范数）</td><td></td></tr>
+      <tr><td>warmup</td><td>几百到几千步</td><td>Llama 3 405B 用 8000 步</td></tr>
+      <tr><td>batch size</td><td>以 token 计 1M–16M</td><td>常在训练中逐步加大</td></tr>
+      <tr><td>精度</td><td>bf16 计算 + fp32 master weights 与优化器状态</td><td>见 <a href="m09-distributed.html">09</a></td></tr>
+    </table></div>
+    <p><b>显存：</b>AdamW 每参数需要 fp32 的 \(m, v\)（8 bytes）+ fp32 master weight（4 bytes）+ bf16 权重（2）+ bf16 梯度（2）≈ 16 bytes/param——这是 ZeRO / FSDP 要切分的东西。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>对 LayerNorm/RMSNorm 的 gain 做 weight decay：会把它们推向 0，相当于压缩该层输出。</li>
+      <li>以为 weight decay 在 LLM 里主要是"防过拟合"：预训练基本是单 epoch，过拟合不是问题；weight decay 更多是在控制参数范数、影响有效学习率与训练动力学（例如让 cosine 末期 loss 下降更多）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The default is AdamW with beta1 0.9 and beta2 0.95, weight decay around 0.1 applied in the decoupled way, no decay on norm gains and biases, and global gradient-norm clipping at 1.0. Beta2 is lowered from the usual 0.999 because the second-moment estimate then averages over roughly twenty steps instead of a thousand, so when gradient statistics shift suddenly the denominator catches up quickly instead of letting updates blow up. Decoupling weight decay matters because with plain L2 the decay gets divided by the adaptive denominator. Peak learning rates shrink with width in standard parametrization, from around 1e-3 for small models to about 1e-4 for 70B-scale, with a warmup of a few thousand steps.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What does gradient clipping actually protect against, and what's a sign it's too aggressive?</b><details><summary>思路</summary><div class="inner">它限制单步更新在梯度异常大时的幅度（坏 batch、spike 前兆）。但 Adam 的更新本身是归一化的，所以裁剪主要影响 \(m\) 和 \(v\) 的累积。如果大部分步都在被裁剪（grad norm 长期 &gt; 阈值），说明阈值太低或训练本身不稳定，相当于偷偷降低了学习率，应记录"被裁剪步数比例"。</div></details></li>
+    <li><b>Why does the learning rate need to decrease as models get wider in standard parametrization?</b><details><summary>思路</summary><div class="inner">见 <a href="#c-mup">μP</a>：Adam 的更新每个元素是 \(\Theta(\eta)\)，矩阵更新 \(\Delta W\) 与输入相关，\(\Delta W x\) 的每个坐标随宽度 \(n\) 线性增长；要保持激活变化量 \(\Theta(1)\)，隐藏层 lr 需要 \(\propto 1/n\)。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-lr-schedule">
+  <div class="concept-head"><span class="pri p1">★</span><h3>学习率 schedule：warmup、cosine、WSD</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>warmup 让 Adam 的二阶矩估计稳定、避免早期大更新；cosine 衰减需要预先知道总步数；WSD（warmup–stable–decay）在高 lr 平台上长时间训练，最后短期衰减，可以从平台期任意 checkpoint 分叉出"已收敛"的模型，非常适合 scaling 研究和持续训练。</p><p class="en">Warmup stabilizes early Adam updates; cosine requires knowing the total length; WSD trains at a constant LR and decays briefly at the end, so any plateau checkpoint can be cooled down into a finished model.</p></div>
+  <div class="deep">
+    <p><b>Warmup 为什么需要：</b>(1) 训练初期 Adam 的 \(v\) 只基于很少的样本，估计噪声大，偏差校正后更新量可能过大；(2) 初始化附近 loss landscape 曲率大（梯度范数大、变化快），大 lr 容易发散；(3) Post-LN 架构尤其依赖 warmup。线性 warmup 几百到几千步是标准做法。</p>
+    <p><b>Cosine：</b>\(\eta_t=\eta_{\min}+\frac12(\eta_{\max}-\eta_{\min})(1+\cos(\pi t/T))\)，通常 \(\eta_{\min}=0.1\eta_{\max}\)（或更低）。缺点：(1) 必须预先固定总步数 \(T\)，想多训就得重启 schedule；(2) 中途 checkpoint 的 lr 还很高，评估起来不代表"训练完"的效果（Kaplan 的问题）。</p>
+    <p><b>WSD：</b>MiniCPM（<a href="https://arxiv.org/abs/2404.06395" target="_blank" rel="noreferrer">Hu et al. 2024</a>）提出：warmup → 长时间常数 lr → 最后约 10% 的 token 内快速衰减（他们报告约 10% 的衰减就足够，2.5% 不够）。<a href="https://arxiv.org/abs/2405.18392" target="_blank" rel="noreferrer">Hägele et al. 2024</a> 系统研究了"常数 lr + cooldown"，发现它的 scaling 行为和 cosine 一样可预测，并且可以复用一条主干 run 做多个训练长度的 scaling 实验，大幅节省算力；他们也发现随机权重平均（SWA）能在不额外训练的情况下改善轨迹上的模型。</p>
+    <div class="box why"><span class="lbl">直觉：为什么衰减时 loss 会突然大降？</span>可以把 loss landscape 想成一个"河谷"：高 lr 时参数在谷壁之间来回振荡，同时沿着河谷方向前进（学到新东西）；lr 衰减时振荡幅度变小，参数落到谷底，loss 迅速下降。所以高 lr 阶段负责"走得远"，衰减阶段负责"落到底"。这也解释了为什么衰减阶段是投放高质量数据的好时机（§7）。</div>
+  </div>
+  <details class="deep"><summary>代码：cosine 与 WSD schedule</summary><div class="inner">
+<pre><code class="language-python">import math
+
+def cosine_lr(step, total, peak, warmup, min_ratio=0.1):
+    if step &lt; warmup:
+        return peak * (step + 1) / warmup
+    p = (step - warmup) / max(1, total - warmup)
+    return peak * (min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * p)))
+
+def wsd_lr(step, total, peak, warmup, decay_frac=0.1, final=0.0):
+    decay_start = int(total * (1 - decay_frac))
+    if step &lt; warmup:
+        return peak * (step + 1) / warmup
+    if step &lt; decay_start:
+        return peak                                   # stable 平台
+    p = (step - decay_start) / max(1, total - decay_start)
+    return final + (peak - final) * (1 - p)           # 线性衰减；1-sqrt 等形状也常用
+
+# 用法：torch.optim.lr_scheduler.LambdaLR(opt, lambda s: wsd_lr(s, T, 1.0, 2000))
+# （LambdaLR 返回的是乘在基础 lr 上的倍数，所以 peak 传 1.0）
+</code></pre>
+<p>（已用断言测试：平台期等于峰值、末步接近 0、cosine 末端等于 0.1×peak。）</p>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Warmup is there because early on Adam's second-moment estimates are noisy and the loss surface is sharp, so a full learning rate can produce huge updates. Cosine decay works well but ties you to a fixed run length, and intermediate checkpoints aren't representative because the learning rate is still high. Warmup-stable-decay keeps a constant learning rate for most of training and then decays over roughly the last ten percent; the loss drops sharply during the cooldown, and you can branch a cooldown from any plateau checkpoint. That makes it great for continued training and for scaling-law studies, since one long run gives you many training lengths.</p></div>
+</section>
+
+<section class="concept" id="c-batch">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Batch size、临界 batch 与 batch ramp</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在临界 batch size 以下，batch 翻倍几乎让所需步数减半（完美数据并行）；超过之后收益递减，只是浪费 token。临界 batch 随 loss 降低而变大，所以大训练常常从较小 batch 起步，逐步加大。</p><p class="en">Below the critical batch size, doubling the batch nearly halves the steps needed; above it you waste data. The critical batch grows as loss falls, which motivates batch-size ramps.</p></div>
+  <div class="deep">
+    <p><b>梯度噪声尺度</b>（McCandlish et al. 2018, "An Empirical Model of Large-Batch Training"）：\(B_{\text{noise}}=\mathrm{tr}(\Sigma)/|G|^2\)，即单样本梯度的方差与真实梯度平方范数之比。直觉：当 batch \(B\ll B_{\text{noise}}\) 时，梯度估计噪声主导，加大 batch 降低噪声，可以按比例加大 lr，步数按比例减少；当 \(B\gg B_{\text{noise}}\) 时，梯度已经很准，再加大 batch 不能再减少步数。步数和样本数之间有关系 \((S/S_{\min}-1)(E/E_{\min}-1)=1\)。</p>
+    <p><b>为什么临界 batch 随训练变大：</b>训练后期真实梯度 \(|G|\) 变小（接近谷底），而单样本噪声不怎么变，所以 \(B_{\text{noise}}\) 增大。Kaplan 发现 \(B_{\text{crit}}\) 主要由当前 loss 决定。</p>
+    <p><b>Batch ramp 实例：</b>PaLM 540B 从每 batch 1M tokens 起步，在第 50k 步翻倍到 2M、第 115k 步翻到 4M；Llama 3 405B 从 4M tokens 开始，252M tokens 后加到 8M，2.87T tokens 后加到 16M。</p>
+    <p><b>Batch 与 lr 的关系：</b>SGD 在小 batch 区有近似"线性缩放"（lr ∝ B）；Adam 更接近平方根缩放（lr ∝ √B）并在大 batch 处饱和。实践中改变 batch 时要重新确认 lr。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The gradient noise scale, roughly the per-example gradient variance divided by the squared norm of the true gradient, tells you the critical batch size. Below it, doubling the batch nearly halves the number of steps, which is perfect data parallelism; above it, extra examples per step mostly go to waste. Because the true gradient shrinks as training progresses, the critical batch grows, so large runs often ramp the batch: PaLM went from about one million to four million tokens, and Llama 3 405B from four to sixteen million. When you change batch size you also need to revisit the learning rate.</p></div>
+</section>
+
+<section class="concept" id="c-mup">
+  <div class="concept-head"><span class="pri p1">★</span><h3>μP 与 μTransfer：跨宽度迁移超参</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>标准参数化（SP）下，最优学习率随模型宽度变化，小模型调好的超参不能直接用在大模型上；μP 按宽度缩放初始化、学习率和输出层乘子，使每层激活的<em>更新量</em>在任意宽度下都保持 \(\Theta(1)\)，于是最优 lr 等超参在宽度上近似不变，可以在小模型上调好直接迁移。</p><p class="en">In standard parametrization the optimal learning rate shifts with width; muP rescales init, per-layer learning rates and output multipliers so feature updates stay order one at any width, making hyperparameters transferable from small proxies.</p></div>
+  <div class="deep">
+    <p><b>问题：</b>大模型无法做超参搜索（一次 run 就几百万美元）。希望在小模型上搜，直接用到大模型。SP 下这行不通：宽度变大后，最优 lr 变小，而且原来的最优点可能已经发散。</p>
+    <p><b>为什么 SP 会坏（核心推导，简化版）：</b>考虑隐藏层 \(y=Wx\)，宽度 \(n\)，输入 \(x\) 每个坐标 \(\Theta(1)\)。梯度 \(\nabla_W L=\delta x^\top\) 是秩 1 的外积。Adam 的更新逐元素约为 \(\pm\eta\)（符号近似），即 \(\Delta W\approx-\eta\,\mathrm{sign}(\delta)\mathrm{sign}(x)^\top\)。于是</p>
+    $$(\Delta W x)_i\approx-\eta\,\mathrm{sign}(\delta_i)\sum_{j=1}^{n}\mathrm{sign}(x_j)\,x_j=-\eta\,\mathrm{sign}(\delta_i)\sum_j|x_j|=\Theta(\eta n).$$
+    <p>关键：更新与输入是<b>相关的</b>（\(\Delta W\) 由 \(x\) 本身构造），所以 \(n\) 项同号相加，是 \(\Theta(n)\) 而不是随机游走的 \(\Theta(\sqrt n)\)。要让激活变化 \(\Theta(1)\)，隐藏层 Adam lr 必须 \(\propto 1/n\)。SP 下所有层用同一个 lr，宽度增大时隐藏层更新过大（或者为了稳定把 lr 降低，导致 embedding 等层更新过小）——所以最优 lr 随宽度漂移。</p>
+    <p><b>μP 的规则（Adam 版，相对于基础宽度 \(n_0\) 的倍数 \(m=n/n_0\)）：</b></p>
+    <div class="table-wrap"><table>
+      <tr><th>参数</th><th>初始化方差</th><th>Adam 学习率</th></tr>
+      <tr><td>输入层 / embedding</td><td>\(\Theta(1)\)（不随宽度变）</td><td>\(\eta\)（不变）</td></tr>
+      <tr><td>隐藏层矩阵</td><td>\(\propto 1/n\)（同 SP）</td><td>\(\eta/m\)</td></tr>
+      <tr><td>输出层 / unembedding</td><td>\(\propto 1/n^2\)（或输出乘以 \(1/m\) 的乘子）</td><td>\(\eta/m\)</td></tr>
+    </table></div>
+    <p>另外 μP 把 attention 的缩放从 \(1/\sqrt{d_k}\) 改为 \(1/d_k\)（因为训练后 \(q,k\) 变得相关，点积按 \(d\) 而不是 \(\sqrt d\) 增长）。（不同文献对这些规则有等价的不同写法，例如把乘子放在前向而不是 lr 里。）</p>
+    <p><b>μTransfer</b>（<a href="https://arxiv.org/abs/2203.03466" target="_blank" rel="noreferrer">Yang et al. 2022, Tensor Programs V</a>）：把目标模型写成 μP，在小宽度代理上调超参，零样本迁移到大模型。报告结果：从 40M 参数代理迁移，超过了 GPT-3 6.7B 原论文结果，调参成本约为预训练成本的 7%；从 13M 模型迁移超过已发表的 BERT-large。</p>
+    <p><b>什么能迁移、什么不能：</b></p>
+    <ul>
+      <li><b>能（随宽度）：</b>学习率、初始化尺度、输出/attention 乘子、Adam β、lr schedule 形状。</li>
+      <li><b>部分/有条件：</b>深度（原始 μP 只保证宽度；深度迁移需要额外的残差分支缩放，如 depth-μP 类工作）、batch size 和训练长度（论文给出一些经验迁移，但不是理论保证）。</li>
+      <li><b>不能：</b>正则化类超参（dropout、weight decay 的最优值与数据量/训练时长有关），以及数据配比等。</li>
+    </ul>
+  </div>
+  <details class="deep"><summary>数值演示：SP 下更新量随宽度线性增长，μP 下不变（numpy，已运行）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(0)
+# 隐藏层 y = W x；Adam 一步更新近似 ΔW = -lr * sign(g)，g = δ xᵀ 是秩 1 外积
+for width in [256, 1024, 4096]:
+    x = rng.standard_normal(width)            # 激活，坐标 Θ(1)
+    delta = rng.standard_normal(width)        # 反传来的误差
+    G = np.outer(delta, x)
+    for name, lr in [("SP  lr=1e-3", 1e-3), ("muP lr=1e-3*256/width", 1e-3 * 256 / width)]:
+        dy = (-lr * np.sign(G)) @ x           # 下一步输出的变化
+        print(f"width={width:5d} {name:24s} |Δy| per coord = {np.abs(dy).mean():.4f}")
+# width=  256 SP  lr=1e-3   0.2091 | muP 0.2091
+# width= 1024 SP  lr=1e-3   0.7977 | muP 0.1994
+# width= 4096 SP  lr=1e-3   3.2611 | muP 0.2038
+</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>"μP 让模型效果更好"——μP 的主要价值是<b>超参可迁移</b>（以及更稳定的宽度极限），不是同样超参下 loss 更低（虽然调好后常常更好）。</li>
+      <li>"只要把 lr 除以宽度就是 μP"——还需要正确的 embedding/输出层处理和 attention 缩放，否则迁移失效。</li>
+      <li>以为 μP 能迁移 weight decay 和数据量相关的超参。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In standard parametrization the optimal learning rate drifts with width, so you can't tune on a small model and reuse the settings. The reason is that a weight update is built from the input itself, an outer product, so when you multiply the update by the next input the width-many terms add coherently, and the change in activations grows linearly with width. muP fixes this by scaling per-layer learning rates and initializations with width, for Adam roughly one over width for hidden and output matrices, plus a smaller output multiplier and one over d attention scaling, so every layer's features move by order one regardless of width. Then optimal learning rate, init scale and similar hyperparameters stay roughly constant, and muTransfer tunes them on a small proxy; Tensor Programs V reported beating GPT-3 6.7B's published results with tuning cost around seven percent of pretraining. It reliably transfers across width, less so across depth, batch size, or regularization settings.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does the dot product change from random-walk to coherent scaling after training starts?</b><details><summary>思路</summary><div class="inner">初始化时 \(W\) 与 \(x\) 独立，\(\sum_j W_{ij}x_j\) 是 \(n\) 个零均值独立项之和，量级 \(\sqrt n\cdot\sigma_W\)，所以 \(\sigma_W\propto1/\sqrt n\) 就保持 \(\Theta(1)\)。训练后 \(\Delta W\) 是由 \(x\) 构造的，与 \(x\) 对齐，求和不再抵消。这就是"初始化的缩放"和"更新的缩放"必须分开处理的原因，也是 μP 和 SP 的根本区别。同理 attention 里训练后的 \(q,k\) 相关，所以 μP 用 \(1/d\)。</div></details></li>
+    <li><b>If you don't use muP, how would you set the LR for a 10x bigger model?</b><details><summary>思路</summary><div class="inner">在 3–4 个较小规模上各扫 lr，拟合"最优 lr vs 参数量（或宽度）"的幂律并外推（DeepSeek LLM 等报告过拟合 lr、batch 关于算力的幂律）；同时在目标规模上做少量短程 sanity check（看前几千步的稳定性）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-muon">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Muon 与新优化器（简述）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Muon 对矩阵参数的动量做近似正交化（Newton–Schulz 迭代，把更新的奇异值都推向 1），让更新在各个方向上均衡；Moonshot 的工作表明加上 weight decay 并调整每个参数的更新尺度后，它可以扩展到大规模 LLM 训练。</p><p class="en">Muon orthogonalizes the momentum of matrix parameters via Newton-Schulz iterations; with weight decay and per-parameter update scaling it was shown to scale to large LLM training.</p></div>
+  <div class="deep">
+    <p><b>做法：</b>对二维权重 \(W\)，先算动量 \(M\)，然后用几步 Newton–Schulz 迭代近似 \(UV^\top\)（\(M=U\Sigma V^\top\) 的"去掉奇异值"版本）作为更新方向。直觉：Adam 是逐元素归一化，Muon 是在矩阵谱的层面归一化，防止更新被少数大奇异方向主导。embedding、输出层、norm 等非矩阵或特殊参数仍用 AdamW。</p>
+    <p><a href="https://arxiv.org/abs/2502.16982" target="_blank" rel="noreferrer">Muon is Scalable for LLM Training (Liu et al., 2025)</a>：识别出扩展到大规模的两个关键——加入 weight decay、仔细调整每个参数的更新尺度（使其 RMS 与 AdamW 匹配，从而能复用 AdamW 的超参）；报告在算力最优训练下约为 AdamW 的 2 倍计算效率，并训练了 Moonlight（3B 激活 / 16B 总参数 MoE，5.7T tokens）。</p>
+    <p><b>面试态度：</b>知道它的核心思想和"与 μP 的联系"（正交化更新的谱范数天然受控，与按宽度控制更新幅度的思想相通）就够；新优化器的收益在不同 setting 下经常缩水，要强调需要在调好的 AdamW 基线上公平比较。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Muon applies to matrix-shaped parameters: it takes the momentum and approximately orthogonalizes it with a few Newton-Schulz iterations, so the update has all singular values near one and no single direction dominates. Non-matrix parameters like embeddings and norms still use AdamW. Moonshot showed it scales to LLM pretraining once you add weight decay and match the per-parameter update RMS to AdamW, reporting roughly two times compute efficiency. I'd still insist on comparisons against a well-tuned AdamW baseline, since optimizer gains often shrink under careful tuning.</p></div>
+</section>
+
+<!-- ============================ §5 ============================ -->
+<h2 class="sec" id="s-stability"><span class="num">§5 · STABILITY</span>训练稳定性</h2>
+<p class="sec-intro">大规模训练最常见的事故是 loss spike 和发散。面试官想听到的是一套<b>有因果链的</b>理解（为什么会 spike）、<b>可观测的</b>监控指标，以及<b>按代价排序的</b>处理流程。</p>
+
+<section class="concept" id="c-spike-causes">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Loss spike 的成因</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>spike 通常是"某些参数/激活的尺度失控"与"一次过大的更新"相互放大：学习率过高、attention logits 无界增长导致 softmax 坍缩、输出 logits 漂移、离群特征、坏数据 batch、以及 Adam 在二阶矩过小时产生的过大更新。</p><p class="en">Spikes usually come from runaway scales interacting with an oversized update: too-high LR, growing attention logits that collapse softmax, drifting output logits, outlier features, bad batches, and Adam updates exploding when second moments are stale.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>成因</th><th>机制</th><th>症状</th></tr>
+      <tr><td><b>学习率过高</b></td><td>更新步长超出局部曲率允许的范围（"边缘稳定"之外）</td><td>小模型复现：同 recipe 提高 lr 即出现</td></tr>
+      <tr><td><b>Attention logit 增长</b></td><td>\(q\cdot k\) 随 \(W_Q,W_K\) 范数增长而变大，softmax 变成 one-hot，attention entropy 坍缩，梯度变得尖锐/消失</td><td>某些头的 attention entropy 接近 0；max logit 持续上升。ViT-22B 和 Wortsman et al. 2023 研究了这一现象</td></tr>
+      <tr><td><b>输出 logit 漂移</b></td><td>softmax 对整体平移不变，\(\log Z\) 可以无约束地漂移到很大，bf16 下精度损失</td><td>\(\log Z\) 的绝对值持续增长</td></tr>
+      <tr><td><b>离群特征（outlier features）</b></td><td>少数隐藏维度激活值变得极大，norm 层和量化/低精度都受影响</td><td>激活最大值/RMS 比值暴涨</td></tr>
+      <tr><td><b>坏数据</b></td><td>一个 batch 含大量重复/乱码/超长单一 token 序列，导致极端梯度</td><td>spike 与特定数据位置对应；但 PaLM 发现单换数据不一定 spike——是数据与参数状态共同作用</td></tr>
+      <tr><td><b>Adam 不稳定</b></td><td>某些参数长期梯度很小，\(v\) 衰减到接近 0（或接近 \(\epsilon\)），一旦出现大梯度，\(m/\sqrt v\) 极大；<a href="https://arxiv.org/abs/2304.09871" target="_blank" rel="noreferrer">Molybog et al. 2023</a> 认为大模型、大 batch 下 Adam 更新与下降方向失去相关性是发散的根源</td><td>update/param 比值暴涨，常先出现在浅层或 embedding</td></tr>
+    </table></div>
+    <p><b>两个关键事实：</b>(1) <a href="https://arxiv.org/abs/2309.14322" target="_blank" rel="noreferrer">Wortsman et al. 2023</a> 显示 attention logit 增长和输出 logit 发散这两类不稳定在<b>小模型 + 高 lr</b> 下就能复现，大规模用的缓解方法在小规模同样有效——所以可以用小代理研究稳定性，并用"lr 敏感度"（最终 loss 随 lr 变化的平坦程度）作为指标；(2) PaLM 540B 在训练中出现约 20 次 spike（尽管做了梯度裁剪）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Loss spikes usually come from some scale running away combined with an oversized update. The classic culprits are a learning rate that's too high; attention logits growing until softmax becomes nearly one-hot, which you see as attention entropy collapsing in some heads; output logits drifting because softmax is shift-invariant; outlier feature dimensions; occasionally bad batches; and Adam itself, where parameters with tiny gradients have stale, tiny second moments, so a sudden large gradient produces a huge step. A useful fact is that Wortsman and colleagues reproduced the attention and output-logit instabilities in small models at high learning rates, so you can study and fix stability cheaply.</p></div>
+</section>
+
+<section class="concept" id="c-mitigate">
+  <div class="concept-head"><span class="pri p1">★</span><h3>缓解手段：QK-norm、z-loss、rewind/skip 等</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>架构上约束尺度（QK-norm、logit soft-capping、合适的 norm 位置、embedding 归一化）、loss 上约束 \(\log Z\)（z-loss）、优化器上调 β2/ε/裁剪/lr，事故发生时回退到 spike 前的 checkpoint 并跳过附近数据。</p><p class="en">Constrain scales architecturally with QK-norm, soft-capping and norm placement, penalize log Z with z-loss, tune beta2, epsilon, clipping and LR, and when a spike happens rewind and skip the offending batches.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>QK-norm：</b>对 \(q, k\) 先做 LayerNorm/RMSNorm 再点积，使 logits 有界，防止 attention entropy 坍缩。ViT-22B 使用，Wortsman et al. 证明对小模型高 lr 同样有效；OLMo 2 用 QK-norm 替代了之前的 QKV 裁剪。</li>
+      <li><b>z-loss：</b>额外损失 \(\lambda_z(\log Z)^2\)，\(Z=\sum_j e^{z_j}\)，把 \(\log Z\) 推向 0，防止输出 logits 漂移。PaLM 用 \(10^{-4}\)，OLMo 2 用 \(10^{-5}\)。代码见 <a href="#c-ntp">§1</a>。</li>
+      <li><b>Logit soft-capping：</b>\(z\leftarrow c\cdot\tanh(z/c)\)，Gemma 2 对 attention logits 用 \(c=50\)、最终 logits 用 \(c=30\)。</li>
+      <li><b>Norm 位置：</b>Pre-LN 比 Post-LN 稳定；OLMo 2 把 RMSNorm 放在子层<em>输出</em>、加回残差之前（类似 "sandwich" 思路）。<a href="https://arxiv.org/abs/2312.16903" target="_blank" rel="noreferrer">Takase et al. (Spike No More)</a> 从梯度范数角度分析认为需要"子层小、残差通路强"，并据此建议对 embedding 做缩放或 LayerNorm。</li>
+      <li><b>Embedding：</b>embedding 后加 LayerNorm（BLOOM 等），或去掉 embedding 的 weight decay（OLMo 2）。</li>
+      <li><b>优化器：</b>降低 lr / 延长 warmup；β2 从 0.999 降到 0.95；适当调小 ε；梯度裁剪；对特定层降低 lr。</li>
+      <li><b>数据：</b>过滤高度重复的序列（OLMo 2 删除了包含大量重复 n-gram 的代码文档以减少 spike）。</li>
+      <li><b>Rewind + skip（PaLM）：</b>出现 spike 后从约 100 步前的 checkpoint 重启，跳过约 200–500 个 batch。PaLM 报告这样做后不会在同一位置再次 spike，并通过消融推断 spike 是"特定 batch × 特定参数状态"共同导致的，而不是单纯坏数据。</li>
+      <li><b>数值：</b>logits、softmax、loss、norm 统计量用 fp32；注意 bf16 的尾数只有 8 位；检查是否有 NaN/Inf 在通信中传播。</li>
+    </ul>
+    <p>反例参照：DeepSeek-V3 报告整个训练过程<b>没有</b>出现不可恢复的 spike、也没有回滚——这说明一套设计良好的 recipe 可以做到全程稳定。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Mitigations fall into a few buckets. Architecturally, QK-norm normalizes queries and keys so attention logits stay bounded, soft-capping squashes logits with a tanh, and norm placement matters; pre-norm or normalizing sublayer outputs is more stable than post-norm. On the loss side, z-loss penalizes the squared log partition function so output logits don't drift; PaLM used a coefficient of 1e-4. On the optimizer side: lower peak learning rate or longer warmup, beta2 of 0.95, gradient clipping, and sometimes a smaller epsilon. Operationally, PaLM rewound to a checkpoint about a hundred steps before each spike and skipped a few hundred batches, and the spike didn't recur. And keep softmax, loss and norm statistics in fp32.</p></div>
+</section>
+
+<section class="concept" id="c-monitor">
+  <div class="concept-head"><span class="pri p1">★</span><h3>监控什么</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>除了 loss，按层记录梯度范数、update/param 比值、权重范数、激活 RMS 与最大值、attention entropy 与 max logit、输出 \(\log Z\)、被裁剪步数比例，以及吞吐和 MFU；很多 spike 在 loss 上可见之前就能在这些指标里看到。</p><p class="en">Beyond loss, track per-layer grad norms, update-to-weight ratios, weight norms, activation RMS and max, attention entropy and max logits, output log Z, fraction of clipped steps, and throughput.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>指标</th><th>健康表现</th><th>危险信号</th></tr>
+      <tr><td>训练 loss（平滑 + 原始）</td><td>平滑下降，衰减阶段加速</td><td>突然跳升；长期平台；原始 loss 方差变大</td></tr>
+      <tr><td>全局/逐层 grad norm</td><td>早期大，之后缓慢下降或平稳</td><td>突刺；逐渐上升趋势（常是 spike 前兆）</td></tr>
+      <tr><td>update / param 比值 \(\|\Delta W\|/\|W\|\)</td><td>大约 \(10^{-3}\) 量级（经验值，随 lr 变化）</td><td>某层比其他层高一个数量级</td></tr>
+      <tr><td>attention entropy / max logit</td><td>熵缓慢下降，max logit 平稳</td><td>某些头熵 → 0、max logit 持续上升</td></tr>
+      <tr><td>输出 \(\log Z\)、logit 最大值</td><td>平稳</td><td>持续漂移</td></tr>
+      <tr><td>激活 max/RMS（尤其残差流）</td><td>平稳</td><td>离群维度增长</td></tr>
+      <tr><td>被裁剪步数比例</td><td>少</td><td>大部分步都被裁剪</td></tr>
+      <tr><td>各领域验证 loss、小型下游评测</td><td>同步下降</td><td>某领域 loss 回升（数据问题）</td></tr>
+      <tr><td>tokens/s、MFU、各 rank 步时</td><td>稳定</td><td>掉速（硬件、通信问题，"慢节点"）</td></tr>
+    </table></div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Loss alone is a lagging indicator, so I'd log per-layer gradient norms, the update-to-weight ratio for each parameter group, weight norms, activation RMS and max values in the residual stream, attention entropy and max attention logits per head, the output log partition function, and the fraction of steps hitting the clip threshold. Gradient norms trending upward or attention entropy collapsing in a few heads often show up before the loss spikes. I'd also track per-domain validation loss and throughput per rank, because data problems and hardware problems can masquerade as optimization problems.</p></div>
+</section>
+
+<section class="concept" id="c-debug-spike">
+  <div class="concept-head"><span class="pri p1">★</span><h3>面试走查："第 50k 步出现 loss spike，你怎么办？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>先分辨是否自愈与是否是数值/硬件问题，再定位层和数据，然后按代价由低到高处理：rewind + skip → 降 lr / 调优化器 → 加架构稳定项（需要从更早处重启或重新训练），并在小模型上复现以验证修复。</p><p class="en">Triage whether it self-recovers and whether it's numerical or hardware, localize by layer and data, then escalate from rewind-and-skip to optimizer changes to architectural fixes, validating on a small-scale reproduction.</p></div>
+  <div class="deep">
+    <ol>
+      <li><b>分类：</b>loss 是否在几百步内恢复到原趋势？是 → 记录，继续观察（小 spike 很常见）。否 / 出现 NaN → 进入排查。NaN 立即停训。</li>
+      <li><b>排除工程问题：</b>是否刚好在 checkpoint 恢复、扩缩容、改配置之后？某个 rank 的 loss/grad 是否异常（硬件故障、静默数据损坏 SDC）？数据加载器是否重复喂了同一段数据、shard 是否损坏？</li>
+      <li><b>看 spike 前的指标：</b>grad norm 是否已经上升了一段时间？哪一层的 update/param 比值、attention max logit、\(\log Z\) 先异常？这决定是"渐进的尺度失控"（需要结构性修复）还是"突发的坏 batch"（rewind + skip 即可）。</li>
+      <li><b>检查数据：</b>把 spike 附近的 batch 取出来看：重复内容、乱码、超长单一 token、某个新数据源刚开始被采样？逐样本计算 loss，找出离群样本。</li>
+      <li><b>处理（按代价）：</b>
+        <ul>
+          <li>rewind 到 spike 前约 100 步之前（要回到指标还正常的 checkpoint），跳过附近的几百个 batch（PaLM 做法）。</li>
+          <li>仍复发：降低 lr（如 ×0.5～0.7）、调小 β2、加强裁剪，从 checkpoint 继续。</li>
+          <li>根本原因是结构性的（attention logit 增长、logit 漂移）：在继续训练时加 z-loss；QK-norm 等架构改动通常需要从头训或谨慎地从 checkpoint 迁移，所以最好在下一代 recipe 里通过小模型 lr 敏感度测试提前加上。</li>
+        </ul>
+      </li>
+      <li><b>验证：</b>在小模型 + 高 lr 下复现同类不稳定，确认修复有效；记录到 run log 中。</li>
+    </ol>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>First I'd triage: does the loss recover within a few hundred steps, and is there a NaN? Then rule out infrastructure, like a recent restart, a config change, a bad shard, or one rank reporting abnormal gradients, which could be a hardware fault. Next I'd look at what moved before the spike: if grad norms or attention max logits had been creeping up in specific layers, it's a gradual scale problem; if everything was flat until one step, it's more likely a pathological batch, which I'd confirm by inspecting per-example losses around that step. For the fix I escalate by cost: rewind to a healthy checkpoint before the spike and skip the nearby batches like PaLM did; if it recurs, lower the learning rate or beta2 and tighten clipping; if it's structural, add z-loss now and plan QK-norm for the next run. And I'd reproduce it on a small model at high learning rate to verify the fix.</p></div>
+</section>
+
+<!-- ============================ §6 ============================ -->
+<h2 class="sec" id="s-longctx"><span class="num">§6 · LONG CONTEXT</span>长上下文</h2>
+<p class="sec-intro">长上下文能力基本不是从头训出来的：先在短 context 上完成大部分预训练，再分阶段扩展。重点是"为什么分阶段"、"需要什么数据"、"怎么判断真的有效"。</p>
+
+<section class="concept" id="c-longctx">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>分阶段扩展上下文</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>因为 attention 代价随长度增长、而且绝大多数文档很短，模型先在 4K–8K 上预训练，然后通过调整 RoPE（增大 base 频率或插值）在逐步变长的序列上继续预训练几十到几百 B tokens，每一阶段都要确认短上下文能力不退化。</p><p class="en">Pretrain at 4K to 8K, then continue pretraining on progressively longer sequences with adjusted RoPE for tens to hundreds of billions of tokens, checking that short-context ability is preserved at each stage.</p></div>
+  <div class="deep">
+    <p><b>为什么不一开始就用长 context：</b>(1) attention FLOPs 和激活内存随长度增长，长序列训练每个 token 更贵；(2) 自然长文档稀少，大多数 token 来自短文档，长 context 大部分时间被拼接填满，学不到真正的长依赖；(3) <a href="https://arxiv.org/abs/2309.16039" target="_blank" rel="noreferrer">Xiong et al. 2023 (Effective Long-Context Scaling)</a> 发现在 Llama 2 上做长上下文继续预训练与从头长序列训练效果相近但更高效，且"预训练数据里有大量长文本"不是关键。</p>
+    <p><b>实例：</b>Llama 3 在预训练末期分 6 个阶段从 8K 扩展到 128K，共用约 800B tokens；每一阶段的推进条件是短上下文评测恢复，且 needle-in-a-haystack 在该长度上通过。</p>
+    <p><b>RoPE 调整（指针）：</b>直接外推到训练长度以外，未见过的旋转角会导致性能崩溃。常见方法：位置插值（PI，把位置压缩回训练范围）、NTK-aware / 增大 RoPE base（降低旋转频率，让低频维度覆盖更长距离）、YaRN（分频段处理并调整 attention 温度）。细节见 <a href="m04-transformer.html">04 Transformer</a>。</p>
+    <p><b>数据：</b><a href="https://arxiv.org/abs/2402.10171" target="_blank" rel="noreferrer">Fu et al. 2024 (Data Engineering for Scaling to 128K)</a> 报告用 5 亿到 50 亿 tokens 的长文数据继续预训练就足以让模型在 128K 内任意位置检索信息；关键是<b>在保持领域配比平衡的前提下</b>对长文档上采样——简单地只上采样书籍等长文本领域效果反而差。另外应使用 document masking（见 <a href="#c-packing">§1</a>），并混入一部分短数据防止短任务退化。</p>
+    <p><b>评估：</b>Needle-in-a-haystack（在长文本随机位置插一句话再问）太简单，几乎所有模型都能"满分"。<a href="https://arxiv.org/abs/2404.06654" target="_blank" rel="noreferrer">RULER (Hsieh et al. 2024)</a> 扩展到多 needle、多跳追踪、聚合等 13 个任务，发现声称支持 32K+ 的 17 个模型中只有一半在 32K 时仍保持令人满意的表现。真正的长上下文能力要看多文档问答、长代码库理解、长对话等任务。</p>
+    <p><b>系统：</b>超长序列的激活内存需要 context/sequence parallel（把序列切到多卡上，ring attention 等），见 <a href="m09-distributed.html">09</a>。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"NIAH 全绿 = 长上下文能力好"——NIAH 只测单点检索；"有效上下文长度"通常远小于"声称的长度"。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Long context is usually added at the end of pretraining rather than from scratch, because long-sequence training is more expensive per token and most natural documents are short anyway. You adjust RoPE, for example by raising the base frequency or interpolating positions, then continue pretraining on progressively longer sequences; Llama 3 went from 8K to 128K in six stages over about 800 billion tokens, advancing only when short-context evals recovered. The data should upsample long documents while keeping the domain mix balanced, use document masking, and keep some short data. For evaluation, needle-in-a-haystack is nearly saturated, so I'd use RULER-style multi-needle, multi-hop and aggregation tasks plus realistic long-document tasks.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your model passes NIAH at 128K but fails at multi-document QA at 32K. Why?</b><details><summary>思路</summary><div class="inner">NIAH 只需要定位一个与周围文本格格不入的句子（容易被 attention 找到）；多文档问答需要从多个相似干扰中选择、聚合、跨段推理。可能原因：长文训练数据缺乏真正需要长依赖的任务、后训练数据大多是短的、位置偏差（lost in the middle）。改进：合成需要跨段信息的长上下文任务、长上下文 SFT、更好的数据配比。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ §7 ============================ -->
+<h2 class="sec" id="s-stages"><span class="num">§7 · TRAINING STAGES</span>训练阶段：从预训练到 mid-training</h2>
+<p class="sec-intro">现代"预训练"已经不是单一阶段：大规模通用预训练 → 退火 / mid-training（高质量数据 + lr 衰减）→ 长上下文扩展 → SFT/RL。理解每个阶段为什么存在。</p>
+
+<section class="concept" id="c-anneal">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Annealing / mid-training</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在学习率衰减阶段切换到更高质量、更有针对性的数据（数学、代码、教科书、指令风格数据），收益远大于把同样的数据混在整个训练中；这个阶段也可以用来廉价评估小数据集的价值。</p><p class="en">Switch to higher-quality, targeted data during the learning-rate decay; it's much more effective than mixing it in uniformly, and it doubles as a cheap way to evaluate small datasets.</p></div>
+  <div class="deep">
+    <p><b>证据：</b></p>
+    <ul>
+      <li><b>MiniCPM</b>（<a href="https://arxiv.org/abs/2404.06395" target="_blank" rel="noreferrer">Hu et al. 2024</a>）：在 WSD 的衰减阶段加入高质量与指令类数据，比只在 SFT 阶段加入效果好得多（例如 1.2B 模型的 C-Eval 从 41.2 提升到 49.1）。</li>
+      <li><b>Llama 3</b>（<a href="https://arxiv.org/abs/2407.21783" target="_blank" rel="noreferrer">Llama Team 2024</a>）：在最后 40M tokens 上把 lr 线性退火到 0，同时上采样极高质量数据，并对退火期间的 checkpoint 做平均（Polyak averaging）作为最终预训练模型。他们还用"退火"来评估数据：把训练了一半的 8B 模型在 40B tokens 上退火（30% 新数据 + 70% 默认配比）来判断小数据集价值；在 GSM8K/MATH 训练集上退火能让 8B 显著提升，但对 405B 几乎没有收益。</li>
+      <li><b>OLMo 2</b>（<a href="https://arxiv.org/abs/2501.00656" target="_blank" rel="noreferrer">OLMo Team 2024</a>）：明确把第二阶段称为 mid-training，约占 5–10% 的训练 FLOPs，lr 线性衰减到 0，使用 Dolmino Mix（高质量网页 + 论文、百科、问答、指令数据 + 合成数学）；并用不同数据顺序重复多次 mid-training，再把得到的模型做权重平均（"souping"）。</li>
+    </ul>
+    <p><b>为什么有效（直觉）：</b>见 §4 的"河谷"图景：高 lr 阶段模型在快速吸收大量知识但参数在振荡；衰减阶段模型"落到谷底"，最后看到的数据对最终参数影响最大。高质量数据放在这里，既能被充分利用，又不会被后续大量低质量数据"冲淡"。</p>
+    <p><b>风险：</b>(1) benchmark 相关数据在退火阶段影响很大，污染检查要更严格；(2) 过窄的退火数据可能伤害通用能力，需要保留一部分通用数据（Llama 3 的 70/30 混合）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Annealing, or mid-training, means that during the final learning-rate decay you shift the mixture toward your highest-quality and most targeted data, like math, code, textbook-style and instruction-like data. MiniCPM found this beats adding the same data only during SFT, Llama 3 annealed over the last tokens with upsampled high-quality data and averaged checkpoints from that phase, and OLMo 2 made it an explicit stage with its own data mix and model souping. The intuition is that the decay phase is when the model settles into a minimum, so the data it sees then has outsized influence. A nice side benefit is that a short anneal from a mid-training checkpoint is a cheap test of whether a small new dataset is valuable.</p></div>
+</section>
+
+<section class="concept" id="c-ckpt-avg">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Checkpoint 平均、持续预训练与遗忘</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>平均多个 checkpoint（同一轨迹上的 EMA/SWA，或不同数据顺序的退火 run "souping"）通常能免费降低 loss；持续预训练（在新领域/新数据上继续训）需要重新 warmup 并混入原始数据（replay）来减少灾难性遗忘。</p><p class="en">Averaging checkpoints, along one trajectory or across anneal runs, often improves loss for free; continual pretraining needs a rewarm, a re-decay and replay of original data to limit forgetting.</p></div>
+  <div class="deep">
+    <p><b>为什么平均有效：</b>高 lr 下参数在谷底附近振荡，取平均相当于取振荡的中心（近似一种隐式的 lr 衰减）；不同数据顺序的退火 run 落在同一个"盆地"里（共享初始化），线性插值不会穿越高 loss 区，平均后更接近盆地中心。</p>
+    <p><b>持续预训练（continual pretraining）：</b>例如在通用模型上加更多代码/某种语言/新时间段数据。常见做法：(1) 重新 warmup 到一个适中的 lr（直接用很小的 lr 学不动新知识，直接用峰值 lr 会剧烈遗忘）；(2) 再次衰减；(3) 混入一定比例的原始预训练数据（replay），以减少对原有能力的遗忘；(4) 新领域需要时扩充 tokenizer 词表（并初始化新 embedding）。<a href="https://arxiv.org/abs/2403.08763" target="_blank" rel="noreferrer">Ibrahim et al. 2024 (Simple and Scalable Strategies to Continually Pre-train LLMs)</a> 系统研究了 re-warming、re-decaying 加 replay 的组合，发现它可以接近在合并数据上重训的效果。WSD 的好处在这里也体现：平台期的 checkpoint 可以直接继续。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Checkpoint averaging is close to a free lunch: averaging along a trajectory cancels out oscillation around the valley floor, and averaging several anneal runs from the same starting point, which OLMo 2 calls souping, lands nearer the center of the basin. For continual pretraining on a new domain, you re-warm the learning rate to a moderate value, decay it again, and replay a fraction of the original data to limit catastrophic forgetting; starting from a WSD plateau checkpoint makes this much cleaner than starting from a fully decayed cosine model.</p></div>
+</section>
+
+<section class="concept" id="c-distill-pt">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>蒸馏预训练</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>小模型用大模型的完整下一 token 分布（软标签）而不是 one-hot 真实 token 作为目标；每个 token 提供的信息更多，相当于提高了数据的有效量。Gemma 2 的 2B 和 9B 用蒸馏训练，27B 从头训练。</p><p class="en">Train the small model on the teacher's full next-token distribution instead of one-hot targets; each token carries more information. Gemma 2's 2B and 9B were distilled, the 27B trained from scratch.</p></div>
+  <div class="deep">
+    <p><b>目标：</b>\(\mathcal{L}=-\sum_t\sum_{v}p_T(v\mid x_{\lt t})\log p_S(v\mid x_{\lt t})\)，等价于最小化 \(\mathrm{KL}(p_T\|p_S)\)（差一个与学生无关的常数）。</p>
+    <p><b>Gemma 2</b>（<a href="https://arxiv.org/abs/2408.00118" target="_blank" rel="noreferrer">Gemma Team 2024</a>）：2B 用 2T tokens、9B 用 8T tokens 以知识蒸馏训练；27B 用 13T tokens、不用蒸馏。论文动机：小模型若用 NTP 训练，需要远超算力最优的数据量才能继续提升；蒸馏提供更丰富的梯度信号，可以模拟"在更多 token 上训练"的效果。</p>
+    <p><b>工程代价：</b>需要对每个训练 token 跑一次教师前向（或预先存储 top-k logits，存储量巨大：每个 token 存 k 个 (id, prob)）；教师本身的错误和偏见也会被继承；词表必须一致（或做对齐）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Distillation pretraining replaces the one-hot next-token target with the teacher's full distribution, so the loss is cross-entropy against soft labels, equivalent to forward KL from teacher to student. Each token then carries information about all the plausible continuations, which acts like training on more data; that's especially valuable for small models that are already far past the Chinchilla ratio. Gemma 2 trained its 2B and 9B models this way, while the 27B was trained from scratch. The costs are a teacher forward pass per token or storing top-k logits, and the need for a shared vocabulary.</p></div>
+</section>
+
+<!-- ============================ §8 ============================ -->
+<h2 class="sec" id="s-eval"><span class="num">§8 · EVALUATING BASE MODELS</span>评估预训练模型</h2>
+<p class="sec-intro">预训练过程中的评估要回答两个问题：训练是否健康、哪个数据/超参决策更好。核心挑战：小模型在难 benchmark 上没信号、指标受 tokenizer 和格式影响、数据污染。</p>
+
+<section class="concept" id="c-ppl">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Perplexity 的局限与 bits-per-byte</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>perplexity 依赖 tokenizer（token 越长，每 token 的 loss 越高但 token 数越少），不同模型之间应比较按字节归一化的 bits-per-byte；即使如此，loss 和下游能力也不总是一一对应。</p><p class="en">Perplexity depends on the tokenizer, so compare models with bits per byte; even then loss doesn't map one-to-one onto downstream ability.</p></div>
+  <div class="deep">
+    <p><b>换算：</b>文本的总 NLL 与 tokenizer 无关地衡量"压缩它需要的信息量"。设一段文本有 \(N_{\text{tok}}\) 个 token、\(N_{\text{byte}}\) 个 UTF-8 字节，平均每 token 的 loss 为 \(\mathcal{L}\)（nats），则</p>
+    $$\text{bpb}=\frac{N_{\text{tok}}\cdot\mathcal{L}}{N_{\text{byte}}\cdot\ln 2}.$$
+    <p>例：loss 2.0 nats/token，平均每 token 4 字节 ⇒ bpb = 2.0 / (4 × 0.693) ≈ 0.72。</p>
+    <p><b>其他局限：</b>(1) 验证集的选择决定了你在测什么（网页 PPL 好不代表数学好）；(2) 在被污染或重复的数据上 PPL 会虚低；(3) 后训练（RLHF）会让 PPL 变差但模型更有用；(4) 同样的 loss 下降在不同 loss 区间意味着不同的能力提升。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Perplexity is per token, so it depends on the tokenizer: a tokenizer with longer tokens has higher per-token loss but fewer tokens. To compare models with different tokenizers you normalize to bits per byte, total negative log-likelihood in bits divided by the number of UTF-8 bytes. Even then, which validation set you use determines what you're measuring, and loss improvements don't map uniformly onto downstream capabilities.</p></div>
+</section>
+
+<section class="concept" id="c-loss-downstream">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Few-shot benchmark、小代理与 loss → 下游</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>base 模型用 few-shot 评测，选择题优先用 cloze/log-prob 格式；小规模决策要选在小模型上有信号的指标；可以用"计算量 → loss → 下游指标"的两段式拟合预测大模型表现。</p><p class="en">Evaluate base models few-shot, prefer cloze or log-prob scoring for small models, pick metrics with signal at small scale, and predict downstream via compute to loss to task metric.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>评测格式：</b>多选题有两种打分：MC 格式（模型输出字母 A/B/C/D）和 cloze 格式（比较每个选项文本的 log-likelihood，可按长度或字节归一化）。小模型在 MC 格式上往往接近随机（还不会"选字母"），cloze 格式在小规模就有信号；大模型 MC 格式更能反映能力。</li>
+      <li><b>小代理的挑选：</b>选单调随规模提升、seed 方差小、不饱和的任务；计算多个 seed 的标准差，判断两个数据配方的差距是否显著。</li>
+      <li><b>loss → 下游：</b>先用 scaling law 预测目标规模的 loss（或某个任务上正确答案的 NLL），再用一条 sigmoid 型曲线把 loss 映射到准确率；Llama 3 报告用这种两步法预测了 405B 在 ARC-Challenge 等任务上的表现。连续的中间量（正确答案 log-prob）比准确率更平滑可预测（呼应 Schaeffer et al.）。</li>
+      <li><b>污染：</b>见 <a href="#c-decontam">§3</a>；评估时报告去污染后的分数或用新题。</li>
+      <li><b>Base vs chat：</b>base 模型评测对 prompt 格式敏感，few-shot 示例数和格式要固定；不同团队报告的数常不可比。详见 <a href="m13-eval.html">13</a>。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For base models I'd use few-shot evaluation with fixed prompts, and for small models prefer cloze-style scoring, comparing the log-likelihood of each answer option, since small models can't yet reliably output a letter choice. For data or hyperparameter decisions at small scale, pick benchmarks that improve monotonically with scale and have low seed variance, and run several seeds to know the noise floor. To forecast large-model performance, a two-step approach works well: predict loss or the correct-answer log-probability from compute with a scaling law, then map that to accuracy with a sigmoid fit, which Llama 3 used to predict its flagship's benchmark scores.</p></div>
+</section>
+
+<!-- ============================ §9 ============================ -->
+<h2 class="sec" id="s-efficiency"><span class="num">§9 · EFFICIENCY</span>训练效率（简述）</h2>
+
+<section class="concept" id="c-mfu">
+  <div class="concept-head"><span class="pri p3">○</span><h3>MFU、packing 与 FP8</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>MFU = 实际有用 FLOPs/s（按 6N + attention 计）÷ 硬件峰值；大规模训练通常 35–55%。packing 消除 padding 浪费，FP8 用更低精度矩阵乘提升吞吐。</p><p class="en">MFU is model FLOPs per second over hardware peak, typically 35 to 55 percent at scale; packing removes padding waste and FP8 matmuls raise throughput.</p></div>
+  <div class="deep">
+    <p><b>定义：</b>\(\text{MFU}=\dfrac{\text{tokens/s}\times(6N+\text{attn})}{\text{峰值 FLOP/s}}\)。MFU 不计重算（recomputation）的 FLOPs；把重算也算进去的是 HFU（hardware FLOPs utilization）。PaLM 540B 报告 MFU 46.2%、HFU 57.8%。</p>
+    <p><b>影响 MFU 的因素：</b>通信（数据/张量/流水线并行的开销、pipeline bubble）、内存带宽受限的算子（norm、激活函数、softmax——kernel fusion 和 FlashAttention 缓解）、小矩阵、数据加载、慢节点。</p>
+    <p><b>FP8：</b>H100 起支持 FP8 矩阵乘，理论吞吐是 BF16 的 2 倍；需要细粒度的缩放（per-tensor 或 per-block scaling factor）防止溢出/下溢，主权重和优化器状态仍用高精度。DeepSeek-V3 在大规模训练中使用了 FP8 混合精度。细节见 <a href="m09-distributed.html">09</a>。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Model FLOPs utilization is the useful model FLOPs per second, about six N plus attention per token times tokens per second, divided by the hardware's peak; recomputation doesn't count, that's hardware FLOPs utilization. Large runs typically land around forty to fifty percent; PaLM reported about 46. The main losses are communication, memory-bound ops that need fusion, pipeline bubbles and stragglers. Packing removes padding waste, and FP8 matmuls with fine-grained scaling can roughly double matmul throughput on recent GPUs.</p></div>
+</section>
+
+<!-- ============================ §10 ============================ -->
+<h2 class="sec" id="s-scenarios"><span class="num">§10 · INTERVIEW SCENARIOS</span>面试场景题（含答案）</h2>
+<p class="sec-intro">这些题目通常以开放式形式出现。答题框架：<b>先澄清约束 → 给出一个具体的数或方案 → 解释取舍 → 说明如何验证</b>。先自己出声回答，再展开参考答案。</p>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.1</b> · 难度 ★★ · Chinchilla 估算</div>
+<p>You have a compute budget of \(10^{23}\) FLOPs. What model size and how many tokens would you train on? What if the model will be served to millions of users?</p>
+<details><summary>提示</summary><div class="inner">\(C=6ND\)，\(D\approx20N\) ⇒ \(C=120N^2\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p><b>训练最优：</b>\(N=\sqrt{C/120}=\sqrt{8.33\times10^{20}}\approx2.9\times10^{10}\)，即约 29B 参数；\(D=20N\approx5.8\times10^{11}\)，约 580B tokens。用 Epoch 重估的参数化 loss 精确求解也得到约 29.5B / 565B（见 <a href="#c-fit">§2 代码</a>）。顺带估算硬件：\(10^{23}\) ÷（989e12 × 0.4 × 86400）≈ 2900 H100·天，例如 1024 卡约 3 天。</p>
+<p><b>考虑推理：</b>如果要大规模服务，训练一个更小的模型（例如 7–13B）并训练更多 token。固定 \(C=10^{23}\)：8B 模型可训 \(10^{23}/(6\times8\times10^9)\approx2.1\)T tokens（约 260 tokens/param）。loss 会比 29B 的算力最优点略高，但每个推理 token 成本降为约 1/3.6。最终选择取决于推理量、延迟要求、可用数据量（2T tokens 高质量数据够不够、是否要重复）。</p>
+<p><b>验证：</b>在自己的数据上做小规模 IsoFLOP 确认 20 这个比例（它依赖数据和架构）；用 μP 或 lr 幂律设定超参。</p>
+<p>English: "Using C ≈ 6ND and roughly twenty tokens per parameter, C is about 120 N squared, so N is about 29 billion and D about 580 billion tokens. If inference dominates, I'd go smaller, say 8B on about 2 trillion tokens, accepting slightly higher loss for much cheaper serving."</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.2</b> · 难度 ★★ · 用公式核对一个公开数字</div>
+<p>Llama 3 405B was trained on about 15.6T tokens. Roughly how much compute is that, and is it Chinchilla-optimal?</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(C=6\times4.05\times10^{11}\times1.56\times10^{13}\approx3.8\times10^{25}\) FLOPs。tokens/param ≈ 38.5，约为 Chinchilla 比例的 2 倍，大致处于算力最优附近。Llama 3 报告用自己的 IsoFLOP 实验拟合出 \(N^*(C)\) 指数约 0.53，外推到 \(3.8\times10^{25}\) 得到约 402B 参数 / 16.55T tokens 的算力最优点，他们选择了 405B；并指出 IsoFLOP 曲线在大算力下谷底变平，所以对 N/D 的取舍相对不敏感。对比之下 8B 用了同样约 15T tokens，是严重的 over-training（为推理优化）。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.3</b> · 难度 ★★★ · loss spike</div>
+<p>Your 70B run shows a loss spike at step 50k. Loss doesn't fully recover after 1000 steps. Walk me through what you do.</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>按 <a href="#c-debug-spike">§5 走查</a>：(1) 确认是否有 NaN、是否与重启/配置变更/特定 rank 有关（排除硬件与基础设施）；(2) 看 spike 前 grad norm、各层 update/param、attention max logit、\(\log Z\) 的趋势，区分渐进式失控和突发事件；(3) 取出 spike 附近 batch，检查逐样本 loss、数据来源、是否有重复/乱码；(4) 回退到指标仍健康的 checkpoint（spike 前 ≥100 步），跳过几百个 batch 继续；(5) 若复发，lr 降 30–50%、确认 β2=0.95、加 z-loss；(6) 长期修复：下一版 recipe 加 QK-norm 等，并在小模型高 lr 下验证 lr 敏感度降低。还要说明决策成本：70B 每回退 1000 步都很贵，所以 checkpoint 频率要足够高。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.4</b> · 难度 ★★★ · 数据管线</div>
+<p>Design a deduplication pipeline for a 10T-token web corpus. What would you dedup on, at what granularity, and how do you know it helped?</p>
+<details><summary>参考答案</summary><div class="inner">
+<ol>
+<li><b>URL 规范化去重</b>（同一页面多次抓取）。</li>
+<li><b>精确去重：</b>规范化文本（小写、去空白）后 hash，分布式 group-by。</li>
+<li><b>模糊去重：</b>MinHash（5-gram shingles，约 100–128 个哈希，例如 14×8 的 band 配置对应 ~0.75 阈值）+ LSH 分桶，在 Spark/Ray 上 shuffle；候选对用 union-find 合并成簇，每簇保留一篇（例如质量分最高或最新的）。规模估算：10T tokens ≈ 数十亿文档，签名约几 TB，主要成本是 shuffle。</li>
+<li><b>子串/行级去重：</b>去掉跨文档重复的样板段落（页眉页脚、cookie 提示），可用 suffix array 或行级 hash 计数。</li>
+<li><b>粒度选择：</b>是否跨快照全局去重要做消融——FineWeb 发现全局去重反而更差，改为按快照去重。</li>
+<li><b>验证：</b>(a) 抽样检查被删除的簇，估计误删率；(b) 训练小模型（例如 1B / 30B tokens）比较下游指标与记忆化率；(c) 检查各领域保留比例，确保代码/数学等没有被不成比例地删除。</li>
+</ol>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.5</b> · 难度 ★★ · 数据配比</div>
+<p>You have web, code, math, books and multilingual data. How would you decide the mixture?</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>(1) 从一个合理的先验出发（例如以网页为主、代码 10–20%、数学数个百分点、多语言按目标语言需求，参考 Llama 3 公开的大致比例）；(2) 每个来源的可用 token 数决定上限：任何来源不要超过约 4 个 epoch；(3) 用 RegMix 风格的小模型扫描或 DoReMi 学权重，目标指标是一组多样的下游任务与各领域 held-out loss；(4) 在 2–3 个规模上验证最优配比的趋势是否一致；(5) 训练中动态调整：后期（退火阶段）上采样数学/代码/高质量数据；(6) 多语言用温度采样平衡高低资源语言。要强调权衡：配比是多目标问题，需要和产品目标对齐（例如编码助手 vs 通用聊天）。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.6</b> · 难度 ★★★ · 小规模结论不迁移</div>
+<p>A data filter improved your 1B proxy by 2 points but did nothing at 7B. Why might that be, and what do you do?</p>
+<details><summary>参考答案</summary><div class="inner">
+<ul>
+<li><b>噪声：</b>2 分可能在 seed 方差内——先用多个 seed 确认小规模结果显著。</li>
+<li><b>能力饱和/不同瓶颈：</b>大模型能从"低质量"数据中学到小模型学不到的东西，过滤删掉的数据对大模型有价值；或者大模型在该指标上本来就已接近上限。</li>
+<li><b>数据量效应：</b>7B 训练更多 token，过滤后的数据被重复更多次，收益被重复的代价抵消。</li>
+<li><b>超参未迁移：</b>7B 的 lr 等超参未调好，掩盖了数据差异。</li>
+<li><b>评测选择：</b>小规模用的 benchmark 在大规模可能已饱和或信号不同。</li>
+</ul>
+<p>做法：在中间规模（如 3B）补点，看收益是随规模递减还是噪声；检查过滤后各领域保留比例与 epoch 数；用更难、未饱和的评测；必要时调整阈值让过滤在大规模更宽松。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.7</b> · 难度 ★★ · 重复高质量数据</div>
+<p>You have 50B tokens of very high-quality data and a 2T-token training run. Should you repeat it, and how?</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>可以重复，但要控制次数。根据 Muennighoff et al.，约 4 个 epoch 内几乎和新数据一样有效。方案：在主预训练阶段以自然比例（或略上采样）出现 1–2 次，在退火 / mid-training 阶段再上采样 2–3 次——这是高质量数据收益最大的地方。总重复不超过约 4–5 个 epoch。监控：这部分数据的训练 loss 与 held-out loss 的差距（是否开始记忆）、下游表现。可以用改写（合成 rephrasing）生成多个版本来增加多样性，从而减少逐字重复。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.8</b> · 难度 ★★ · 超参迁移</div>
+<p>You tuned the learning rate on a 125M model. How do you set it for a 7B model?</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>如果用 μP：模型写成 μP 形式，基础宽度对应 125M 模型，最优 lr 直接迁移（隐藏层 lr 按宽度比例自动缩小），init 和乘子也一起迁移；深度变化大时注意深度方向的缩放规则，并在目标规模做短程 sanity check。如果是标准参数化：不能直接用；在 3–4 个规模上扫 lr，拟合最优 lr 关于 N（或 C）的幂律外推，并参考同类公开模型（7–8B 常见峰值 lr ~3e-4）。batch size 也需要相应调整（更大模型、更大算力 → 更大 batch）。weight decay、warmup 长度不受 μP 保证，需要单独考虑。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.9</b> · 难度 ★★ · loss 平台期</div>
+<p>Training loss has been flat for 20k steps at constant LR in a WSD schedule. Is something wrong?</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>不一定。WSD 平台期 loss 本来就下降缓慢，因为高 lr 下参数在谷壁间振荡，loss 中含有"振荡噪声"；做一个短的试验性 cooldown（例如从当前 checkpoint 分叉，用 10% 的长度衰减）就能看到真实进展——若 cooldown 后 loss 明显低于上一次 cooldown，说明模型在进步。真正的问题信号：各领域验证 loss 不降、grad norm 异常、数据加载在重复同一部分、lr 过高导致 loss 高位徘徊（可以对比小规模的 lr 敏感度曲线）。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.10</b> · 难度 ★★ · 代码模型目标</div>
+<p>You are pretraining a code model for an IDE assistant. What changes to the objective and data?</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>(1) 加 FIM 变换（PSM/SPM 格式，一定比例的样本），支持光标处补全；(2) 数据：去重（代码重复非常严重）、许可证过滤、去掉自动生成/压缩代码、按仓库组织上下文（仓库级拼接以学习跨文件依赖）、保留自然语言（文档、issue）以维持指令理解；(3) tokenizer 要高效处理空白与缩进；(4) 长上下文对仓库级补全很重要；(5) 可以考虑 multi-token prediction（代码上收益报告较好，并能加速推理）；(6) 评估用 HumanEval/MBPP 类功能正确性测试 + FIM 专用评测，注意去污染。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.11</b> · 难度 ★★★ · 长上下文</div>
+<p>Extend a 8K-context pretrained model to 128K. Plan it.</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>(1) 位置编码：增大 RoPE base 或用 YaRN 等插值方法；(2) 分阶段：8K → 32K → 64K → 128K，每阶段几十 B tokens，lr 用较小的峰值并 warmup；(3) 数据：在领域平衡前提下上采样长文档（书、长论文、代码仓库），混入短数据，使用 document masking；可加入合成的长依赖任务；(4) 系统：开启 context parallel、activation checkpointing；(5) 每阶段评估：短上下文 benchmark 不退化、RULER 类多 needle/多跳任务、真实长文档 QA；(6) 后训练阶段也要有长上下文 SFT 数据，否则长上下文能力在对齐后会退化。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>场景 10.12</b> · 难度 ★★ · 显存估算</div>
+<p>How much memory do model weights, gradients and optimizer states take for a 70B model with mixed-precision AdamW? How many 80GB GPUs at minimum, ignoring activations?</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>约 16 bytes/param：bf16 权重 2 + bf16 梯度 2 + fp32 master 4 + fp32 m 4 + fp32 v 4。70B × 16 B = 1.12 TB。80 GB/卡 ⇒ 至少 14 张卡（完全切分，ZeRO-3/FSDP），实际还需要激活、通信 buffer、碎片，所以会用更多卡加上张量/流水线并行。见 <a href="m09-distributed.html">09</a>。</p>
+</div></details></div>
+
+<!-- ============================ CHEAT SHEET ============================ -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚过一遍。</p>
+<div class="table-wrap"><table>
+  <tr><th>主题</th><th>必须记住</th></tr>
+  <tr><td>目标</td><td>\(\mathcal{L}=-\frac1T\sum_t\log p_\theta(x_t\mid x_{\lt t})\)；= \(H(p_{\text{data}})+\mathrm{KL}(p_{\text{data}}\|p_\theta)\)；PPL = \(e^{\mathcal L}\)；bpb = \(N_{\text{tok}}\mathcal{L}/(N_{\text{byte}}\ln2)\)</td></tr>
+  <tr><td>算力</td><td>训练 \(C\approx6ND\)（前向 2N + 反向 4N）；推理 ≈ 2N/token；MoE 用激活参数</td></tr>
+  <tr><td>Kaplan 2020</td><td>\(\alpha_N\approx0.076,\ \alpha_D\approx0.095\)；\(N\propto C^{0.73}\)（偏向大模型）</td></tr>
+  <tr><td>Chinchilla 2022</td><td>\(L=E+A/N^\alpha+B/D^\beta\)；\(N^*\propto C^{\beta/(\alpha+\beta)}\approx C^{0.5}\)；≈20 tokens/param；\(N\approx\sqrt{C/120}\)；70B/1.4T ≈ 5.9e23 FLOPs 胜 280B Gopher</td></tr>
+  <tr><td>差异原因</td><td>schedule 未匹配长度、non-embedding 参数 + 小规模、最后一层 FLOPs、warmup 过长、超参未按规模调</td></tr>
+  <tr><td>Over-training</td><td>推理占主导 ⇒ 更小更久；Llama 3 8B ~15T tokens（~1900 tok/param）</td></tr>
+  <tr><td>重复数据</td><td>≤4 epoch ≈ 新数据（Muennighoff 2023），之后收益递减</td></tr>
+  <tr><td>涌现</td><td>Wei 2022 跳变 vs Schaeffer 2023 指标伪影；用连续指标预测</td></tr>
+  <tr><td>数据管线</td><td>URL → 抽取 → LID → 启发式 → 去重 → 质量分类器 → 毒性/PII → 去污染 → 配比</td></tr>
+  <tr><td>FineWeb</td><td>15T tokens / 96 快照；Edu：Llama-3-70B 标注 → 分类器 → ≥3 分，1.3T tokens；按快照去重优于全局</td></tr>
+  <tr><td>MinHash</td><td>\(\Pr[\min h(S_1)=\min h(S_2)]=J\)；LSH \(P(s)=1-(1-s^r)^b\)；阈值 \(\approx(1/b)^{1/r}\)；FineWeb 14×8</td></tr>
+  <tr><td>配比</td><td>DoReMi（280M 代理 + Group DRO，excess loss）；RegMix（512 个 1M 模型 + 回归）</td></tr>
+  <tr><td>模型崩溃</td><td>替换 ⇒ 尾部消失；累积真实 + 合成 ⇒ 误差有界</td></tr>
+  <tr><td>AdamW</td><td>β=(0.9, 0.95)，ε=1e-8，wd=0.1（norm/bias 不衰减），clip 1.0；~16 bytes/param</td></tr>
+  <tr><td>Schedule</td><td>warmup 数千步；cosine 到 10%；WSD：最后 ~10% 衰减，可从平台分叉</td></tr>
+  <tr><td>Batch</td><td>\(B_{\text{noise}}=\mathrm{tr}\Sigma/|G|^2\)；临界 batch 随 loss 下降而增大 ⇒ batch ramp（Llama 3 405B：4M→8M→16M tokens）</td></tr>
+  <tr><td>μP</td><td>更新与输入相关 ⇒ \(\Delta Wx=\Theta(\eta n)\)；隐藏/输出层 Adam lr ∝ 1/width，attention 1/d；迁移 lr/init，不保证 wd/深度</td></tr>
+  <tr><td>Spike 成因</td><td>lr 高、attention logit 增长、输出 logit 漂移、离群特征、坏 batch、Adam 二阶矩过小</td></tr>
+  <tr><td>Spike 缓解</td><td>QK-norm、z-loss（PaLM 1e-4）、soft-cap（Gemma 2：50/30）、norm 位置、β2=0.95、rewind ~100 步 + skip 200–500 batch</td></tr>
+  <tr><td>监控</td><td>逐层 grad norm、update/param、attention entropy/max logit、\(\log Z\)、激活 max、clip 比例、MFU</td></tr>
+  <tr><td>长上下文</td><td>短 context 预训练 → 分阶段扩展（Llama 3：8K→128K，6 阶段，~800B tokens）；RoPE base/插值；RULER &gt; NIAH</td></tr>
+  <tr><td>阶段</td><td>pretrain → annealing/mid-training（高质量数据 + lr→0，checkpoint 平均/souping）→ 长上下文 → SFT/RL</td></tr>
+  <tr><td>蒸馏</td><td>软标签 CE = KL(teacher‖student)+常数；Gemma 2 2B/9B 蒸馏，27B 从头</td></tr>
+  <tr><td>MFU</td><td>tokens/s × 6N ÷ 峰值；PaLM 46.2%；HFU 包含重算</td></tr>
+</table></div>
+
+<h3 id="s-faq" style="margin-top:28px">高频面试题清单</h3>
+<div class="table-wrap"><table>
+  <tr><th>问题</th><th>看这里</th></tr>
+  <tr><td>Why does next-token prediction lead to general capabilities?</td><td><a href="#c-ntp">NTP 与 NLL</a></td></tr>
+  <tr><td>How do you handle variable-length documents in pretraining?</td><td><a href="#c-packing">Packing 与 mask</a></td></tr>
+  <tr><td>Where does 6ND come from?</td><td><a href="#c-6nd">C ≈ 6ND</a></td></tr>
+  <tr><td>Explain Chinchilla scaling and derive the optimal N.</td><td><a href="#c-chinchilla">Chinchilla</a></td></tr>
+  <tr><td>Why did Kaplan and Chinchilla disagree?</td><td><a href="#c-kaplan-vs-chin">Kaplan vs Chinchilla</a></td></tr>
+  <tr><td>Why train Llama 8B on 15T tokens?</td><td><a href="#c-overtrain">Over-training</a></td></tr>
+  <tr><td>We're running out of data. What now?</td><td><a href="#c-dataconstrained">数据受限</a>、<a href="#c-synthetic">合成数据</a></td></tr>
+  <tr><td>Are emergent abilities real?</td><td><a href="#c-emergence">涌现之争</a></td></tr>
+  <tr><td>How would you fit a scaling law?</td><td><a href="#c-fit">拟合方法</a></td></tr>
+  <tr><td>Design a pretraining data pipeline.</td><td><a href="#c-pipeline">管线</a>、<a href="#c-quality">质量过滤</a></td></tr>
+  <tr><td>Explain MinHash / LSH.</td><td><a href="#c-dedup">去重</a></td></tr>
+  <tr><td>How do you choose the data mixture?</td><td><a href="#c-mixture">配比</a></td></tr>
+  <tr><td>Give me a reasonable set of pretraining hyperparameters.</td><td><a href="#c-adamw">AdamW</a>、<a href="#c-lr-schedule">schedule</a>、<a href="#c-batch">batch</a></td></tr>
+  <tr><td>What is μP and why does it work?</td><td><a href="#c-mup">μP</a></td></tr>
+  <tr><td>Why do loss spikes happen and how do you fix them?</td><td><a href="#c-spike-causes">成因</a>、<a href="#c-mitigate">缓解</a>、<a href="#c-debug-spike">走查</a></td></tr>
+  <tr><td>How do you extend context length?</td><td><a href="#c-longctx">长上下文</a></td></tr>
+  <tr><td>What is mid-training / annealing?</td><td><a href="#c-anneal">Annealing</a></td></tr>
+  <tr><td>How do you compare models with different tokenizers?</td><td><a href="#c-ppl">bpb</a></td></tr>
+  <tr><td>How do you predict downstream performance of a big model?</td><td><a href="#c-loss-downstream">loss → 下游</a></td></tr>
+</table></div>
+
+<div class="callout"><b>相关阅读（可选）。</b>如果对"预训练阶段就引入潜在推理/循环计算"感兴趣，可看 Looped LMs / Ouro（<a href="https://arxiv.org/abs/2510.25741" target="_blank" rel="noreferrer">arXiv 2510.25741</a>），它把迭代式潜在计算放进预训练，与本章的 scaling 与数据讨论互补。</div>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m05" data-title="模块 05 自测卡片"></div>
+<div class="footer-nav"><a href="m04-transformer.html">← 04 Transformer 架构</a><a href="m06-rl-posttraining.html">06 Post-training 与强化学习 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m05.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
