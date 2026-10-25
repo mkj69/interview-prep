@@ -43,7 +43,7 @@ window.MODULES = [
     title: '推理与解码系统',
     desc: '解码策略、KV cache 显存计算、prefill/decode、vLLM、speculative decoding、量化。',
     topics: 'top-p/min-p · KV cache 计算 · 算力 vs 带宽瓶颈 · PagedAttention · speculative decoding · GPTQ/AWQ' },
-  { id: 'm09', num: '09', phase: 'p2', pri: 2, status: 'planned', file: 'modules/m09-distributed.html',
+  { id: 'm09', num: '09', phase: 'p2', pri: 2, status: 'ready', file: 'modules/m09-distributed.html',
     title: '分布式训练与效率',
     desc: '显存构成和估算、各种并行方式、ZeRO/FSDP、激活重计算、通信原语、MFU。',
     topics: '16 字节/参数 · DP/TP/PP/SP/EP · ZeRO-1/2/3 · gradient checkpointing · all-reduce · MFU' },
