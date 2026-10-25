@@ -15,7 +15,7 @@ window.MODULES = [
     title: 'NumPy 与 PyTorch 手感',
     desc: '张量的内存模型、广播、索引、einsum、自动求导、训练循环、混合精度和排错。',
     topics: 'shape/stride/contiguous · 广播 · gather/scatter · einsum · autograd · nn.Module · 训练循环 · bf16/fp16 · 排错' },
-  { id: 'm02', num: '02', phase: 'p1', pri: 2, status: 'planned', file: 'modules/m02-math-ml.html',
+  { id: 'm02', num: '02', phase: 'p1', pri: 2, status: 'ready', file: 'modules/m02-math-ml.html',
     title: '数学与经典机器学习',
     desc: '线性代数、概率统计、信息论、优化器和经典 ML，重点是和 LLM 训练直接相关的部分。',
     topics: 'SVD · MLE/MAP · KL（前向/反向）· 重要性采样 · Adam/AdamW · 学习率调度 · 偏差方差' },
