@@ -1,0 +1,1160 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 · 推理与解码系统 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m08">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 08 · Phase 2</div>
+<h1 class="title">推理与解码<em>系统</em></h1>
+<p class="lede">模型训练完之后，每一个 token 都要“花钱”生成。这一章讲两件事：<b>怎么选下一个 token</b>（解码策略），以及<b>怎么又快又省地把 token 生出来</b>（KV cache、roofline 性能模型、vLLM 式服务系统、speculative decoding、量化）。这是 Research Scientist 面试里“系统直觉”最集中的地方：面试官很喜欢让你当场算显存、算吞吐、解释为什么 decode 慢。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完你应该能：(1) 写出 temperature / top-k / top-p / min-p 的实现并说清楚它们的区别和顺序；(2) 闭眼写出 KV cache 显存公式，并当场算出 LLaMA-2-7B 在 4k/128k 下的 KV 大小；(3) 用 roofline 解释“prefill 是 compute-bound、decode 是 memory-bandwidth-bound”，推出 batch=1 时 \( \text{tokens/s} \approx \text{BW} / \text{weight bytes} \)；(4) 讲清 continuous batching、PagedAttention、prefix caching、chunked prefill、PD 分离各解决什么问题；(5) 完整证明 speculative sampling 输出分布等于目标模型分布，并推出期望加速比；(6) 解释 GPTQ / AWQ / SmoothQuant / LLM.int8 的核心思想，算出 70B 模型在不同 bit 下的显存。<br><br>
+<b>建议顺序：</b>§1 解码（最基础，常考实现）→ §2 KV cache（必算）→ §3 性能模型（理解后面一切的钥匙）→ §4 服务系统 → §5 speculative decoding（常考证明）→ §6 量化 → §7 其他加速 → §8 场景题（模拟面试）→ §9 练习。<br>
+<b>和其他模块的关系：</b>attention / GQA / MLA 的结构细节在 <a href="m04-transformer.html">模块 04</a>；test-time compute（best-of-N、self-consistency）在 <a href="m07-reasoning.html">模块 07</a>；训练侧的显存与并行（ZeRO、TP、PP）在 <a href="m09-distributed.html">模块 09</a>；RL rollout 的吞吐（为什么 RLHF 训练时间大部分花在生成上）和本章直接相关，见 <a href="m06-rl-posttraining.html">模块 06</a>。</div>
+
+<!-- ============================ §1 ============================ -->
+<h2 class="sec" id="s-decoding"><span class="num">§1 · DECODING STRATEGIES</span>解码策略：怎么选下一个 token</h2>
+<p class="sec-intro">语言模型每一步输出一个 logits 向量 \( z \in \mathbb{R}^{V} \)。“解码”就是把这个向量变成一个具体 token 的规则。规则分两类：<b>确定性搜索</b>（greedy、beam）和<b>随机采样</b>（temperature + 各种截断）。面试常问：各方法的数学定义、为什么 beam search 不适合开放式生成、top-p 和 min-p 的区别、多个处理器的顺序，以及“给你 logits 写一个 sampler”。</p>
+
+<section class="concept" id="c-greedy-beam">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Greedy 与 Beam search：为什么“最可能的序列”不等于“最好的文本”</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Greedy 每步取 argmax；beam search 保留 B 条累计 log-prob 最高的前缀，近似求最大概率序列。它们适合“答案唯一”的任务（翻译、ASR、短答案），但在开放式生成里会产生重复、乏味的文本，因为人类文本本来就不是最高概率的序列。</p><p class="en">Greedy and beam search approximate the mode of the sequence distribution; that works for closed-ended tasks but yields repetitive, bland text for open-ended generation, because human text is not the highest-likelihood text.</p></div>
+  <div class="deep">
+    <p><b>Greedy：</b>\( y_t = \arg\max_v p(v \mid y_{&lt;t}) \)。最便宜，确定性，但它是“局部最优”：第一步选了概率 0.4 的词，可能导致后面整条序列概率很低，而第一步选 0.35 的词后面反而很顺。</p>
+    <p><b>Beam search（宽度 B）：</b>每步把 B 条前缀各扩展 V 个候选，得到 \( B\times V \) 条，按累计分数 \( \sum_t \log p(y_t\mid y_{&lt;t}) \) 保留 top-B。遇到 EOS 的序列移到完成列表。由于每多一个 token 分数都会变小（log-prob 为负），beam search <b>偏爱短序列</b>，所以通常加<b>长度归一化</b>：分数除以 \( |y|^{\alpha} \)（α 常取 0.6–1.0）。</p>
+    <p><b>为什么 beam search 在开放式生成里效果差？</b></p>
+    <ul>
+      <li><b>重复退化（degeneration）：</b>一旦模型开始重复一句话，重复会自我强化（重复后的下一句重复概率更高），最大似然搜索正好掉进这个陷阱。<a href="https://arxiv.org/abs/1904.09751" target="_blank" rel="noreferrer">Holtzman et al. 2019（The Curious Case of Neural Text Degeneration）</a>展示了 beam search 生成文本的逐 token 概率远高于人类文本，而人类文本的概率起伏很大——人类会说“出人意料”的词。</li>
+      <li><b>众数不典型：</b>在高维分布里，最高概率的单个序列往往不是“典型”的样本（类似高维高斯的众数在原点，但样本几乎都在一个球壳上）。最可能的回答常常是空洞、通用的。</li>
+      <li><b>多样性差：</b>B 条 beam 往往只在最后几个词不同。</li>
+      <li><b>成本：</b>B 倍的 KV cache 和计算。</li>
+    </ul>
+    <p><b>什么时候还用确定性解码？</b>机器翻译、语音识别、摘要等“输出空间窄”的任务；LLM 评测时为了可复现常用 greedy（temperature=0）；推理模型做数学题时，有些模型官方建议用采样（例如 temperature≈0.6）而不是 greedy，因为 greedy 更容易陷入无限重复——具体以各模型的官方推荐为准。</p>
+    <div class="box why"><span class="lbl">直觉</span>把解码想成从分布里“取一个代表”。Greedy/beam 取的是众数（mode），采样取的是一个典型样本。对于“2+2=?”这种尖锐分布，众数就是正确答案；对于“写一个故事”这种平坦分布，众数是最无聊的故事。</div>
+  </div>
+  <details class="deep"><summary>代码：beam search（numpy，带长度归一化）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+
+def beam_search(step_logprobs, bos, eos, beam=3, max_len=10, alpha=0.7):
+    """step_logprobs(prefix) -&gt; (V,) log-probs of next token."""
+    beams = [([bos], 0.0)]             # (tokens, cumulative logprob)
+    finished = []
+    for _ in range(max_len):
+        cand = []
+        for toks, score in beams:
+            lp = step_logprobs(toks)
+            for v in np.argsort(-lp)[:beam]:     # only need top-B per beam
+                cand.append((toks + [int(v)], score + lp[v]))
+        cand.sort(key=lambda c: -c[1])
+        beams = []
+        for toks, score in cand:
+            (finished if toks[-1] == eos else beams).append((toks, score))
+            if len(beams) == beam:
+                break
+        if not beams:
+            break
+    finished += beams
+    # length normalization: score / len^alpha
+    return max(finished, key=lambda c: c[1] / (len(c[0]) - 1) ** alpha)[0]</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul><li>“beam 越大越好”：在 MT 里 beam 增大到一定程度后 BLEU 反而下降（beam search curse），因为找到了更多“概率高但短/空”的输出。</li>
+    <li>“temperature=0 就是采样的一种”：数学上 T→0 的极限是 argmax，但实现上要特判（除以 0）。</li>
+    <li>“greedy 一定可复现”：在 GPU 上，batch 组成不同会改变浮点归约顺序，logits 有微小差异，argmax 遇到近似并列时可能翻转——服务端即使 T=0 也不一定 bit 级可复现。</li></ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Greedy decoding takes the argmax at each step, and beam search keeps the top-B partial sequences by cumulative log-probability, so both approximate the most likely sequence. That is great for tasks with a narrow output space like translation or speech recognition. For open-ended generation it backfires: the highest-likelihood text tends to be generic and repetitive, and repetition reinforces itself. Holtzman et al. showed human text actually has much lower and more variable per-token probability than beam output. So for chat and creative generation we sample instead, usually with temperature plus a truncation rule like top-p or min-p.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does beam search favor short outputs, and how do you fix it?</b><details><summary>思路</summary><div class="inner">每个 token 的 log-prob ≤ 0，累加只会变小，所以越短分数越高、越容易早早生成 EOS。修正：长度归一化（除以 \( |y|^\alpha \)）、长度惩罚、或设置最小长度。</div></details></li>
+    <li><b>What is the time and memory cost of beam search?</b><details><summary>思路</summary><div class="inner">每步做 B 次前向（可以 batch 起来），KV cache 是 B 份；选 top-B 需要在 B×V 个候选中做 top-k，可以先对每条 beam 取 top-B 再合并（B² 个候选），复杂度 \(O(BV + B^2\log B)\)。beam 之间共享前缀，PagedAttention 可以用 copy-on-write 共享 KV block（§4）。</div></details></li>
+    <li><b>If greedy decoding loops forever on a math problem, what would you try?</b><details><summary>思路</summary><div class="inner">改用采样（适中 temperature，如 0.6–0.8，加 top-p 0.95）；加轻微 repetition/presence penalty（但对代码/数学要小心，合法重复也会被惩罚）；设置 max tokens；检查是否 chat template 错误导致模型“不知道该停”；从训练侧看可能是 SFT 数据里缺少 EOS 或 RL 奖励鼓励过长。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-temperature">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Temperature：数学定义与极限</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\( p_i(T) = \mathrm{softmax}(z/T)_i \)。T&lt;1 让分布更尖（更保守），T&gt;1 让分布更平（更多样）；T→0 退化为 argmax，T→∞ 退化为均匀分布。Temperature 不改变 token 的排名。</p><p class="en">Temperature divides the logits before softmax: below 1 sharpens, above 1 flattens; it never changes the ranking, only how much mass the tail gets.</p></div>
+  <div class="deep">
+    <p>$$ p_i(T) = \frac{\exp(z_i/T)}{\sum_j \exp(z_j/T)} $$</p>
+    <p><b>两个概率的比值：</b>\( \dfrac{p_i}{p_j} = \exp\!\big(\tfrac{z_i - z_j}{T}\big) \)。T 越小，logit 差距被放大越多，最大的那个占据几乎全部质量；T 越大，差距被压缩，所有 token 越来越接近。</p>
+    <p><b>等价视角：</b>\( p(T) \propto p(1)^{1/T} \)，即把原始概率取 \(1/T\) 次方再归一化。T=0.5 就是“把概率平方再归一化”。</p>
+    <p><b>熵随 T 单调递增</b>（对非均匀的 logits 严格递增）。所以 temperature 是控制“探索/多样性”的一个旋钮：RL rollout 常用 T=1.0 保持与策略一致（采样分布就是要优化的 \(\pi_\theta\)；用别的 T 采样会引入 off-policy 偏差），评测常用 T=0 或较低 T。</p>
+    <p><b>和训练的联系：</b>知识蒸馏里也有 temperature（Hinton 2015）：teacher 和 student 的 logits 都除以 T 后再算 KL，让 student 学到“暗知识”（非最大类之间的相对大小），损失乘 \(T^2\) 来保持梯度尺度。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul><li>“提高 temperature 会让模型更有创造力而不出错”：T 过高会把质量分给成千上万个长尾垃圾 token（vocab 动辄 100k+），一旦采到一个就可能整句崩坏。这正是截断方法（top-k/top-p/min-p）存在的原因。</li>
+    <li>“T 改变排名”：不会，只改变形状。截断方法则会直接删除 token。</li>
+    <li>在 RL 里用 T≠1 采样却按 T=1 的 log-prob 计算 ratio：训练和采样分布不一致，是常见 bug。</li></ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Temperature just divides the logits by T before the softmax. Equivalently, it raises each probability to the power one over T and renormalizes. As T goes to zero it becomes greedy argmax, and as T goes to infinity it becomes uniform; entropy increases monotonically with T. It never changes which token is ranked first, only how much probability mass leaks into the tail. Because a large vocabulary has a long tail of junk tokens, high temperature is usually paired with a truncation rule like top-p or min-p.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why should RL rollouts typically use temperature 1?</b><details><summary>思路</summary><div class="inner">Policy gradient 的期望是对 \(\pi_\theta\) 取的。如果用 \(\pi_\theta^{(T)}\) 采样，样本来自另一个分布，若计算 log-prob 时没有用同样的 T，梯度就有偏（off-policy）。有些系统会用 T≠1 然后在 logprob 计算中也除以 T，保持一致。另外截断采样（top-p）在 RL rollout 中也会造成采样分布和训练分布不一致。</div></details></li>
+    <li><b>Show that entropy increases with temperature.</b><details><summary>思路</summary><div class="inner">令 \(\beta = 1/T\)，\(p_i \propto e^{\beta z_i}\)，\(\log Z(\beta) = \log\sum e^{\beta z_i}\)。熵 \(H = \log Z - \beta\, \mathbb{E}_p[z]\)。求导：\(dH/d\beta = \mathbb{E}[z] - \mathbb{E}[z] - \beta\,\mathrm{Var}_p(z) = -\beta\,\mathrm{Var}_p(z) \le 0\)（用到 \(d\log Z/d\beta = \mathbb{E}[z]\)，\(d\mathbb{E}[z]/d\beta = \mathrm{Var}(z)\)）。所以 H 随 β 递减，即随 T 递增。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-truncation">
+  <div class="concept-head"><span class="pri p1">★</span><h3>截断采样：top-k、top-p (nucleus)、min-p、typical</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>截断采样把“长尾”token 的概率置零再重新归一化。top-k 保留固定 k 个；top-p 保留累计概率刚好达到 p 的最小集合（大小随分布自适应）；min-p 保留概率 ≥ \(p_{\min}\cdot p_{\max}\) 的 token（阈值随模型置信度缩放）。</p><p class="en">Truncation zeroes out the tail and renormalizes: top-k keeps a fixed count, top-p keeps the smallest set whose mass reaches p, and min-p keeps tokens whose probability is at least a fraction of the top token's probability.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>方法</th><th>保留集合</th><th>自适应？</th><th>弱点</th></tr>
+      <tr><td>top-k</td><td>概率最大的 k 个</td><td>否</td><td>分布尖时 k 太大（引入垃圾），分布平时 k 太小（砍掉合理候选）</td></tr>
+      <tr><td>top-p</td><td>按概率降序，累计和首次 ≥ p 的最小前缀</td><td>是（集合大小随熵变化）</td><td>高 temperature 下分布被拉平，达到 p 需要包含大量尾部 token</td></tr>
+      <tr><td>min-p</td><td>\( \{ i : p_i \ge p_{\min}\cdot \max_j p_j \} \)</td><td>是（阈值随置信度变化）</td><td>效果争议：有后续工作质疑其收益被夸大</td></tr>
+      <tr><td>typical (η)</td><td>\( \lvert -\log p_i - H(p) \rvert \) 最小、累计达到 τ 的集合</td><td>是</td><td>实现稍复杂；会删掉最可能的 token</td></tr>
+      <tr><td>ε / η-sampling</td><td>概率低于绝对阈值（或与熵相关的阈值）的删掉</td><td>部分</td><td>较少用</td></tr>
+    </table></div>
+    <p><b>top-p 的例子：</b>概率 [0.5, 0.2, 0.15, 0.1, 0.05]，p=0.6。降序累计：0.5（&lt;0.6，继续），0.7（≥0.6，停）。保留前两个，重新归一化为 [0.714, 0.286]。注意“越过 p 的那个 token 也要保留”，否则 p=0.6 时只剩一个 token。</p>
+    <p><b>min-p 的直觉（<a href="https://arxiv.org/abs/2407.01082" target="_blank" rel="noreferrer">Nguyen et al., arXiv 2407.01082, ICLR 2025</a>）：</b>模型很确定时（\(p_{\max}=0.9\)），阈值 \(0.1\times0.9=0.09\)，几乎只留第一名；模型不确定时（\(p_{\max}=0.1\)），阈值 0.01，保留很多候选。作者声称它在高 temperature 下比 top-p 更能兼顾创造性与连贯性。但 <a href="https://arxiv.org/abs/2506.13681" target="_blank" rel="noreferrer">后续工作（arXiv 2506.13681）</a>对其实验和结论提出了质疑。面试中提到 min-p 时，给出定义和直觉，再说一句“its claimed gains have been debated”会显得很成熟。</p>
+    <p><b>typical sampling（<a href="https://arxiv.org/abs/2202.00666" target="_blank" rel="noreferrer">Meister et al. 2022</a>）：</b>信息论动机——人类倾向于让每个词携带“接近期望信息量”的信息，所以保留 surprisal \(-\log p_i\) 接近熵 \(H\) 的 token。</p>
+    <div class="box why"><span class="lbl">直觉</span>三个方法都在回答“尾巴从哪开始”。top-k 说“第 k 名之后”；top-p 说“凑够 p 的概率质量之后”；min-p 说“比第一名差 1/p_min 倍以上的”。分布形状差异很大时，固定 k 是最差的选择。</div>
+  </div>
+  <details class="deep"><summary>代码：PyTorch 批量 sampler（temperature → top-k → top-p → min-p）</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+def sample_logits(logits, temperature=1.0, top_k=0, top_p=1.0, min_p=0.0):
+    """logits: (B, V). Returns next token ids (B,)."""
+    if temperature == 0:
+        return logits.argmax(dim=-1)
+    logits = logits / temperature
+    if top_k &gt; 0:
+        kth = torch.topk(logits, top_k, dim=-1).values[..., -1, None]       # (B,1)
+        logits = logits.masked_fill(logits &lt; kth, float('-inf'))
+    if top_p &lt; 1.0:
+        sorted_logits, idx = torch.sort(logits, descending=True, dim=-1)
+        probs = sorted_logits.softmax(dim=-1)
+        cum = probs.cumsum(dim=-1)
+        remove = (cum - probs) &gt;= top_p             # mass before this token already &gt;= p
+        sorted_logits = sorted_logits.masked_fill(remove, float('-inf'))
+        logits = torch.full_like(logits, float('-inf')).scatter(-1, idx, sorted_logits)
+    if min_p &gt; 0.0:
+        probs = logits.softmax(dim=-1)
+        thresh = min_p * probs.max(dim=-1, keepdim=True).values
+        logits = logits.masked_fill(probs &lt; thresh, float('-inf'))
+    probs = logits.softmax(dim=-1)
+    return torch.multinomial(probs, num_samples=1).squeeze(-1)</code></pre>
+  <p>要点：(1) 用 <code>cum - probs</code>（该 token 之前的累计质量）判断，保证越过 p 的 token 被保留，也保证第一名永远保留；(2) 排序后再 <code>scatter</code> 回原顺序；(3) 用 <code>-inf</code> 而不是 0 屏蔽，softmax 后自然为 0；(4) top-k 中并列时 <code>&lt; kth</code> 可能保留多于 k 个，可以接受。等价 numpy 版本已用断言测试（包括 top-k=2 时经验频率 ≈ 0.714/0.286）。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul><li>top-p 实现时用 <code>cum &gt; p</code> 删除——会把越过 p 的那个 token 删掉，p 很小时可能把所有 token 都删光（必须保证至少保留一个）。</li>
+    <li>忘记在截断后重新归一化（用 -inf + softmax 自动完成）。</li>
+    <li>认为 top-p 和 temperature 可交换：先 temperature 再 top-p，与先 top-p 再 temperature，保留集合不同（temperature 改变了形状，因此改变了累计和）。</li></ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Top-k keeps a fixed number of candidates, which is brittle because the right number depends on how peaked the distribution is. Top-p, or nucleus sampling, keeps the smallest set of tokens whose cumulative probability reaches p, so the candidate set grows when the model is uncertain and shrinks when it's confident. Min-p sets the threshold relative to the top token: keep anything with probability at least min-p times the max probability, which scales the cutoff with model confidence and is claimed to work better at high temperature, although those gains have been debated. In all cases you mask the rest to minus infinity and renormalize with a softmax.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Is top-p sampling with p=1 and T=1 an unbiased sample from the model?</b><details><summary>思路</summary><div class="inner">是的，什么都没截断，就是原始分布。只要 p&lt;1 或 k&lt;V，采样分布就偏离模型分布，序列级别的分布也不再等于模型定义的分布（这对 RL、对“用采样估计期望”的场景很重要）。</div></details></li>
+    <li><b>What is the complexity of top-p and how can it be made faster?</b><details><summary>思路</summary><div class="inner">全排序 \(O(V\log V)\)，V~150k 时每步都排序在 GPU 上不便宜。优化：先 top-k（如 k=1000）预过滤再做 top-p；或者基于阈值的二分/拒绝采样式 kernel（例如 FlashInfer 提供不排序的 sampling kernel）。</div></details></li>
+    <li><b>Construct a case where top-k is bad and top-p is good.</b><details><summary>思路</summary><div class="inner">k=50：在“The capital of France is”之后分布极尖（Paris 0.97），top-k 仍保留 50 个，可能采到垃圾；在“My favorite food is”之后分布平坦（上千个合理选项），top-k=50 又过度截断。top-p=0.9 在前者只保留 1 个，后者保留数百个。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-penalties">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>重复惩罚：repetition / frequency / presence penalty</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>repetition penalty（CTRL 式）是乘法：对出现过的 token，正 logit 除以 θ、负 logit 乘以 θ；frequency penalty 按出现次数线性减 logit；presence penalty 只要出现过就减一个常数。</p><p class="en">Repetition penalty rescales logits of seen tokens multiplicatively; frequency penalty subtracts proportional to the count; presence penalty subtracts a constant once a token has appeared.</p></div>
+  <div class="deep">
+    <p>设 token i 在已生成文本（有的实现包含 prompt）中出现了 \(c_i\) 次：</p>
+    <ul>
+      <li><b>Repetition penalty</b>（<a href="https://arxiv.org/abs/1909.05858" target="_blank" rel="noreferrer">CTRL, Keskar et al. 2019</a>，θ≈1.2）：\( z_i \leftarrow z_i/\theta \) 若 \(z_i&gt;0\)，否则 \( z_i \leftarrow z_i\cdot\theta \)（\(c_i&gt;0\) 时）。为什么区分正负？如果对负 logit 也除以 θ，它会变大（更接近 0），反而<b>提高</b>了概率。</li>
+      <li><b>Frequency penalty</b>（OpenAI API 风格）：\( z_i \leftarrow z_i - \alpha_{\text{freq}}\, c_i \)。出现越多惩罚越重。</li>
+      <li><b>Presence penalty</b>：\( z_i \leftarrow z_i - \alpha_{\text{pres}}\,\mathbb{1}[c_i&gt;0] \)。鼓励引入新话题。</li>
+      <li><b>no_repeat_ngram_size</b>：硬性禁止重复出现某个 n-gram（常见于摘要任务）。</li>
+    </ul>
+    <p><b>注意：</b>代码、数学、JSON 天然需要重复（变量名、括号、数字），惩罚会伤害正确性。推理模型通常不建议使用重复惩罚。</p>
+  </div>
+  <details class="deep"><summary>代码（numpy，已测试）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+
+def apply_penalties(logits, prev_ids, rep=1.0, freq=0.0, pres=0.0):
+    logits = logits.copy()
+    ids, counts = np.unique(np.asarray(prev_ids, dtype=int), return_counts=True)
+    if len(ids):
+        l = logits[ids]
+        logits[ids] = np.where(l &gt; 0, l / rep, l * rep)          # CTRL-style
+        logits[ids] -= freq * counts + pres * (counts &gt; 0)      # OpenAI-style
+    return logits
+
+lg = np.array([2.0, -1.0, 0.5])
+assert np.allclose(apply_penalties(lg, [0, 1, 1], rep=2.0), [1.0, -2.0, 0.5])
+assert np.allclose(apply_penalties(lg, [0, 1, 1], freq=0.5, pres=1.0), [0.5, -3.0, 0.5])</code></pre>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There are three common penalties. The CTRL-style repetition penalty divides positive logits and multiplies negative logits of previously seen tokens by a factor like 1.2, so it always lowers their probability. The frequency penalty subtracts a value proportional to how many times the token has appeared, and the presence penalty subtracts a constant once it has appeared at all. They help with loops in open-ended text, but they can hurt code and math, where legitimate repetition is everywhere.</p></div>
+</section>
+
+<section class="concept" id="c-constrained">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>约束解码（Constrained / grammar-guided decoding）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每一步根据语法（正则、JSON schema、CFG）的当前状态算出“合法 token 集合”，把非法 token 的 logit 设为 −∞，从而保证输出 100% 符合格式。</p><p class="en">At each step, compute the set of tokens that keep the output a valid prefix under a grammar, and mask everything else to minus infinity.</p></div>
+  <div class="deep">
+    <p><b>原理：</b>把正则/JSON schema 编译成有限状态机（FSM），CFG 则用下推自动机。难点在于 <b>token ≠ 字符</b>：一个 token 可能跨越多个语法状态。<a href="https://arxiv.org/abs/2307.09702" target="_blank" rel="noreferrer">Willard &amp; Louf 2023（Outlines）</a>的做法是预先为每个 FSM 状态建立“合法 token 索引”，解码时 O(1) 查表得到 mask。后续系统（如 XGrammar、llguidance）进一步加速 CFG 的情形。</p>
+    <p><b>代价与陷阱：</b></p>
+    <ul>
+      <li><b>分布扭曲：</b>mask 后重新归一化，得到的是“局部条件化”的分布，并不等于“模型分布在满足约束的序列上的条件分布”（后者需要考虑未来能否完成）。模型可能被逼进一个它本来不会走的分支，导致内容质量下降。</li>
+      <li><b>Tokenization 边界：</b>强制的 token 切分可能和训练时的自然切分不一致（token healing 问题）。</li>
+      <li>格式过严时，可以让模型先自由“思考”，最后一段再加约束。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Constrained decoding compiles a regex, JSON schema or grammar into an automaton, and at each step masks out every token that would make the output an invalid prefix. The engineering trick is precomputing, for each automaton state, which vocabulary tokens are allowed, since tokens don't align with grammar symbols. It guarantees well-formed output, but it's a greedy, local projection, so it can distort the distribution and push the model into awkward continuations; that's why people often let the model reason freely first and constrain only the final answer.</p></div>
+</section>
+
+<section class="concept" id="c-contrastive">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Contrastive decoding 及其他变体（加分）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Contrastive decoding 用“大模型 log-prob − 小模型 log-prob”打分，并只在大模型认为足够可能的 token 中选，放大大模型相对小模型“额外懂的东西”。</p><p class="en">Contrastive decoding scores tokens by expert minus amateur log-probability, restricted to tokens the expert finds plausible.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2210.15097" target="_blank" rel="noreferrer">Li et al. 2022</a>：\( \text{score}(i) = \log p_{\text{exp}}(i) - \log p_{\text{ama}}(i) \)，候选限制在 \( \{i: p_{\text{exp}}(i) \ge \alpha \max_j p_{\text{exp}}(j)\} \)（这个 plausibility 约束和 min-p 的形式一样）。直觉：重复、通用的错误小模型也会犯，相减把它们抵消。相关思想：DoLa（对比同一模型的不同层）、classifier-free guidance 用于 LM、logit 算术（\(z_{\text{base}} + \lambda (z_{\text{tuned}} - z_{\text{ref}})\)）。</p>
+    <p><b>Self-consistency / best-of-N</b> 也算“解码策略”，但属于 test-time compute，见 <a href="m07-reasoning.html">模块 07</a>。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Contrastive decoding runs a big expert model and a small amateur model, and picks tokens that maximize the difference in their log-probabilities, but only among tokens the expert already considers plausible. The idea is that generic failure modes like repetition are shared by both models and cancel out, while what's left is what the big model knows beyond the small one.</p></div>
+</section>
+
+<section class="concept" id="c-processor-order">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Logits 处理器的顺序与一个完整 sampler</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>常见顺序：原始 logits → 约束 mask / 重复惩罚 → temperature → 截断（top-k → top-p / min-p）→ softmax → 采样。顺序不同结果不同，不同框架的默认顺序也不完全一样，需要查文档。</p><p class="en">A typical pipeline is: grammar masks and penalties, then temperature, then truncation, then softmax and sample; order matters and differs slightly across libraries.</p></div>
+  <div class="deep">
+    <p>为什么惩罚放在 temperature 之前？惩罚是在“logit 尺度”上定义的（比如减 0.5），如果先除以 T 再惩罚，惩罚的有效强度就被 T 改变了。为什么截断放在 temperature 之后？这样 temperature 能影响保留集合（高 T 让 top-p 保留更多 token），这是多数实现（如 Hugging Face 的 warper 列表、vLLM 的 sampler）采用的方式；min-p 论文的一个卖点正是“在高 T 下依然稳定”，这依赖于它在 temperature 之后计算阈值时仍是相对阈值。</p>
+    <p><b>一个可以在白板上写的完整 numpy sampler</b>（已测试，含断言）：</p>
+<pre><code class="language-python">def sample_next(logits, prev_ids=(), temperature=1.0, top_k=0, top_p=1.0,
+                min_p=0.0, rep=1.0, freq=0.0, pres=0.0, rng=None):
+    rng = rng or np.random.default_rng()
+    logits = apply_penalties(np.asarray(logits, float), prev_ids, rep, freq, pres)
+    if temperature == 0:                      # greedy
+        return int(np.argmax(logits))
+    logits = logits / temperature
+    logits = top_k_filter(logits, top_k)      # np.where(logits &lt; kth, -inf, logits)
+    logits = top_p_filter(logits, top_p)      # keep if (cum - p_i) &lt; top_p
+    logits = min_p_filter(logits, min_p)      # keep if p_i &gt;= min_p * p_max
+    probs = softmax(logits)
+    return int(rng.choice(len(probs), p=probs))</code></pre>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd apply hard constraints and repetition penalties on the raw logits first, since those are defined on the logit scale. Then divide by temperature, then apply truncation like top-k and top-p, so temperature can influence which tokens survive. Finally softmax and sample with a multinomial. Libraries differ slightly in their default ordering, so when results look odd, the processor order is one of the first things I'd check.</p></div>
+</section>
+
+<!-- ============================ §2 ============================ -->
+<h2 class="sec" id="s-kvcache"><span class="num">§2 · KV CACHE</span>KV cache：推理显存的头号消耗</h2>
+<p class="sec-intro">KV cache 是 LLM 推理最核心的数据结构。面试几乎必考：为什么它有效、prefill 与 decode 的区别、显存公式与数值、怎么压缩（GQA/MQA/MLA/量化/驱逐）。请把公式和两个数字（LLaMA-2-7B 每 token 512 KiB、4k 上下文 2 GiB）背下来。</p>
+
+<section class="concept" id="c-kv-why">
+  <div class="concept-head"><span class="pri p1">★</span><h3>KV cache 为什么成立：因果注意力让过去的 K、V 不再改变</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在 causal decoder 里，位置 t 的 K、V 只依赖于 token \(1..t\)，后面生成新 token 不会改变它们。所以把每层的 K、V 存下来，每步只需为新 token 计算 q、k、v，把每步 attention 从“重算整个序列 \(O(t^2)\)”降到 \(O(t)\)。</p><p class="en">With causal attention, keys and values of past positions never change, so we cache them per layer and only compute projections for the new token, turning each decoding step from quadratic recomputation into linear work.</p></div>
+  <div class="deep">
+    <p><b>推导：</b>第 \(\ell\) 层位置 i 的隐藏状态 \(h_i^{(\ell)}\) 只依赖 \(x_{1..i}\)（因果 mask 保证）。于是 \(k_i^{(\ell)} = W_K h_i^{(\ell-1)}\)、\(v_i^{(\ell)} = W_V h_i^{(\ell-1)}\) 一旦算出就固定。生成第 t+1 个 token 时，新 query \(q_{t+1}\) 需要和所有 \(k_{1..t+1}\) 做点积，加权求和 \(v_{1..t+1}\)：</p>
+    $$ o_{t+1} = \sum_{i=1}^{t+1} \mathrm{softmax}_i\!\Big(\frac{q_{t+1}^\top k_i}{\sqrt{d_h}}\Big)\, v_i $$
+    <p>旧的 \(k_i, v_i\) 直接从 cache 读取。注意 <b>Q 不需要缓存</b>：过去位置的 query 只用于计算过去位置的输出，而过去位置的输出已经算完了。</p>
+    <p><b>计算量对比</b>（生成 n 个 token）：无 cache 时第 t 步要对长度 t 的序列做完整前向，总共 \(\sum_t O(t\cdot N_{\text{params}}) = O(n^2 N)\)；有 cache 时每步只对 1 个 token 做线性层（\(O(N)\)）加上 attention 读 t 个 KV（\(O(t\,d\,L)\)），总共 \(O(nN + n^2 dL)\)。</p>
+    <p><b>为什么双向模型（BERT）不能这样做？</b>新 token 会改变所有旧位置的表示。<b>为什么 RNN 不需要 KV cache？</b>RNN 的“cache”就是固定大小的隐藏状态；transformer 的“状态”随长度线性增长——这正是 linear attention / SSM 想解决的（见模块 04）。</p>
+    <div class="box why"><span class="lbl">直觉</span>KV cache 是“用显存换计算”。代价是：每个序列都要背着一份随长度增长的 cache，这让推理从 compute 问题变成了 memory 问题——本章后面几乎所有优化（GQA、PagedAttention、KV 量化、PD 分离）都在和这份 cache 搏斗。</div>
+  </div>
+  <details class="deep"><summary>代码：带 KV cache 的注意力 + 测试 “有 cache 生成 == 无 cache 生成”</summary><div class="inner">
+<pre><code class="language-python">import torch, torch.nn as nn
+
+class CachedSelfAttention(nn.Module):
+    def __init__(self, d, n_heads):
+        super().__init__()
+        self.h, self.dh = n_heads, d // n_heads
+        self.qkv = nn.Linear(d, 3 * d, bias=False)
+        self.o = nn.Linear(d, d, bias=False)
+
+    def forward(self, x, cache=None):
+        # x: (B, T, d) new tokens; cache: dict with 'k','v' (B, H, S, dh) or None
+        B, T, _ = x.shape
+        q, k, v = self.qkv(x).split(self.h * self.dh, dim=-1)
+        q, k, v = (t.view(B, T, self.h, self.dh).transpose(1, 2) for t in (q, k, v))
+        if cache is not None and 'k' in cache:
+            k = torch.cat([cache['k'], k], dim=2)
+            v = torch.cat([cache['v'], v], dim=2)
+        if cache is not None:
+            cache['k'], cache['v'] = k, v
+        S = k.shape[2]
+        # query i (absolute pos S-T+i) may attend keys 0..S-T+i
+        mask = torch.ones(T, S, dtype=torch.bool, device=x.device).tril(diagonal=S - T)
+        att = (q @ k.transpose(-2, -1)) / self.dh ** 0.5
+        att = att.masked_fill(~mask, float('-inf')).softmax(dim=-1)
+        y = (att @ v).transpose(1, 2).reshape(B, T, -1)
+        return self.o(y)
+
+@torch.no_grad()
+def generate(model, prompt, n_new, use_cache=True):
+    ids = prompt
+    if not use_cache:
+        for _ in range(n_new):
+            nxt = model(ids)[:, -1].argmax(-1, keepdim=True)
+            ids = torch.cat([ids, nxt], dim=1)
+        return ids
+    caches = [dict() for _ in model.attn]
+    logits = model(ids, 0, caches)                     # prefill: whole prompt at once
+    for _ in range(n_new):
+        nxt = logits[:, -1].argmax(-1, keepdim=True)
+        ids = torch.cat([ids, nxt], dim=1)
+        logits = model(nxt, ids.shape[1] - 1, caches)   # decode: one token, absolute position
+    return ids
+
+# test (TinyLM = embeddings + positional embeddings + blocks using CachedSelfAttention):
+# assert torch.equal(generate(m, p, 20, use_cache=False), generate(m, p, 20, use_cache=True))</code></pre>
+  <p>三个最容易写错的点：(1) mask 的偏移：T 个新 query 对 S 个 key，用 <code>tril(diagonal=S-T)</code>；decode 时 T=1，mask 全为 True；(2) 位置编码必须用<b>绝对位置</b> <code>start</code>（RoPE 同理：新 token 的旋转角度是它的绝对位置）；(3) prefill 一次处理整个 prompt。等价的 numpy 实现（2 层、4 头）已验证：生成序列逐 token 相同，且 logits 在 1e-8 内一致。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul><li>“KV cache 也缓存 Q”：不需要。</li>
+    <li>“有了 KV cache，decode 每步就是 O(1)”：线性层是 O(1)（相对序列长度），但 attention 仍要读全部 t 个 KV，长上下文下这部分会主导。</li>
+    <li>“KV cache 只是加速，不影响结果”：数学上等价，但数值上（bf16 下 prefill 一次算 vs 逐个算的归约顺序不同）可能有微小差异。</li></ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In a causal decoder, the key and value at position i depend only on tokens up to i, so they never change once computed. The KV cache stores them per layer and head, and at each decoding step we only run the new token through the network, compute its query, key and value, append the new key and value, and attend over the cache. We don't need to cache queries because past queries are only used for past outputs. This turns generation from quadratic recomputation into linear work per step, but it trades compute for memory: the cache grows linearly with sequence length and batch size and becomes the main memory bottleneck in serving.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How does RoPE interact with the KV cache?</b><details><summary>思路</summary><div class="inner">通常缓存的是<b>已经旋转过</b>的 K（按其绝对位置旋转），新 query 按它的绝对位置旋转，点积自然只依赖相对位置。如果要做 KV 驱逐/位置平移（如 StreamingLLM），需要注意缓存的 K 里已编码了原始位置；StreamingLLM 选择缓存未旋转的 K、按 cache 内位置重新施加 RoPE。</div></details></li>
+    <li><b>Why can't you use a KV cache for a bidirectional encoder?</b><details><summary>思路</summary><div class="inner">新 token 会被旧 token attend 到，所有旧位置的表示（以及更高层的 K、V）都会改变，缓存失效。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-prefill-decode">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Prefill vs Decode：两个性质完全不同的阶段</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Prefill 并行处理整个 prompt（大矩阵乘，compute-bound），产出第一个 token 和 KV cache，决定 TTFT；decode 每步只处理 1 个新 token（矩阵-向量乘，memory-bandwidth-bound），决定 TPOT。</p><p class="en">Prefill processes the whole prompt in parallel and is compute-bound, setting time-to-first-token; decode generates one token at a time, is memory-bandwidth-bound, and sets time per output token.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th></th><th>Prefill</th><th>Decode</th></tr>
+      <tr><td>每个序列一次处理的 token</td><td>整个 prompt（数百到数十万）</td><td>1（speculative 时为 γ+1）</td></tr>
+      <tr><td>主要运算</td><td>GEMM：(T×d)·(d×d)</td><td>GEMV：(1×d)·(d×d)（batch 后为 (B×d)·(d×d)）</td></tr>
+      <tr><td>瓶颈</td><td>算力（FLOPs）</td><td>显存带宽（读权重 + 读 KV cache）</td></tr>
+      <tr><td>对应延迟指标</td><td>TTFT（time to first token）</td><td>TPOT / ITL（每个输出 token 的间隔）</td></tr>
+      <tr><td>attention</td><td>\(O(T^2)\)，FlashAttention</td><td>每步 \(O(t)\)，读 cache；长上下文用 FlashDecoding（split-KV）</td></tr>
+      <tr><td>GPU 利用率</td><td>可以很高（MFU 40–60%）</td><td>batch 小时很低（大部分时间等数据）</td></tr>
+    </table></div>
+    <p>这种不对称是理解 continuous batching、chunked prefill、PD 分离、speculative decoding 的钥匙：<b>decode 阶段 GPU 的算力大量闲置</b>，所以要么把很多请求的 decode 合在一起（batching），要么一次验证多个 token（speculative），要么把 prefill 的“算力活”掺进来（chunked prefill），要么把两种活分到不同机器（disaggregation）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Inference has two phases. Prefill runs the entire prompt through the model in one parallel pass; it's dominated by large matrix multiplies, so it's compute-bound and determines time to first token. Decode then generates one token per step per sequence; each step is basically matrix-vector work, so we spend most of the time streaming weights and KV cache from HBM, which makes it memory-bandwidth-bound and determines the inter-token latency. Most serving optimizations are about exploiting the idle compute during decode.</p></div>
+</section>
+
+<section class="concept" id="c-kv-size">
+  <div class="concept-head"><span class="pri p1">★</span><h3>KV cache 显存公式与必背数字</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\( \text{KV bytes} = 2 \times L \times n_{kv} \times d_{\text{head}} \times \text{bytes} \times \text{seq} \times \text{batch} \)。LLaMA-2-7B（MHA，bf16）每 token 512 KiB，4k 上下文 2 GiB/序列；同形状换成 8 个 KV 头（GQA）就是 128 KiB/token，0.5 GiB/4k。</p><p class="en">KV bytes equal two (K and V) times layers times KV heads times head dim times bytes per element times sequence length times batch; LLaMA-2-7B in bf16 needs half a megabyte per token, two gigabytes for a 4k context.</p></div>
+  <div class="deep">
+    <p>每一层、每个 KV 头、每个 token 存一个长 \(d_{\text{head}}\) 的 K 向量和一个 V 向量：</p>
+    $$ M_{KV} = \underbrace{2}_{K,V}\cdot L \cdot n_{kv} \cdot d_{\text{head}} \cdot b \cdot S \cdot B $$
+    <p>MHA 时 \(n_{kv}\, d_{\text{head}} = d_{\text{model}}\)，公式简化为 \(2 L d\, b\, S B\)。</p>
+    <p><b>Worked example 1：LLaMA-2-7B</b>（L=32，d=4096，32 头，\(d_h\)=128，MHA，bf16 → b=2）：</p>
+    <ul>
+      <li>每 token：\(2\times32\times32\times128\times2 = 524{,}288\) B = <b>512 KiB</b> ≈ 0.5 MB</li>
+      <li>4096 token：\(512\text{ KiB}\times4096 = \) <b>2 GiB</b>／序列</li>
+      <li>128k token（假设能支持）：<b>64 GiB</b>／序列——比 13.5 GB 的权重大近 5 倍！</li>
+    </ul>
+    <p><b>Worked example 2：同形状 + GQA 8 个 KV 头</b>（即 LLaMA-3-8B 的 KV 配置：L=32，\(n_{kv}\)=8，\(d_h\)=128）：</p>
+    <ul>
+      <li>每 token：\(2\times32\times8\times128\times2\) = <b>128 KiB</b>（缩小 4 倍）</li>
+      <li>4k：<b>0.5 GiB</b>；128k：<b>16 GiB</b></li>
+      <li>MQA（1 个 KV 头）：16 KiB/token，128k 下 2 GiB</li>
+    </ul>
+    <p><b>Worked example 3：LLaMA-2/3-70B</b>（L=80，\(n_{kv}\)=8，\(d_h\)=128）：每 token \(2\times80\times8\times128\times2\) = 320 KiB，128k 上下文 40 GiB/序列。</p>
+    <p><b>Worked example 4：DeepSeek-V2 的 MLA</b>（<a href="https://arxiv.org/abs/2405.04434" target="_blank" rel="noreferrer">arXiv 2405.04434</a>）：每层每 token 只缓存一个压缩 latent \(c^{KV}\)（\(d_c=512\)）和一个共享的解耦 RoPE key（\(d_h^R=64\)），60 层，bf16：\((512+64)\times60\times2\) B ≈ 67.5 KiB/token。论文报告与其 MHA 基线相比 KV cache 降低约 93%。</p>
+    <div class="table-wrap"><table>
+      <tr><th>配置（bf16）</th><th>每 token</th><th>4k / 序列</th><th>128k / 序列</th></tr>
+      <tr><td>7B MHA（32 KV 头）</td><td>512 KiB</td><td>2 GiB</td><td>64 GiB</td></tr>
+      <tr><td>7B 形状 GQA-8</td><td>128 KiB</td><td>0.5 GiB</td><td>16 GiB</td></tr>
+      <tr><td>7B 形状 MQA</td><td>16 KiB</td><td>64 MiB</td><td>2 GiB</td></tr>
+      <tr><td>70B GQA-8（L=80）</td><td>320 KiB</td><td>1.25 GiB</td><td>40 GiB</td></tr>
+      <tr><td>13B MHA（L=40，d=5120）</td><td>800 KiB</td><td>3.125 GiB</td><td>100 GiB</td></tr>
+    </table></div>
+    <p><b>KV 与权重的比较：</b>权重是“所有请求共享的一份”，KV 是“每个请求一份且随长度增长”。batch × 长度一大，KV 就会超过权重，决定了能同时服务多少请求——也就决定了吞吐。</p>
+  </div>
+  <details class="deep"><summary>代码：KV 计算器（已运行，数字与上表一致）</summary><div class="inner">
+<pre><code class="language-python">def kv_bytes(L, n_kv, d_head, seq, batch, bytes_per=2):
+    return 2 * L * n_kv * d_head * bytes_per * seq * batch
+
+GiB = 1024**3
+print(kv_bytes(32, 32, 128, 1, 1) / 1024)        # 512.0 KiB per token (LLaMA-2-7B)
+print(kv_bytes(32, 32, 128, 4096, 1) / GiB)      # 2.0 GiB
+print(kv_bytes(32, 8, 128, 131072, 1) / GiB)     # 16.0 GiB (GQA-8, 128k)
+print(kv_bytes(80, 8, 128, 131072, 1) / GiB)     # 40.0 GiB (70B, 128k)</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul><li>忘了乘 2（K 和 V 各一份）——最常见的错误。</li>
+    <li>用 \(n_{\text{heads}}\) 而不是 \(n_{kv}\)：GQA 模型的 query 头数和 KV 头数不同。</li>
+    <li>混用 GB（10⁹）和 GiB（2³⁰）：面试时说清楚即可，数量级正确最重要。</li>
+    <li>忽略实际系统的额外开销：激活、CUDA context、碎片、PagedAttention 的 block 余量等，实际可用比理论少 10–20%。</li></ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The KV cache size is two, for keys and values, times the number of layers, times the number of KV heads, times the head dimension, times bytes per element, times sequence length, times batch size. For LLaMA-2-7B in bf16, that's 2 times 32 layers times 4096 times 2 bytes, which is 512 kilobytes per token, so a 4k context costs about 2 gigabytes per sequence and a 128k context would be 64 gigabytes, far more than the 13 gigabytes of weights. With grouped-query attention and 8 KV heads, it drops by 4x to 128 kilobytes per token. That's why KV cache, not weights, usually limits batch size and throughput.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Does the KV cache size depend on the number of query heads or the FFN size?</b><details><summary>思路</summary><div class="inner">都不依赖。只依赖 L、\(n_{kv}\)、\(d_h\)、精度、长度、batch。这就是为什么 GQA/MQA/MLA 专门针对 KV 头动手：它们几乎不改变参数量和 FLOPs，却大幅降低 KV。</div></details></li>
+    <li><b>For a sliding-window attention model, how does the formula change?</b><details><summary>思路</summary><div class="inner">seq 替换为 \(\min(S, W)\)。混合模型（例如部分层全局、部分层滑窗，Gemma 2/3、Mistral 7B 的 SWA）按层分别计算后求和。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-kv-shrink">
+  <div class="concept-head"><span class="pri p1">★</span><h3>压缩 KV：GQA / MQA / MLA、KV 量化、驱逐（H2O、StreamingLLM）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>四条路线：减少 KV 头（MQA/GQA）、低秩压缩（MLA）、降低精度（FP8/INT4/2-bit KV 量化）、少存 token（滑窗、attention sink + 最近窗口、按重要性驱逐）。前三者在架构或数值上近似无损，最后一条会丢信息。</p><p class="en">You can shrink the KV cache by sharing KV heads, compressing to a low-rank latent, quantizing it, or evicting tokens; eviction is the only one that throws information away outright.</p></div>
+  <div class="deep">
+    <p><b>1. 共享 KV 头（结构详见模块 04）：</b>MQA（<a href="https://arxiv.org/abs/1911.02150" target="_blank" rel="noreferrer">Shazeer 2019</a>）所有 query 头共享 1 组 K/V；GQA（<a href="https://arxiv.org/abs/2305.13245" target="_blank" rel="noreferrer">Ainslie et al. 2023</a>）分成 g 组。KV 缩小 \(n_h/n_{kv}\) 倍，decode 时读的字节同比例减少。GQA 论文还提出可以从 MHA checkpoint 把 KV 头 mean-pool 后少量继续训练（uptraining）。</p>
+    <p><b>2. MLA（DeepSeek-V2）：</b>把 K、V 投影成一个低维 latent \(c_t = W_{DKV} h_t\)（512 维）缓存；推理时上投影矩阵可以“吸收”进 \(W_Q\) 和 \(W_O\)，所以不必显式重建完整 K、V。因为 RoPE 与这种矩阵吸收不兼容，额外缓存一个小的共享 RoPE key（64 维）。</p>
+    <p><b>3. KV 量化：</b>FP8 KV cache 在 vLLM / TensorRT-LLM 等引擎中常见；更激进的如 <a href="https://arxiv.org/abs/2402.02750" target="_blank" rel="noreferrer">KIVI（arXiv 2402.02750）</a>做 2-bit：观察到 <b>K 有明显的通道（channel）方向离群值，适合按通道量化；V 适合按 token 量化</b>，并把最近一小段 token 保持全精度。</p>
+    <p><b>4. 驱逐（eviction）：</b></p>
+    <ul>
+      <li><b>StreamingLLM（<a href="https://arxiv.org/abs/2309.17453" target="_blank" rel="noreferrer">Xiao et al., arXiv 2309.17453</a>）：</b>发现 <b>attention sink</b>——大量注意力权重落在最开头几个 token 上（softmax 必须把质量分到某处，初始 token 对所有位置可见，于是成为“垃圾桶”）。单纯滑窗丢掉开头几个 token 会让模型崩溃；保留前 4 个 sink token + 最近窗口即可稳定生成很长的流。注意：这让模型<b>能持续生成</b>，并不让它<b>记住</b>窗口外的内容。</li>
+      <li><b>H2O（<a href="https://arxiv.org/abs/2306.14048" target="_blank" rel="noreferrer">Zhang et al., arXiv 2306.14048</a>）：</b>“Heavy Hitter”——少数 token 累计获得大部分注意力；保留 heavy hitters + 最近 token，驱逐其余。</li>
+      <li>其他：SnapKV、PyramidKV 等基于 prompt 末尾观察窗口挑选重要 KV。风险：后续问题可能恰好需要被驱逐的信息（needle-in-a-haystack 类任务掉点明显）。</li>
+    </ul>
+    <div class="table-wrap"><table>
+      <tr><th>方法</th><th>压缩比（典型）</th><th>需要训练？</th><th>信息损失</th></tr>
+      <tr><td>GQA-8（从 32 头）</td><td>4×</td><td>预训练时决定（或 uptrain）</td><td>架构上的容量折中</td></tr>
+      <tr><td>MLA</td><td>约 10× 以上（vs MHA）</td><td>是</td><td>低秩假设</td></tr>
+      <tr><td>FP8 KV</td><td>2×</td><td>否</td><td>很小</td></tr>
+      <tr><td>2-bit KV（KIVI）</td><td>~8×（扣除 scale 开销后略低）</td><td>否</td><td>小到中</td></tr>
+      <tr><td>sink + 窗口 / H2O</td><td>任意（固定预算）</td><td>否</td><td>丢弃 token，长程检索变差</td></tr>
+    </table></div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There are four levers. Architecturally, MQA and GQA share key-value heads across query heads, which cuts the cache by the ratio of query heads to KV heads; DeepSeek's MLA goes further by caching a low-rank latent per token and absorbing the up-projections into the query and output matrices. Numerically, we can quantize the cache to FP8 or even 2 bits, as in KIVI, which quantizes keys per channel and values per token. Finally, we can evict tokens: StreamingLLM keeps a few initial attention-sink tokens plus a recent window, and H2O keeps the heavy-hitter tokens that receive most attention. Eviction is the only lossy-by-design option and tends to hurt long-range retrieval.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why do attention sinks exist?</b><details><summary>思路</summary><div class="inner">Softmax 权重和为 1，当一个头“不想关注任何东西”时，必须把质量放到某个地方；开头的 token 对所有后续位置都可见，训练中成为固定的“垃圾桶”。缓解方法：训练时加入可学习的 sink token、或给 softmax 加一个“+1”（off-by-one softmax / gated attention 等）。</div></details></li>
+    <li><b>Why are keys harder to quantize than values?</b><details><summary>思路</summary><div class="inner">K 的某些通道（维度）系统性地数值很大（与 RoPE 和离群特征有关），per-token 量化时这些通道会撑大 scale，压扁其他通道；所以 K 按通道量化。V 没有这种固定通道离群，且 attention 输出是 V 的加权平均，误差按 token 平均，per-token 量化即可。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ §3 ============================ -->
+<h2 class="sec" id="s-perf"><span class="num">§3 · PERFORMANCE MODEL</span>性能模型：roofline、带宽瓶颈与延迟指标</h2>
+<p class="sec-intro">这一节给你一个“信封背面”的计算框架：只用参数量、batch、上下文长度、GPU 的 FLOPs 和带宽，就能估出 TTFT、每 token 延迟和吞吐。面试官问“为什么 decode 慢”“batch 加大有什么用”“这个模型在 H100 上能跑多少 tokens/s”时，答案全部来自这里。</p>
+
+<section class="concept" id="c-roofline">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Arithmetic intensity 与 roofline</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>算术强度 = FLOPs / 从显存搬运的字节数。GPU 的“脊点”= 峰值 FLOPs / 峰值带宽（H100 SXM 约 295 FLOP/B，A100 约 153 FLOP/B）。强度低于脊点就是 memory-bound，高于就是 compute-bound。</p><p class="en">Arithmetic intensity is FLOPs per byte moved; below the GPU's ridge point of peak FLOPs over bandwidth, a kernel is memory-bound, above it compute-bound.</p></div>
+  <div class="deep">
+    <p><b>Roofline 模型：</b>可达性能 \( = \min(\text{peak FLOPs},\ \text{AI} \times \text{BW}) \)。画在 log-log 图上：左边是斜线（带宽限制），右边是水平线（算力限制），转折点就是脊点。</p>
+    <p><b>参考规格（dense，非稀疏；数字为厂商标称的近似值）：</b></p>
+    <div class="table-wrap"><table>
+      <tr><th>GPU</th><th>BF16 dense</th><th>HBM 带宽</th><th>显存</th><th>脊点 FLOP/B</th></tr>
+      <tr><td>A100 80GB SXM</td><td>≈312 TFLOPS</td><td>≈2.0 TB/s</td><td>80 GB</td><td>≈153</td></tr>
+      <tr><td>H100 SXM</td><td>≈989 TFLOPS</td><td>≈3.35 TB/s</td><td>80 GB</td><td>≈295</td></tr>
+    </table></div>
+    <p>（H100 的 FP8 dense 约为 BF16 的 2 倍；厂商宣传页上常见的更大数字通常是 2:4 稀疏下的值。H200 主要提升了显存容量与带宽。具体以 NVIDIA 官方 datasheet 为准。）</p>
+    <p><b>线性层的算术强度：</b>输入 \(X\in\mathbb{R}^{B\times d}\)，权重 \(W\in\mathbb{R}^{d\times d}\)，bf16。FLOPs \(=2Bd^2\)；字节 \(\approx 2d^2\)（权重）\(+ 4Bd\)（输入输出）。当 \(B \ll d\) 时：</p>
+    $$ \text{AI} \approx \frac{2Bd^2}{2d^2} = B \ \text{FLOP/byte} $$
+    <p>也就是说，<b>batch 里有多少个 token，线性层的算术强度就是多少</b>（bf16 权重下）。d=4096 时实测：B=1 → 1.0，B=64 → 62，B=256 → 228。要在 H100 上让线性层 compute-bound，需要约 300 个 token 同时参与这次矩阵乘。</p>
+    <ul>
+      <li><b>Prefill：</b>一个 2k 的 prompt 就提供了 2048 个 token → AI 远高于脊点 → compute-bound。</li>
+      <li><b>Decode：</b>每个序列每步只有 1 个 token → AI = batch size → 除非 batch 几百，否则 memory-bound。</li>
+      <li><b>Decode 的 attention 部分</b>：每个序列读自己的 KV（不能跨序列共享），AI ≈ 1（MHA）到 \(n_h/n_{kv}\)（GQA，因为一个 KV 头被多个 query 头复用），<b>无论 batch 多大都是 memory-bound</b>。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>GPU 像一个超级快的厨师（算力）配一条很窄的传送带（带宽）。decode 时厨师每拿到一大筐食材（整个模型权重）只做一道菜（1 个 token）——大部分时间在等传送带。batching 就是让同一筐食材一次做很多道菜。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Arithmetic intensity is FLOPs per byte moved from memory. The roofline says achievable throughput is the minimum of peak compute and intensity times bandwidth, and the ridge point for an H100 is roughly 300 FLOPs per byte in bf16. For a linear layer with bf16 weights, intensity is roughly the number of tokens in the batch, because every weight byte is used for two FLOPs per token. Prefill has thousands of tokens, so it's compute-bound; decode has one token per sequence, so unless the batch is in the hundreds, it's bandwidth-bound. And decode attention is bandwidth-bound regardless of batch, because each sequence reads its own KV cache.</p></div>
+</section>
+
+<section class="concept" id="c-decode-bw">
+  <div class="concept-head"><span class="pri p1">★</span><h3>推导：batch=1 时 tokens/s ≈ 带宽 / 权重字节</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>batch=1 decode 每步必须把全部权重从 HBM 读一遍（外加 KV），而算力几乎闲置，所以 \( \text{tokens/s} \le \text{BW} / (N \cdot b_w) \)。7B bf16 在 H100 上约 250 tok/s 上限，A100 约 150 tok/s。</p><p class="en">At batch one, each decode step must stream all weights from HBM, so tokens per second is bounded by bandwidth over weight bytes: about 250 tokens per second for a 7B bf16 model on an H100.</p></div>
+  <div class="deep">
+    <p><b>每步需要的时间（下界）：</b></p>
+    $$ t_{\text{step}} \gtrsim \max\Big(\underbrace{\frac{N b_w + B\cdot S\cdot m_{kv}}{\text{BW}}}_{\text{memory}},\ \underbrace{\frac{2NB}{\text{FLOPs}}}_{\text{compute}}\Big) $$
+    <p>其中 N 为参数量，\(b_w\) 为每参数字节，\(m_{kv}\) 为每 token 的 KV 字节，S 为当前上下文长度。batch=1 且上下文不长时，KV 项可忽略，compute 项比 memory 项小两个数量级：</p>
+    $$ \text{tokens/s} \approx \frac{\text{BW}}{N b_w} $$
+    <p><b>数值（LLaMA-2-7B，6.74B 参数，bf16 → 13.5 GB）：</b>A100：2.0 TB/s ÷ 13.5 GB ≈ <b>150 tok/s</b>；H100：3.35 TB/s ÷ 13.5 GB ≈ <b>250 tok/s</b>。实际实现能达到峰值带宽的 60–85%，所以实测更低。这个公式立刻告诉你两个优化方向：<b>减小权重字节</b>（INT4 权重 → 读的字节约为 1/4 → 上限约 4×；这正是 weight-only 量化对小 batch 推理有效的原因）和<b>增加每次读取所产出的 token</b>（batching、speculative decoding）。</p>
+    <p><b>Worked example：8B GQA 模型（KV 128 KiB/token），H100，上下文 2048，bf16（理想模型，近似）</b></p>
+    <div class="table-wrap"><table>
+      <tr><th>batch</th><th>读取时间</th><th>计算时间</th><th>总吞吐</th><th>每序列速度</th><th>KV 总量</th></tr>
+      <tr><td>1</td><td>4.9 ms</td><td>0.02 ms</td><td>≈206 tok/s</td><td>≈206 tok/s</td><td>0.27 GB</td></tr>
+      <tr><td>16</td><td>6.1 ms</td><td>0.26 ms</td><td>≈2,600 tok/s</td><td>≈165 tok/s</td><td>4.3 GB</td></tr>
+      <tr><td>64</td><td>9.9 ms</td><td>1.0 ms</td><td>≈6,500 tok/s</td><td>≈100 tok/s</td><td>17 GB</td></tr>
+      <tr><td>128</td><td>15.0 ms</td><td>2.1 ms</td><td>≈8,500 tok/s</td><td>≈67 tok/s</td><td>34 GB</td></tr>
+    </table></div>
+    <p>读法：(1) batch 从 1 增大到 16，总吞吐涨约 13×，而单序列速度只降 20%——batching 几乎是“免费午餐”；(2) batch 继续增大，KV 读取开始主导（每个序列要读自己的 KV），吞吐增长放缓、单序列延迟变差——<b>吞吐与延迟的权衡</b>；(3) 最终受限于显存能容纳多少 KV。</p>
+    <p><b>TTFT 估算：</b>prefill FLOPs ≈ \(2N\cdot T_{\text{prompt}}\)（忽略 attention 二次项）。8B 模型、2048 token、H100 50% MFU：\(2\times8\text{e}9\times2048 / (0.5\times989\text{e}12) \approx 66\) ms。长 prompt 时 attention 的 \(O(T^2)\) 项会变得显著。</p>
+  </div>
+  <details class="deep"><summary>代码：一个 15 行的性能估算器</summary><div class="inner">
+<pre><code class="language-python">H100 = dict(flops=989e12, bw=3.35e12)          # bf16 dense, approximate
+
+def step_time(gpu, n_params, B, ctx, kv_per_tok, wbytes=2):
+    mem = n_params * wbytes + B * ctx * kv_per_tok   # bytes read per decode step
+    comp = 2 * n_params * B                          # FLOPs per decode step (no attention)
+    return mem / gpu['bw'], comp / gpu['flops']
+
+KV8 = 2 * 32 * 8 * 128 * 2                           # 8B with GQA-8: 128 KiB/token
+for B in [1, 16, 64, 128]:
+    tm, tc = step_time(H100, 8e9, B, 2048, KV8)
+    t = max(tm, tc)
+    print(f'B={B}: {B/t:.0f} tok/s total, {1/t:.0f} tok/s per sequence')</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul><li>用 FLOPs 估算 decode 速度：会得到离谱的 3 万 tok/s（\(989\text{e}12/(2\times7\text{e}9)/2\)…），完全错误。batch=1 decode 永远先看带宽。</li>
+    <li>认为 MoE 的 decode 速度只取决于激活参数：batch=1 时只读被激活的专家，确实接近“激活参数量”；但 batch 大时不同 token 激活不同专家，几乎要读所有专家权重，而且总参数必须放进显存。</li>
+    <li>忽略 KV 读取：长上下文、大 batch 时 KV 读取会超过权重读取。</li></ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>At batch size one, every decode step has to read all the weights from HBM, but only does two FLOPs per parameter, so the GPU is starved for data. The step time is roughly weight bytes divided by memory bandwidth, so tokens per second is about bandwidth over weight bytes. For a 7B model in bf16 that's 13.5 gigabytes, so about 150 tokens per second on an A100 and 250 on an H100, as an upper bound. This tells you the two levers: shrink the bytes, with weight quantization, or get more tokens per weight read, with batching or speculative decoding.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>At what batch size does decoding become compute-bound on an H100?</b><details><summary>思路</summary><div class="inner">只看线性层：AI ≈ B，脊点 ≈ 295，所以 B 约 300 时达到。但 attention 部分的 KV 读取随 B 线性增长且 AI 很低，所以实际整体上很难真正 compute-bound；更常见的限制是 KV 显存先装不下。</div></details></li>
+    <li><b>How does tensor parallelism change these numbers?</b><details><summary>思路</summary><div class="inner">TP=k 时每张卡只读 1/k 的权重，聚合带宽 k 倍，理想情况下 batch=1 的 tokens/s 提升近 k 倍（70B bf16 在 2×H100 上理想值约 48 tok/s）；代价是每层两次 all-reduce 的通信延迟，在小 batch 时这部分是固定开销，所以扩展效率低于线性。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-latency-metrics">
+  <div class="concept-head"><span class="pri p1">★</span><h3>延迟与吞吐指标：TTFT、TPOT/ITL、E2E、throughput、goodput</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>TTFT = 从请求到第一个 token（排队 + prefill）；TPOT / ITL = 后续 token 之间的平均/逐个间隔（decode 速度）；E2E ≈ TTFT + TPOT × (输出长度 − 1)；吞吐 = 系统每秒总 token 数；goodput = 满足延迟 SLO 的请求的吞吐。</p><p class="en">TTFT covers queueing and prefill; TPOT or inter-token latency measures decode speed; throughput counts total tokens per second; goodput counts only requests that meet the latency SLOs.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>TTFT</b>：交互体验最关键（用户等第一个字）。受 prompt 长度、排队、prefill 调度影响。</li>
+      <li><b>TPOT（time per output token）/ ITL（inter-token latency）</b>：流式输出的“打字速度”。人类阅读约每秒几个词，所以 20–50 ms/token 通常够用；但推理模型生成上万 token 的思考，TPOT 直接决定总等待时间。</li>
+      <li><b>Throughput（tokens/s 或 requests/s）</b>：决定成本（$/M tokens）。</li>
+      <li><b>Goodput</b>（DistServe 提出的说法）：在满足 TTFT 和 TPOT SLO 的前提下能达到的请求速率。单纯追求吞吐可能让 P99 延迟爆炸。</li>
+      <li>报告时看<b>分位数</b>（P50/P90/P99），而不是平均值。</li>
+    </ul>
+    <p><b>核心张力：</b>batch 大 → 吞吐高、TPOT 变差；新请求的 prefill 插进来 → 正在 decode 的请求出现卡顿（generation stall）。§4 的各种调度技术都在调和这一张力。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd look at four things. Time to first token, which is queueing plus prefill and matters most for interactivity. Time per output token, or inter-token latency, which is the streaming speed and is dominated by decode. Throughput in tokens per second, which drives cost. And goodput, the throughput you get while still meeting latency SLOs on both TTFT and TPOT, reported at P90 or P99, not just averages. Larger batches raise throughput but hurt per-token latency, and that tension drives most scheduling decisions.</p></div>
+</section>
+
+<!-- ============================ §4 ============================ -->
+<h2 class="sec" id="s-serving"><span class="num">§4 · SERVING SYSTEMS</span>服务系统：continuous batching、PagedAttention、prefix caching、PD 分离</h2>
+<p class="sec-intro">现代推理引擎（vLLM、SGLang、TensorRT-LLM 等）由几项关键技术构成。面试常问“vLLM 为什么快”——标准答案是 continuous batching + PagedAttention，再加 prefix caching、chunked prefill，以及在大规模部署中的 PD 分离和并行策略。</p>
+
+<section class="concept" id="c-cont-batching">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Static batching vs Continuous (iteration-level) batching</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Static batching 要等 batch 里最长的请求结束才能接新请求；continuous batching（Orca 提出的 iteration-level scheduling）每个 decode step 都重新组 batch：完成的请求立即退出，新请求立即加入。</p><p class="en">Static batching waits for the longest request in the batch; continuous batching reschedules at every iteration, evicting finished sequences and admitting new ones immediately.</p></div>
+  <div class="deep">
+    <p><b>Static batching 的问题：</b>输出长度差异巨大（有的回答 10 token，有的 2000 token）。短请求完成后它的“槽位”空着（或被 padding 填充）直到最长请求结束，GPU 利用率低；新请求还要排队等整个 batch 结束，TTFT 很差。</p>
+    <p><b>Continuous batching（<a href="https://www.usenix.org/conference/osdi22/presentation/yu" target="_blank" rel="noreferrer">Orca, Yu et al., OSDI 2022</a>）：</b></p>
+    <ul>
+      <li>调度粒度从“请求”变成“一次迭代（一个 token step）”。</li>
+      <li>不同序列长度不同，没法拼成一个规整的 attention 张量。Orca 的 <b>selective batching</b>：对线性层（与位置无关）把所有序列的 token 拼平成一个大矩阵一起算；对 attention 按序列分开算（现在用支持变长/分页的 attention kernel 处理）。</li>
+      <li>效果：同一延迟下吞吐提升显著；不需要 padding。</li>
+    </ul>
+    <p><b>新问题：</b>新请求加入时要做 prefill，一个长 prompt 的 prefill 会让这一步变得很长，所有正在 decode 的请求都被拖慢（TPOT 尖刺）——这引出了 chunked prefill。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>With static batching, a batch runs until its longest sequence finishes, so short requests leave idle slots and new requests wait in the queue. Continuous batching, introduced by Orca, schedules at the granularity of a single decoding iteration: after every step, finished sequences leave and waiting requests join. Since sequences have different lengths, the linear layers run on the flattened tokens from all sequences, while attention is computed per sequence with a variable-length kernel. This dramatically improves utilization and throughput without hurting latency.</p></div>
+</section>
+
+<section class="concept" id="c-paged">
+  <div class="concept-head"><span class="pri p1">★</span><h3>PagedAttention / vLLM：把操作系统的虚拟内存搬进 KV cache</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把每个序列的 KV cache 切成固定大小的 block（如 16 token），通过 block table 把逻辑 block 映射到不连续的物理 block，按需分配。消除了预留最大长度造成的内部碎片和外部碎片，并支持 block 级共享与 copy-on-write。</p><p class="en">PagedAttention stores KV cache in fixed-size blocks mapped through a per-sequence block table, like virtual memory pages, eliminating fragmentation and enabling sharing with copy-on-write.</p></div>
+  <div class="deep">
+    <p><b>问题：</b>早期系统为每个请求按“最大可能长度”预分配一段<b>连续</b>的 KV 显存。输出长度事先未知 → 大量预留但未使用（内部碎片）；不同大小的连续块分配释放后产生空洞（外部碎片）。<a href="https://arxiv.org/abs/2309.06180" target="_blank" rel="noreferrer">vLLM 论文（Kwon et al., SOSP 2023, arXiv 2309.06180）</a>测得已有系统的 KV 显存中只有一小部分真正存放了 token 状态，而 vLLM 的浪费接近于零（只有每个序列最后一个未满 block）。</p>
+    <div class="table-wrap"><table>
+      <tr><th>操作系统概念</th><th>vLLM 对应</th></tr>
+      <tr><td>进程</td><td>请求 / 序列</td></tr>
+      <tr><td>虚拟页 → 物理页（页表）</td><td>逻辑 KV block → 物理 KV block（block table）</td></tr>
+      <tr><td>按需分页</td><td>生成写满一个 block 才分配下一个</td></tr>
+      <tr><td>fork + copy-on-write</td><td>parallel sampling / beam search 共享 prompt 的 block，写入时才复制（引用计数）</td></tr>
+      <tr><td>swap 到磁盘</td><td>显存不足时把 KV 换出到 CPU 内存，或直接丢弃之后重算（recompute）</td></tr>
+    </table></div>
+    <p><b>代价：</b>attention kernel 必须通过 block table 间接寻址（gather 不连续的 block），kernel 更复杂；block 太小间接寻址开销大，太大内部碎片多（vLLM 默认 16 token）。</p>
+    <p><b>为什么这提高吞吐？</b>§3 已说明 decode 吞吐近似随 batch 增长，而 batch 受 KV 显存限制。浪费从大部分降到接近 0 → 同样显存能放下多得多的并发序列 → 吞吐提升（论文报告相对当时的系统有数倍提升）。</p>
+  </div>
+  <details class="deep"><summary>示意：block table 的数据结构</summary><div class="inner">
+<pre><code class="language-python">BLOCK = 16
+free_blocks = list(range(num_physical_blocks))
+ref_count = [0] * num_physical_blocks
+
+class Seq:
+    def __init__(self):
+        self.block_table = []          # logical block i -&gt; physical block id
+        self.length = 0
+
+def append_token(seq):
+    if seq.length % BLOCK == 0:        # current block full (or first token)
+        b = free_blocks.pop(); ref_count[b] = 1
+        seq.block_table.append(b)
+    elif ref_count[seq.block_table[-1]] &gt; 1:   # shared last block -&gt; copy-on-write
+        old = seq.block_table[-1]; b = free_blocks.pop(); ref_count[b] = 1
+        copy_block(old, b); ref_count[old] -= 1
+        seq.block_table[-1] = b
+    seq.length += 1                    # then write K,V into slot (length-1) % BLOCK
+
+def fork(seq):                         # parallel sampling: share all blocks
+    child = Seq(); child.block_table = list(seq.block_table); child.length = seq.length
+    for b in seq.block_table: ref_count[b] += 1
+    return child</code></pre>
+  <p>这是讲解用的示意（伪代码，省略了 copy_block 等细节），不是 vLLM 的真实实现。</p>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>PagedAttention applies virtual memory ideas to the KV cache. Instead of reserving a contiguous chunk for the maximum length of each request, the cache is split into fixed-size blocks, say 16 tokens, and each sequence has a block table mapping logical blocks to physical blocks that can live anywhere in GPU memory. Blocks are allocated on demand, so the only waste is the partially filled last block. Because blocks are reference counted, parallel samples or beams can share the prompt's blocks and copy on write. Less waste means more concurrent sequences in the same memory, which directly translates into higher decode throughput.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What happens when GPU memory runs out mid-generation?</b><details><summary>思路</summary><div class="inner">调度器抢占（preempt）部分序列：要么把它们的 KV block swap 到 CPU 内存，要么释放后之后重新 prefill（recompute）。重算对短序列更便宜，swap 对长序列更好。通常按 FCFS 抢占最晚到达的请求。</div></details></li>
+    <li><b>What's the tradeoff in choosing block size?</b><details><summary>思路</summary><div class="inner">小 block：碎片少、共享粒度细，但 block table 大、kernel 间接寻址开销大、访存不连续；大 block：反之。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-prefix-cache">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Prefix caching 与 RadixAttention（SGLang）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>不同请求常共享相同前缀（系统提示、few-shot 示例、多轮对话历史、agent 的工具描述）。把已算过的前缀 KV 保留下来，新请求命中时跳过这部分 prefill。SGLang 用 radix tree（基数树）组织所有缓存的 KV，自动做最长前缀匹配 + LRU 驱逐。</p><p class="en">Prefix caching reuses KV blocks for shared prompt prefixes; SGLang's RadixAttention keeps them in a radix tree with longest-prefix matching and LRU eviction.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>vLLM 的 automatic prefix caching：</b>按 block 内容（连同其前缀）计算 hash，相同 hash 的 block 直接复用。</li>
+      <li><b>RadixAttention（<a href="https://arxiv.org/abs/2312.07104" target="_blank" rel="noreferrer">SGLang, Zheng et al., arXiv 2312.07104</a>）：</b>树的边是 token 序列，节点挂着 KV；请求到来时沿树做最长前缀匹配；显存不够时按 LRU 驱逐叶子节点；调度器优先运行命中前缀更长的请求（cache-aware scheduling）。</li>
+      <li><b>收益最大的场景：</b>多轮对话（每轮都重复整段历史）、agent（长工具描述 + 不断增长的轨迹）、self-consistency/best-of-N（同一个 prompt 采样 N 次）、RL rollout（GRPO 对一个 prompt 采 G 个回答）。</li>
+      <li><b>注意：</b>只有<b>完全相同的前缀</b>才能复用（因果注意力下，KV 依赖整个前缀）。在 prompt 开头放时间戳或随机 ID 会让缓存完全失效——prompt 设计的实用经验：静态内容放前面，变化内容放后面。API 提供商的“prompt caching”折扣也基于这个原理。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Many requests share a prefix, like a long system prompt, few-shot examples, or the conversation history in a multi-turn chat. Since the KV cache of a prefix depends only on that prefix, we can keep it around and skip its prefill for later requests, which slashes time to first token and saves compute. vLLM does this by hashing blocks, and SGLang's RadixAttention keeps all cached sequences in a radix tree, does longest-prefix matching, evicts least recently used leaves, and schedules requests to maximize cache hits. It only works for exact prefix matches, so you want static content first in the prompt.</p></div>
+</section>
+
+<section class="concept" id="c-chunked-prefill">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Chunked prefill：把长 prefill 切块，和 decode 混在同一批</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把长 prompt 的 prefill 切成固定 token 预算的小块，每个迭代把一个 prefill 块和一批 decode token 拼在一起执行。decode 不再被长 prefill 卡住（TPOT 平稳），同时用 prefill 的算力“填满”decode 闲置的 GPU。</p><p class="en">Chunked prefill splits long prompts into chunks and piggybacks decode tokens on each chunk, avoiding decode stalls while using the idle compute of decode steps.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2403.02310" target="_blank" rel="noreferrer">Sarathi-Serve（Agrawal et al., OSDI 2024, arXiv 2403.02310）</a>的两个想法：(1) <b>chunked prefill</b>；(2) <b>stall-free scheduling</b>：每次迭代设定 token 预算（如 512），先放入所有正在 decode 的请求（每个 1 token），剩余预算分给 prefill 块。</p>
+    <p><b>为什么有效？</b>decode 步是 memory-bound，算力有余；prefill 块是 compute-bound。两者拼在一起，权重只读一次，同时服务两类工作——相当于 decode 的 token“搭了 prefill 的便车”。</p>
+    <p><b>代价：</b>单个长 prompt 的 TTFT 略增（被切成多次迭代，每块都要重新读之前块的 KV）；块太小会降低 prefill 效率。现在主流引擎默认或可选开启 chunked prefill。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>With plain continuous batching, when a long prompt arrives, its prefill makes that iteration very slow and every ongoing decode stalls. Chunked prefill, from Sarathi-Serve, splits the prefill into fixed-size chunks and builds each iteration under a token budget: first all the decode tokens, then a prefill chunk to fill the rest. Since decode is bandwidth-bound and prefill is compute-bound, mixing them uses the GPU much better, and the inter-token latency stays smooth. The cost is a slightly higher time to first token for long prompts.</p></div>
+</section>
+
+<section class="concept" id="c-pd-disagg">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Prefill–Decode 分离（PD disaggregation）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把 prefill 和 decode 放在不同的 GPU 实例上，prefill 完成后把 KV cache 通过高速互联传给 decode 实例。两阶段不再互相干扰，可以分别选择并行策略和资源配比，优化 goodput。</p><p class="en">Disaggregation runs prefill and decode on separate GPU pools and transfers the KV cache between them, removing interference and letting each phase be provisioned and parallelized independently.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2401.09670" target="_blank" rel="noreferrer">DistServe（Zhong et al., OSDI 2024, arXiv 2401.09670）</a>和 <a href="https://arxiv.org/abs/2311.18677" target="_blank" rel="noreferrer">Splitwise（Patel et al., ISCA 2024, arXiv 2311.18677）</a>几乎同时提出。动机：</p>
+    <ul>
+      <li><b>干扰：</b>同一 GPU 上混跑时，prefill 拖慢 decode（TPOT 尖刺），decode 也占用 prefill 的资源（TTFT 变差）。chunked prefill 缓解但不能消除。</li>
+      <li><b>资源需求不同：</b>prefill 要算力，适合较少的 TP；decode 要带宽和显存容量（装 KV），适合大 batch。Splitwise 还提出 decode 阶段可以用算力较弱但带宽/显存性价比高的硬件。</li>
+      <li><b>独立扩缩：</b>根据 TTFT 和 TPOT 的 SLO 分别调整 prefill 和 decode 实例的数量比例。</li>
+    </ul>
+    <p><b>代价：</b>KV 传输。例如 8B GQA 模型 4k prompt 的 KV 是 0.5 GiB，需要 NVLink 或 RDMA 级别带宽才能做到相对 prefill 时间可忽略；长 prompt 时 prefill 计算是 \(O(T)\)~\(O(T^2)\) 而 KV 传输是 \(O(T)\)，所以 prompt 越长，传输占比通常越小。大规模部署（尤其是大 MoE 模型）中 PD 分离已经很常见。</p>
+    <div class="table-wrap"><table>
+      <tr><th>方案</th><th>解决什么</th><th>代价</th></tr>
+      <tr><td>Continuous batching</td><td>GPU 槽位空闲、排队</td><td>prefill 干扰 decode</td></tr>
+      <tr><td>Chunked prefill</td><td>decode 卡顿</td><td>长 prompt TTFT 略增；干扰仍在</td></tr>
+      <tr><td>PD 分离</td><td>两阶段干扰、资源配比</td><td>KV 传输、更复杂的集群调度</td></tr>
+    </table></div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Prefill and decode have opposite resource profiles and interfere when colocated: a big prefill stalls decodes, and decodes eat into prefill capacity. DistServe and Splitwise proposed disaggregating them: a prefill pool computes the prompt and ships the KV cache over a fast interconnect to a decode pool. Each pool can then use its own parallelism and batch size, and you can scale the ratio of prefill to decode instances to meet separate TTFT and TPOT SLOs, which they frame as maximizing goodput. The cost is KV transfer bandwidth and more complex orchestration.</p></div>
+</section>
+
+<section class="concept" id="c-tp-inference">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>推理中的并行：TP、PP、EP、数据并行副本</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>模型放不下一张卡或需要更低延迟时用 tensor parallel（层内切分，每层 2 次 all-reduce，需要 NVLink，降低单 token 延迟）；跨节点时用 pipeline parallel（增加容量，不降低单 token 延迟）；MoE 用 expert parallel；吞吐不够就加数据并行副本。</p><p class="en">Tensor parallelism splits each layer across GPUs to cut latency, pipeline parallelism adds capacity across nodes, expert parallelism shards MoE experts, and replicas scale throughput.</p></div>
+  <div class="deep">
+    <p><b>TP（Megatron 风格）：</b>attention 按头切（KV cache 也按头分布在各卡上——GQA 的 KV 头数限制了 TP 度上限，超过时 KV 头要复制）；MLP 第一层按列切，第二层按行切，之后 all-reduce。每张卡只读 1/k 的权重和 KV → decode 延迟近似降低 k 倍（减去通信）。</p>
+    <p><b>PP：</b>不同层放在不同卡上；batch=1 时只有一张卡在工作，不降低延迟，但可以通过 micro-batch 流水提高吞吐，通信量小，适合跨节点。</p>
+    <p><b>EP（MoE）：</b>专家分布在不同卡上，token 通过 all-to-all 路由；大规模 MoE 部署（例如 DeepSeek-V3 的推理方案）会结合大 EP + PD 分离。训练侧并行细节见 <a href="m09-distributed.html">模块 09</a>。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For inference, tensor parallelism splits each layer across GPUs, so each GPU reads only a fraction of the weights and KV per step, which cuts per-token latency, at the cost of two all-reduces per layer, so it wants NVLink within a node. Pipeline parallelism splits layers across devices; it adds memory capacity with cheap communication but doesn't reduce single-request latency. MoE models add expert parallelism with all-to-all routing. And if you just need more throughput, you add replicas.</p></div>
+</section>
+
+<!-- ============================ §5 ============================ -->
+<h2 class="sec" id="s-spec"><span class="num">§5 · SPECULATIVE DECODING</span>Speculative decoding：用便宜的猜测换取并行验证</h2>
+<p class="sec-intro">decode 是 memory-bound 的：让目标模型一次前向处理 γ+1 个 token，几乎和处理 1 个 token 一样快（权重只读一次）。speculative decoding 正是利用这点：小模型（或额外的头）先猜 γ 个 token，大模型一次前向并行验证。关键在于用一个巧妙的拒绝采样规则，<b>输出分布与只用大模型采样完全相同</b>。这一节的证明是高频考点。</p>
+
+<section class="concept" id="c-spec-algo">
+  <div class="concept-head"><span class="pri p1">★</span><h3>算法：draft → verify → accept / resample</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>draft 模型 q 依次采样 γ 个 token；目标模型 p 一次前向算出这 γ+1 个位置的分布；从左到右以概率 \(\min(1, p(x)/q(x))\) 接受每个 draft token，第一次拒绝时从残差分布 \( \mathrm{norm}(\max(0, p-q)) \) 重新采样并停止；全部接受则从 p 再额外采样 1 个 token。</p><p class="en">Draft gamma tokens with the small model, score them all with one target forward pass, accept each with probability min of one and p over q, and on the first rejection resample from the normalized positive part of p minus q; if all are accepted, sample a bonus token from p.</p></div>
+  <div class="deep">
+    <p>由 <a href="https://arxiv.org/abs/2211.17192" target="_blank" rel="noreferrer">Leviathan et al. 2022（Fast Inference from Transformers via Speculative Decoding）</a>和 <a href="https://arxiv.org/abs/2302.01318" target="_blank" rel="noreferrer">Chen et al. 2023（DeepMind, speculative sampling）</a>独立提出。</p>
+    <ol>
+      <li><b>Draft：</b>用小模型自回归采样 \(x_1,\dots,x_\gamma\)，记录 \(q_i(\cdot)=q(\cdot\mid \text{prefix}, x_{&lt;i})\)。</li>
+      <li><b>Verify：</b>把 prefix + \(x_{1..\gamma}\) 一次送入目标模型，得到 \(p_1,\dots,p_{\gamma+1}\)（因果 mask 让每个位置只看到它之前的 token）。</li>
+      <li><b>Accept/reject：</b>对 i=1..γ，抽 \(r\sim U(0,1)\)，若 \(r &lt; \min(1, p_i(x_i)/q_i(x_i))\) 接受；否则从 \(p'_i = \frac{\max(0, p_i - q_i)}{\sum \max(0, p_i - q_i)}\) 采样一个 token 替换 \(x_i\)，丢弃后面所有 draft，结束本轮。</li>
+      <li><b>Bonus：</b>若 γ 个全接受，从 \(p_{\gamma+1}\) 再采样 1 个。所以每轮至少产出 1 个 token（不会比普通 decode 产出更少），至多 γ+1 个。</li>
+      <li>回滚：被拒 token 之后的 KV cache（目标和 draft 两边）要截断。</li>
+    </ol>
+    <p><b>greedy 版本：</b>如果用 greedy，就简单地接受直到第一个 \(x_i \ne \arg\max p_i\)，然后用 \(\arg\max p_i\) 替换。</p>
+  </div>
+  <details class="deep"><summary>代码：toy 演示（numpy，经验分布与目标分布一致）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(0)
+
+def speculative_step(prefix, gamma, p_model, q_model, V):
+    drafts, qs, ctx = [], [], list(prefix)
+    for _ in range(gamma):                       # 1) draft gamma tokens with q
+        q = q_model(ctx); x = rng.choice(V, p=q)
+        drafts.append(x); qs.append(q); ctx.append(x)
+    # 2) target scores all gamma+1 positions (one parallel forward pass in practice)
+    ps = [p_model(list(prefix) + drafts[:i]) for i in range(gamma + 1)]
+    out = []
+    for i, x in enumerate(drafts):               # 3) accept / reject left to right
+        p, q = ps[i], qs[i]
+        if rng.random() &lt; min(1.0, p[x] / q[x]):
+            out.append(x)
+        else:
+            resid = np.maximum(p - q, 0); resid /= resid.sum()
+            out.append(rng.choice(V, p=resid))   # resample from (p - q)+
+            return out
+    out.append(rng.choice(V, p=ps[gamma]))       # 4) bonus token
+    return out
+
+# With a 6-token toy target p and a *different* draft q, over 60,000 runs the
+# empirical distribution of the first emitted token matches p within 0.01
+# (target [0.132 0.269 0.129 0.011 0.305 0.153] vs empirical [0.133 0.268 0.129 0.011 0.306 0.152]),
+# and the joint distribution of the first two tokens also matches p.</code></pre>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A small draft model proposes gamma tokens autoregressively. The target model then scores all of them in a single forward pass, which costs about the same as one decoding step because decode is memory-bound. We go left to right and accept each draft token with probability min of one and p over q. At the first rejection, we resample that position from the normalized positive part of p minus q and throw away the rest. If everything is accepted, we get a bonus token from the target's last distribution. So each round produces between one and gamma plus one tokens, and the output distribution is exactly the target's.</p></div>
+</section>
+
+<section class="concept" id="c-spec-proof">
+  <div class="concept-head"><span class="pri p1">★</span><h3>证明：输出分布恰好等于目标分布 p</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\( P(\text{输出}=x) = q(x)\min(1,\tfrac{p(x)}{q(x)}) + (1-\beta)\,\tfrac{(p(x)-q(x))^+}{1-\beta} = \min(p,q)(x) + (p(x)-\min(p,q)(x)) = p(x) \)，其中 \(\beta = \sum_x \min(p(x),q(x))\) 是接受概率。</p><p class="en">The probability of emitting x is min of p and q from acceptance, plus the positive part of p minus q from the residual, which sums to exactly p of x.</p></div>
+  <div class="deep">
+    <p>考虑单个位置（多位置由归纳得到：每个被输出的 token 都服从给定前缀下的 p，后续位置以此为条件继续）。draft 采 \(x\sim q\)。</p>
+    <p><b>Step 1：接受概率。</b>采到 x 且被接受的概率：</p>
+    $$ q(x)\cdot\min\Big(1,\frac{p(x)}{q(x)}\Big) = \min\big(q(x), p(x)\big) $$
+    <p>总接受概率 \( \beta = \sum_x \min(p(x), q(x)) \)，所以拒绝概率 \(1-\beta\)。</p>
+    <p><b>Step 2：残差分布的归一化常数。</b>\( \sum_x (p(x)-q(x))^+ = \sum_x \big(p(x) - \min(p(x),q(x))\big) = 1 - \beta \)（因为 \(a - \min(a,b) = (a-b)^+\)）。</p>
+    <p><b>Step 3：合并。</b></p>
+    $$ P(\text{out}=x) = \underbrace{\min(p(x),q(x))}_{\text{accepted}} + \underbrace{(1-\beta)\cdot\frac{(p(x)-q(x))^+}{1-\beta}}_{\text{rejected, resampled}} = \min(p(x),q(x)) + (p(x)-q(x))^+ = p(x). \ \blacksquare $$
+    <p>（若 \(\beta=1\) 即 p=q，永远接受，结论显然。）</p>
+    <p><b>接受率的含义：</b>\( \alpha = \beta = 1 - \mathrm{TV}(p,q) \)。draft 与目标越接近（总变差越小），接受率越高。</p>
+    <p><b>多位置的说明：</b>第 i 个位置只有在前 i−1 个都被接受时才被考虑；被接受的前缀本身服从 p，所以以它为条件时第 i 个输出也服从 \(p(\cdot\mid\text{prefix})\)。bonus token 直接从 p 采样。因此整条输出序列的联合分布等于目标模型自回归采样的分布。我的 toy 实验同时检验了前两个 token 的联合分布。</p>
+    <div class="box why"><span class="lbl">直觉</span>把 p 和 q 画成两条柱状图。两者重叠的部分 \(\min(p,q)\) 由“draft 采样 + 接受”来覆盖；p 高出 q 的部分 \((p-q)^+\) 由“拒绝后重采样”来补齐；q 高出 p 的部分正好是被拒绝的质量。三块拼起来恰好是 p。这和 MCMC 中的 Metropolis 接受规则同源。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul><li>“拒绝后从 p 重新采样”：错！必须从残差 \((p-q)^+\) 采样，否则 \(\min(p,q)\) 区域会被重复计数，分布偏向 draft。</li>
+    <li>“speculative decoding 是近似方法”：标准算法是<b>无损</b>的（输出分布不变，greedy 时输出完全相同，除浮点误差外）。有损变体（如放宽接受条件的 typical acceptance）需要单独说明。</li>
+    <li>“draft 和目标必须同一 tokenizer”：标准算法要求同一词表；跨 tokenizer 需要额外方法。</li></ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Fix a position. The draft samples x from q and accepts with probability min of one and p over q, so the probability of emitting x via acceptance is min of p of x and q of x. The total acceptance probability beta is the sum of those mins. On rejection we sample from the positive part of p minus q, whose total mass is exactly one minus beta. So the rejection branch contributes one minus beta times the positive part over one minus beta, which is just the positive part of p minus q. Adding the two gives min of p and q plus p minus that min, which equals p. By induction over positions, the whole sequence is distributed as the target model's samples.</p></div>
+</section>
+
+<section class="concept" id="c-spec-speedup">
+  <div class="concept-head"><span class="pri p1">★</span><h3>期望加速比：α、γ 与 draft 成本 c</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>假设每个 token 独立以概率 α 被接受，每轮期望产出 \( \frac{1-\alpha^{\gamma+1}}{1-\alpha} \) 个 token；一轮耗时约 \( \gamma c + 1 \)（以目标模型一次前向为单位，c 为 draft 相对成本），所以加速比 \( \frac{1-\alpha^{\gamma+1}}{(1-\alpha)(\gamma c+1)} \)。</p><p class="en">With i.i.d. acceptance rate alpha, the expected tokens per round is one minus alpha to the gamma plus one over one minus alpha, and dividing by the round cost gamma c plus one gives the speedup.</p></div>
+  <div class="deep">
+    <p><b>推导：</b>设接受的 draft 数为 K。第 i 个 token 被考虑且接受当且仅当前 i 个全接受：\(P(K\ge i) = \alpha^i\)。每轮产出 \(K+1\) 个 token（被接受的 K 个 + 一个重采样或 bonus）。</p>
+    $$ \mathbb{E}[K+1] = 1 + \sum_{i=1}^{\gamma} P(K\ge i) = \sum_{i=0}^{\gamma}\alpha^i = \frac{1-\alpha^{\gamma+1}}{1-\alpha} $$
+    <p>每轮成本：γ 次 draft 前向（每次 c）+ 1 次目标前向（处理 γ+1 个 token，在 memory-bound 下 ≈ 1 次普通 decode）。</p>
+    $$ \text{Speedup} = \frac{1-\alpha^{\gamma+1}}{(1-\alpha)(\gamma c + 1)} $$
+    <p><b>数值（c=0.05，已计算）：</b></p>
+    <div class="table-wrap"><table>
+      <tr><th>α</th><th>E[tokens] γ=1/2/4/8</th><th>speedup γ=1/2/4/8</th></tr>
+      <tr><td>0.6</td><td>1.60 / 1.96 / 2.31 / 2.47</td><td>1.52 / 1.78 / 1.92 / 1.77</td></tr>
+      <tr><td>0.8</td><td>1.80 / 2.44 / 3.36 / 4.33</td><td>1.71 / 2.22 / 2.80 / 3.09</td></tr>
+      <tr><td>0.9</td><td>1.90 / 2.71 / 4.10 / 6.13</td><td>1.81 / 2.46 / 3.41 / 4.38</td></tr>
+    </table></div>
+    <p>观察：(1) α 是最重要的因素；(2) 存在最优 γ：α 低时 γ 太大反而变慢（后面的 draft 几乎都被拒，却要付出 draft 成本）；(3) 期望产出上限 \(1/(1-\alpha)\)。</p>
+    <p><b>什么时候 speculative decoding 不划算？</b></p>
+    <ul>
+      <li><b>大 batch / 高负载：</b>batch 大时 decode 已经接近 compute-bound，验证 γ+1 个 token 不再“免费”，被拒 token 的计算纯属浪费。speculative 最适合<b>低 batch、延迟敏感</b>的场景。</li>
+      <li><b>α 低：</b>draft 与目标分布差距大（领域不匹配、高 temperature 采样——T 越高分布越平，TV 距离常常更大）。</li>
+      <li><b>draft 太贵：</b>c 太大。</li>
+      <li>额外显存（draft 模型的权重和 KV）与工程复杂度（KV 回滚、和 continuous batching/分页的结合）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If each draft token is accepted independently with probability alpha, the probability that the first i drafts are all accepted is alpha to the i, and each round emits the accepted drafts plus one more token, so the expected output per round is the geometric sum, one minus alpha to the gamma plus one over one minus alpha. A round costs gamma draft steps plus one target step, so the speedup is that expectation divided by gamma c plus one. For alpha of 0.8, gamma of 4 and a cheap draft, that's around 2.8x. It works best at small batch sizes, where verification is nearly free; at high load the extra verification compute is no longer free and the gains shrink or vanish.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you pick gamma adaptively?</b><details><summary>思路</summary><div class="inner">在线估计 α（最近接受率），按上式选使 speedup 最大的 γ；或者让 draft 在其自身置信度低时提前停止（EAGLE-2 用 draft 置信度动态构造树）；根据当前 batch 大小/负载调整，高负载时关闭 speculation。</div></details></li>
+    <li><b>Does speculative decoding help throughput or latency?</b><details><summary>思路</summary><div class="inner">主要降低单请求延迟。在低负载下也能提高吞吐（更多 token / 每次权重读取）；在高负载下（已经接近 compute-bound）可能降低吞吐。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-spec-variants">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>变体：Medusa、EAGLE、lookahead、self-speculative、MTP</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>核心问题是“draft 从哪来”：独立小模型；在目标模型上加多个预测头（Medusa）；在目标模型特征层上做自回归的轻量 draft（EAGLE 系列）；不用 draft 模型、靠 Jacobi 迭代和 n-gram 池（lookahead）；跳过目标模型的部分层（self-speculative）；或预训练时就带多 token 预测模块（DeepSeek-V3 的 MTP）。</p><p class="en">Variants differ in where drafts come from: a separate small model, extra decoding heads, a lightweight feature-level draft head, Jacobi iteration with n-gram caches, layer skipping, or built-in multi-token prediction modules.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>方法</th><th>draft 来源</th><th>要点</th></tr>
+      <tr><td>独立 draft 模型</td><td>同族小模型（如 1B 给 70B）</td><td>需同词表；要额外显存；分布匹配要好</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2401.10774" target="_blank" rel="noreferrer">Medusa (2401.10774)</a></td><td>在最后隐藏层上加 K 个头，第 k 个头预测第 t+k 个 token</td><td>候选组合成<b>树</b>，用 tree attention mask 一次验证多条分支；头之间互相独立，越远越不准</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2401.15077" target="_blank" rel="noreferrer">EAGLE (2401.15077)</a> / <a href="https://arxiv.org/abs/2406.16858" target="_blank" rel="noreferrer">EAGLE-2</a> / <a href="https://arxiv.org/abs/2503.01840" target="_blank" rel="noreferrer">EAGLE-3</a></td><td>一个轻量（约一层 transformer）的自回归 draft head，在目标模型的特征上外推</td><td>特征层比 token 层更好预测；EAGLE-2 用置信度动态建树；EAGLE-3 改为直接预测 token 并融合多层特征，论文称可随训练数据扩展</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2402.02057" target="_blank" rel="noreferrer">Lookahead decoding (2402.02057)</a></td><td>无 draft 模型：Jacobi 迭代并行猜测多个位置，收集 n-gram 池，再验证</td><td>无需训练；对重复性强的文本（代码）效果好</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2309.08168" target="_blank" rel="noreferrer">Self-speculative / Draft &amp; Verify (2309.08168)</a></td><td>跳过目标模型中的部分层作为 draft</td><td>不需要额外模型；LayerSkip 等工作通过训练让早退层更可用</td></tr>
+      <tr><td>Prompt lookup / n-gram</td><td>从 prompt 中查找匹配 n-gram 作为 draft</td><td>RAG、代码编辑、摘要等“输出大量复制输入”的场景非常有效</td></tr>
+      <tr><td>MTP（DeepSeek-V3）</td><td>预训练时附带的多 token 预测模块</td><td>训练时提供更密的信号，推理时可直接作为 speculative 的 draft</td></tr>
+    </table></div>
+    <p><b>Tree attention：</b>把多条候选路径组织成一棵 token 树，展平成一个序列，用自定义 attention mask 让每个节点只看到它的祖先；一次前向就验证整棵树，选最长被接受的路径。提高每轮期望接受长度。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The variants mostly differ in where the draft comes from. Medusa adds several heads on the last hidden state, each predicting a token further ahead, and verifies a tree of candidates with a tree attention mask. EAGLE trains a small autoregressive head that extrapolates the target's features, which is easier than predicting tokens, and later versions build dynamic trees and fuse multiple layers. Lookahead decoding needs no draft model, using Jacobi iterations to harvest n-grams. Self-speculative decoding skips some of the target's own layers to draft. And models like DeepSeek-V3 train multi-token prediction modules that can be reused as drafters.</p></div>
+</section>
+
+<!-- ============================ §6 ============================ -->
+<h2 class="sec" id="s-quant"><span class="num">§6 · QUANTIZATION</span>量化：用更少的比特表示权重、激活和 KV</h2>
+<p class="sec-intro">量化同时解决两个问题：<b>显存容量</b>（能不能放下）和<b>带宽</b>（decode 每步读多少字节）。面试要能讲清：各种数值格式、量化粒度、对称/非对称、PTQ vs QAT、为什么 LLM 激活难量化（离群值），以及 LLM.int8、SmoothQuant、GPTQ、AWQ 各自的核心想法。</p>
+
+<section class="concept" id="c-formats">
+  <div class="concept-head"><span class="pri p1">★</span><h3>数值格式：fp32 / bf16 / fp16 / fp8 (e4m3, e5m2) / int8 / int4</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>浮点 = 符号 + 指数（决定动态范围）+ 尾数（决定精度）。bf16 与 fp32 同范围（8 位指数）但精度低；fp16 精度高但范围小；fp8 有 e4m3（精度优先，常用于权重/激活前向）与 e5m2（范围优先，常用于梯度）；int 格式是均匀网格，需要 scale。</p><p class="en">Floating-point formats trade exponent bits for range against mantissa bits for precision; integer formats are uniform grids that need a scale factor.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>格式</th><th>位（符号/指数/尾数）</th><th>最大值（约）</th><th>说明</th></tr>
+      <tr><td>FP32</td><td>1/8/23</td><td>3.4e38</td><td>训练的 master weights、优化器状态</td></tr>
+      <tr><td>BF16</td><td>1/8/7</td><td>3.4e38</td><td>与 FP32 同范围，训练和推理的默认格式，不需要 loss scaling</td></tr>
+      <tr><td>FP16</td><td>1/5/10</td><td>65504</td><td>精度更高但易溢出，训练需 loss scaling</td></tr>
+      <tr><td>FP8 E4M3</td><td>1/4/3</td><td>448</td><td>精度优先；前向权重/激活</td></tr>
+      <tr><td>FP8 E5M2</td><td>1/5/2</td><td>57344</td><td>范围优先；常用于梯度</td></tr>
+      <tr><td>INT8</td><td>—</td><td>[−128, 127]</td><td>均匀网格 + scale</td></tr>
+      <tr><td>INT4</td><td>—</td><td>[−8, 7]</td><td>常用于 weight-only；需 group-wise scale</td></tr>
+      <tr><td>NF4 / FP4 (MXFP4, NVFP4)</td><td>—</td><td>—</td><td>NF4（QLoRA）按正态分位数设计格点；MX 等格式用小 block 共享 scale</td></tr>
+    </table></div>
+    <p><b>Microscaling（MX）思路：</b>每 32 个元素（或类似小 block）共享一个缩放因子，把“细粒度 scale”做进硬件格式。新一代 GPU 原生支持 FP4/FP6 类格式。</p>
+    <p><b>为什么 LLM 推理关心 bit 数：</b>decode 带宽受限 → 权重字节减半，batch=1 速度上限大约翻倍；显存减半 → 能放更大的模型或更多 KV。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A float has a sign, exponent bits that set the dynamic range, and mantissa bits that set precision. BF16 keeps FP32's eight exponent bits, so it has the same range with less precision, which is why it doesn't need loss scaling, whereas FP16 has more precision but overflows above about 65 thousand. FP8 comes in E4M3, favoring precision, for forward weights and activations, and E5M2, favoring range, for gradients. Integer formats like INT8 and INT4 are uniform grids, so they need scale factors, and the granularity of those scales matters a lot.</p></div>
+</section>
+
+<section class="concept" id="c-quant-basics">
+  <div class="concept-head"><span class="pri p1">★</span><h3>量化基础：scale 与 zero-point、粒度、weight-only vs W+A、PTQ vs QAT</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>对称量化 \( q = \mathrm{clip}(\mathrm{round}(x/s)) \)，\( s = \max|x| / q_{\max} \)；非对称多一个 zero-point 用于偏斜分布。scale 的粒度从粗到细：per-tensor → per-channel → per-group（如 128 个元素）→ per-block；越细误差越小，scale 存储开销越大。</p><p class="en">Symmetric quantization divides by an absmax scale and rounds; asymmetric adds a zero point; finer scale granularity, from per-tensor to per-channel to per-group, lowers error at the cost of storing more scales.</p></div>
+  <div class="deep">
+    <p><b>对称（absmax）：</b>\( s = \frac{\max|x|}{2^{b-1}-1},\ q = \mathrm{clip}(\mathrm{round}(x/s), -q_{\max}, q_{\max}),\ \hat{x} = s\cdot q \)。最大舍入误差 \(s/2\)。</p>
+    <p><b>非对称（min-max）：</b>\( s = \frac{x_{\max}-x_{\min}}{2^b - 1},\ z = \mathrm{round}(-x_{\min}/s),\ q = \mathrm{clip}(\mathrm{round}(x/s)+z, 0, 2^b-1),\ \hat{x} = s(q - z) \)。适合非零中心的分布（如 ReLU 后激活）。</p>
+    <p><b>粒度：</b>一个离群值会撑大它所在分组的 scale，让同组其他值的有效精度下降。所以分组越小越抗离群。INT4 权重通常用 group size 64/128，每组存一个 fp16 scale（group 128 时约为每权重额外 0.125 bit）。</p>
+    <p><b>实验（numpy，已运行）：</b>对一个“不同行尺度差异很大”的 256×1024 权重矩阵：</p>
+    <div class="table-wrap"><table>
+      <tr><th>方案</th><th>相对误差 ‖W−Ŵ‖/‖W‖</th></tr>
+      <tr><td>INT8 per-tensor</td><td>0.0329</td></tr>
+      <tr><td>INT8 per-channel（对称）</td><td>0.0078</td></tr>
+      <tr><td>INT8 per-channel（非对称）</td><td>0.0073</td></tr>
+      <tr><td>INT4 per-channel</td><td>0.1404</td></tr>
+      <tr><td>INT4 group-128</td><td>0.1171</td></tr>
+    </table></div>
+    <p><b>Weight-only vs Weight+Activation：</b></p>
+    <ul>
+      <li><b>Weight-only（W4A16、W8A16）：</b>权重以低比特存储，计算前在 kernel 里反量化回 bf16。省显存、省带宽 → <b>小 batch decode 加速</b>；但计算仍是 bf16，大 batch（compute-bound）时没有加速甚至因反量化开销变慢。</li>
+      <li><b>W8A8（INT8 或 FP8）：</b>权重和激活都量化，用低精度 tensor core 计算 → 加速 compute-bound 的 prefill 和大 batch。难点是激活的离群值。</li>
+    </ul>
+    <p><b>PTQ vs QAT：</b>PTQ（post-training quantization）用少量校准数据直接量化训练好的模型，便宜，LLM 最常用（GPTQ、AWQ、SmoothQuant 都是 PTQ）。QAT（quantization-aware training）训练时插入“伪量化”（前向量化-反量化，反向用 straight-through estimator 让梯度穿过 round），质量更好但需要训练成本；低于 4 bit 时通常需要 QAT 或类似方法。</p>
+  </div>
+  <details class="deep"><summary>代码：per-channel INT8 量化/反量化（PyTorch）</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+def quantize_per_channel_int8(w):
+    # w: (out, in). symmetric absmax per output channel
+    scale = w.abs().amax(dim=1, keepdim=True).clamp(min=1e-12) / 127
+    q = torch.clamp(torch.round(w / scale), -127, 127).to(torch.int8)
+    return q, scale
+
+def dequantize(q, scale):
+    return q.float() * scale
+
+w = torch.randn(256, 1024) * torch.randn(256, 1).exp()
+q, s = quantize_per_channel_int8(w)
+err = (w - dequantize(q, s)).norm() / w.norm()             # ~0.008
+assert ((w - dequantize(q, s)).abs() &lt;= s / 2 + 1e-6).all()   # error &lt;= half a step</code></pre>
+  <p>为什么用 ±127 而不是 −128..127？保持对称，0 精确表示，且避免 −128 带来的不对称。等价 numpy 版本已运行（误差 0.0078）。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul><li>“INT4 权重量化一定让推理更快”：只在 memory-bound（小 batch decode）时成立；大 batch 下 W4A16 需要反量化，计算还是 bf16。</li>
+    <li>“per-channel 指的是输入通道”：对权重 \(W\in\mathbb{R}^{\text{out}\times\text{in}}\)，per-output-channel scale 可以在矩阵乘之后再乘回去（\(y_j = s_j \sum_i q_{ji}x_i\)），对计算友好；per-input-channel 则不能直接提出，这就是 SmoothQuant 要把激活的 per-channel 缩放“迁移”进权重的原因。</li></ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Symmetric quantization picks a scale as the absolute max divided by the largest integer, divides, rounds and clips; dequantization multiplies back. Asymmetric quantization adds a zero point for skewed ranges. The key design choice is granularity: a single scale per tensor is cheap but one outlier ruins the resolution for everything, so we use per-channel scales for INT8 and small groups of 64 or 128 for INT4. Weight-only quantization saves memory and bandwidth, so it speeds up small-batch decoding, while quantizing both weights and activations lets you use low-precision tensor cores for compute-bound work. Most LLM quantization is post-training with a small calibration set; quantization-aware training uses fake quantization with a straight-through estimator.</p></div>
+</section>
+
+<section class="concept" id="c-outliers">
+  <div class="concept-head"><span class="pri p1">★</span><h3>激活离群值：LLM.int8() 与 SmoothQuant</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>大模型（约 6.7B 以上）的激活中，少数特征维度会系统性地出现比其他维度大几十倍的值，per-tensor 激活量化因此崩溃。LLM.int8() 把离群维度拆出来用 fp16 算；SmoothQuant 用数学等价变换把激活的难度“迁移”到权重上。</p><p class="en">Large models develop a few activation channels with huge magnitudes; LLM.int8 handles them in fp16 via mixed-precision decomposition, while SmoothQuant rescales channels to migrate the difficulty from activations into weights.</p></div>
+  <div class="deep">
+    <p><b>LLM.int8()（<a href="https://arxiv.org/abs/2208.07339" target="_blank" rel="noreferrer">Dettmers et al. 2022, arXiv 2208.07339</a>）：</b>发现大约在 6.7B 规模时出现“emergent outlier features”——少数隐藏维度在几乎所有层和 token 上数值巨大。方法：向量级（vector-wise）INT8 量化 + <b>混合精度分解</b>：幅值超过阈值（如 6）的特征维度对应的列用 fp16 矩阵乘，其余用 INT8。质量几乎无损，但分解带来的开销使其在速度上不占优，主要价值是省显存。</p>
+    <p><b>SmoothQuant（<a href="https://arxiv.org/abs/2211.10438" target="_blank" rel="noreferrer">Xiao et al. 2022, arXiv 2211.10438</a>）：</b>激活难量化（按通道离群），权重容易量化。利用 \( Y = XW = (X\,\mathrm{diag}(s)^{-1})(\mathrm{diag}(s)\,W) \)，对每个输入通道 j 选：</p>
+    $$ s_j = \frac{\max|X_j|^{\alpha}}{\max|W_j|^{1-\alpha}},\quad \alpha \approx 0.5 $$
+    <p>把激活的离群通道缩小、权重对应行放大，两边都变得“好量化”。\(\mathrm{diag}(s)^{-1}\) 可以离线融合进前面的 LayerNorm 或上一个线性层，推理时无额外开销，从而实现 W8A8 per-tensor 激活量化。</p>
+    <p><b>实验（numpy，已运行）：</b>X 为 64×1024，其中一个维度放大 60 倍；W8A8 per-tensor 量化输出相对误差：朴素 0.141 → SmoothQuant 0.031（随机种子不同时数值略变，量级稳定）（并验证了变换前后精确相等）。</p>
+    <p><b>相关：</b>旋转类方法（QuaRot、SpinQuant 等）用正交（如 Hadamard）旋转把离群值“摊平”到所有维度，再做低比特 W4A4 量化——\( XW = (XR)(R^\top W) \)。</p>
+  </div>
+  <details class="deep"><summary>代码：SmoothQuant 的核心变换（numpy，已测试）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(0)
+
+def quant_sym(w, bits=8, axis=None):
+    qmax = 2**(bits - 1) - 1
+    amax = np.abs(w).max() if axis is None else np.abs(w).max(axis=axis, keepdims=True)
+    scale = np.maximum(amax, 1e-12) / qmax
+    return np.clip(np.round(w / scale), -qmax, qmax), scale
+
+def qdq(a):                                  # per-tensor quantize -&gt; dequantize
+    q, s = quant_sym(a); return q * s
+
+X = rng.normal(0, 1, (64, 1024)); X[:, 7] *= 60          # one outlier channel
+W = rng.normal(0, 0.03, (1024, 512)); Y = X @ W
+rel = lambda a, b: np.linalg.norm(a - b) / np.linalg.norm(a)
+
+alpha = 0.5
+s = np.abs(X).max(0)**alpha / np.abs(W).max(1)**(1 - alpha)   # per input channel
+Xs, Ws = X / s, W * s[:, None]
+assert np.allclose(Xs @ Ws, Y)                                # exact equivalence
+print(rel(Y, qdq(X) @ qdq(W)), rel(Y, qdq(Xs) @ qdq(Ws)))      # 0.141 vs 0.031</code></pre>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Beyond a few billion parameters, transformers develop a handful of activation channels that are tens of times larger than the rest, consistently across tokens. With per-tensor activation quantization, those outliers set the scale and crush everything else to zero. LLM.int8 handles this by splitting out the outlier columns and computing them in fp16 while the rest runs in INT8. SmoothQuant instead uses the identity XW equals X times diag s inverse times diag s times W, choosing per-channel factors that shrink activation outliers and grow the corresponding weight rows, which balances difficulty so both can be INT8; the scaling folds into the preceding layer norm, so it's free at inference.</p></div>
+</section>
+
+<section class="concept" id="c-gptq-awq">
+  <div class="concept-head"><span class="pri p1">★</span><h3>GPTQ 与 AWQ：4-bit weight-only 的两大主流方法</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>GPTQ：逐列量化权重，并用（基于校准激活的）Hessian 逆把每列的量化误差补偿到尚未量化的列上（源自 Optimal Brain Surgeon）。AWQ：少数“显著”权重通道（按激活幅值判断）最重要，量化前对它们按比例放大（等价地缩小对应激活），无需反向传播或重建。</p><p class="en">GPTQ quantizes weights column by column and uses the inverse Hessian from calibration activations to push each column's error onto the remaining columns; AWQ protects salient channels, identified by activation magnitude, by scaling them up before quantization.</p></div>
+  <div class="deep">
+    <p><b>共同的目标：</b>不是最小化 \(\|W-\hat W\|\)，而是最小化<b>输出误差</b> \( \|WX - \hat W X\|_F^2 \)，X 是校准数据的输入激活。对每一行 w（输出通道）这是一个二次型：\( (w-\hat w)^\top H (w-\hat w) \)，其中 \( H = 2XX^\top \)。</p>
+    <p><b>OBS 思想（Optimal Brain Surgeon）：</b>如果把第 q 个权重固定为量化值（改变 \(\delta_q = \hat w_q - w_q\)），其余权重的最优补偿是：</p>
+    $$ \delta = -\frac{w_q - \hat w_q}{[H^{-1}]_{qq}}\, (H^{-1})_{:,q} $$
+    <p>（\(H^{-1}\) 取在尚未量化的权重子集上；这个 δ 的第 q 个分量恰好把 \(w_q\) 移到 \(\hat w_q\)，其余分量是最优补偿。）引起的误差增加 \( \propto \frac{(w_q - \hat w_q)^2}{[H^{-1}]_{qq}} \)。我用 numpy 验证过：这个闭式补偿与“固定 \(w_q\) 后对其余权重做最小二乘”的解完全一致，且输出误差比只舍入不补偿小（0.44 vs 0.72）。</p>
+    <p><b>GPTQ（<a href="https://arxiv.org/abs/2210.17323" target="_blank" rel="noreferrer">Frantar et al. 2022, arXiv 2210.17323</a>）的工程化：</b>(1) 所有行用<b>相同的列顺序</b>量化，所以 \(H^{-1}\) 的更新对所有行共享，可以批处理；(2) 按 block（如 128 列）懒更新，提高 GPU 利用率；(3) 用 Cholesky 分解稳定地得到需要的 \(H^{-1}\) 行。结果：单卡几小时量化 175B 模型到 3–4 bit，困惑度损失小。</p>
+    <p><b>AWQ（<a href="https://arxiv.org/abs/2306.00978" target="_blank" rel="noreferrer">Lin et al. 2023, arXiv 2306.00978</a>）：</b></p>
+    <ul>
+      <li>观察：保护约 1% 的显著权重通道（保持 fp16）就能大幅降低误差；显著性应按<b>激活</b>幅值而非权重幅值判断。</li>
+      <li>但混合精度对硬件不友好，于是改为<b>按通道缩放</b>：权重通道乘 s&gt;1、激活除以 s。放大后该通道的相对舍入误差变小（scale 由组内最大值决定，基本不变）。</li>
+      <li>s 用激活幅值的幂 \(s = \bar{|x|}^{\alpha}\) 参数化，对 α 做小网格搜索最小化输出误差。不需要反向传播，对校准集过拟合风险小。</li>
+    </ul>
+    <div class="table-wrap"><table>
+      <tr><th></th><th>GPTQ</th><th>AWQ</th><th>SmoothQuant</th><th>LLM.int8()</th></tr>
+      <tr><td>量化对象</td><td>权重（W4/W3）</td><td>权重（W4）</td><td>W8A8</td><td>W8A8（混合精度）</td></tr>
+      <tr><td>核心手段</td><td>二阶误差补偿</td><td>按激活显著性缩放通道</td><td>激活→权重难度迁移</td><td>离群维度 fp16</td></tr>
+      <tr><td>主要收益</td><td>显存 + 小 batch 速度</td><td>同左</td><td>INT8 计算加速</td><td>显存</td></tr>
+    </table></div>
+    <p><b>70B 模型权重显存：</b>bf16 140 GB（2 张 80GB 卡都不太够，还需 KV）；INT8 70 GB；INT4 35 GB（单张 80GB 卡可放下并留出 KV 空间；group scale 再多约 3%）；3-bit 约 26 GB。</p>
+    <p><b>量化对什么伤害最大？</b>经验上，低比特量化对多步推理（数学、代码）、长上下文、多语言和长尾知识的伤害往往比对常见基准的平均分更大——单一 perplexity 可能掩盖这些退化，评测时应包含推理类任务。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Both methods minimize the layer's output error on calibration data, not the raw weight error. GPTQ comes from Optimal Brain Surgeon: it quantizes one column at a time and uses the inverse Hessian, which is just X X transpose of the calibration inputs, to update the not-yet-quantized columns so they compensate for the rounding error; using the same column order for all rows makes it fast enough for hundred-billion-parameter models. AWQ observes that a small fraction of weight channels matter most, identified by large input activations, and protects them by scaling those channels up before quantization and scaling the activations down, searching the scaling exponent on a small grid. Both give near-lossless 4-bit weight-only models, which mainly speed up memory-bound decoding.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does scaling a channel up reduce its relative quantization error in AWQ?</b><details><summary>思路</summary><div class="inner">组 scale 由组内 absmax 决定，放大单个通道（如果它不是组内最大值）几乎不改变 scale \(\Delta\)，舍入误差上界仍是 \(\Delta/2\)；但该权重的值变大了 s 倍，再乘以缩小 s 倍的激活，输出误差中这一项被缩小约 s 倍。s 过大会让它成为组内最大值、增大 \(\Delta\)，所以需要搜索。</div></details></li>
+    <li><b>How would you evaluate whether a quantized model is good enough?</b><details><summary>思路</summary><div class="inner">不仅看 perplexity：跑下游任务（尤其是数学/代码/长上下文/多语言）、与原模型的逐 token KL 或 top-1 一致率、生成长度分布变化、在真实流量样本上做 A/B 或 LLM-judge 比较；同时测真实延迟/吞吐，确认 kernel 真的带来了加速。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ §7 ============================ -->
+<h2 class="sec" id="s-other"><span class="num">§7 · OTHER ACCELERATIONS</span>其他加速手段</h2>
+<p class="sec-intro">这些话题通常不会深挖，但需要能各说两三句：蒸馏、剪枝（含 2:4 稀疏）、FlashDecoding、CUDA graphs 与 kernel 融合，以及长上下文服务的成本。</p>
+
+<section class="concept" id="c-distill-prune">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>蒸馏与剪枝（unstructured / structured / 2:4）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>蒸馏训练一个小模型模仿大模型（soft label 的 KL 或在 teacher 生成的数据上 SFT），从根本上减少每 token 的计算与字节。剪枝删除权重：非结构化剪枝压缩率高但难以加速；结构化剪枝（删头、删层、删通道）能直接加速但损失大；2:4 半结构化稀疏有硬件支持。</p><p class="en">Distillation trains a smaller student to imitate the teacher; pruning removes weights, where unstructured sparsity is hard to accelerate, structured pruning speeds up directly, and 2:4 sparsity has hardware support.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>蒸馏：</b>logit 蒸馏 \( \mathrm{KL}(p_T^{(\tau)} \| p_S^{(\tau)}) \)（需要同词表、能访问 teacher logits）；序列级蒸馏（在 teacher 采样的输出上 SFT，例如把推理模型的长 CoT 蒸馏到小模型）；on-policy 蒸馏（学生自己采样、teacher 打分，缓解 exposure bias）。</li>
+      <li><b>非结构化剪枝：</b>按幅值或二阶信息（SparseGPT、Wanda 等）删除单个权重，50% 稀疏度下质量可保持，但不规则稀疏在 GPU 上很难加速（需要非常高的稀疏度才划算）。</li>
+      <li><b>2:4 稀疏：</b>每连续 4 个权重中恰好 2 个为零，NVIDIA Ampere 及之后的 sparse tensor core 原生支持，理论上矩阵乘吞吐 2×（实际加速通常更小）；质量损失比非结构化剪枝大，往往需要再训练。</li>
+      <li><b>结构化剪枝：</b>删除注意力头、FFN 通道、整层（深层的很多层相似度高，删掉一部分损失小）+ 蒸馏恢复。NVIDIA 的 Minitron 系列就是“剪枝 + 蒸馏”路线。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Distillation is the most reliable way to cut inference cost: train a smaller student on the teacher's soft labels or on teacher-generated sequences, which is how many small reasoning models are produced. Pruning removes weights; unstructured magnitude or second-order pruning keeps quality at moderate sparsity but is hard to turn into real speedups on GPUs, while 2:4 semi-structured sparsity is supported by sparse tensor cores, and structured pruning of heads, channels or whole layers gives direct speedups but usually needs distillation to recover quality.</p></div>
+</section>
+
+<section class="concept" id="c-flashdecoding">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>FlashDecoding、CUDA graphs、kernel 融合</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>FlashDecoding 在 decode 时沿 KV 长度方向切分（split-KV），多个线程块并行处理不同 KV 段，再用 log-sum-exp 合并，解决“batch 小、query 只有 1 个时 GPU 并行度不足”的问题。CUDA graphs 把一整步的数百个小 kernel 录制成一张图一次性提交，消除 CPU launch 开销；kernel 融合减少中间结果读写。</p><p class="en">FlashDecoding splits the KV sequence across thread blocks and merges partial softmaxes, restoring parallelism for single-query long-context decode; CUDA graphs remove kernel launch overhead and fusion removes intermediate memory traffic.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>FlashDecoding（<a href="https://crfm.stanford.edu/2023/10/12/flashdecoding.html" target="_blank" rel="noreferrer">Dao et al. 2023 博客</a>）：</b>FlashAttention 在 batch×heads 和 query 块上并行；decode 时 query 长度为 1，若 batch 小，块数不足以填满上百个 SM。split-KV：每块算出局部的 \((m_j, \ell_j, o_j)\)（最大值、归一化和、未归一化输出），最后按 online softmax 规则合并：\( m=\max_j m_j,\ \ell=\sum_j e^{m_j-m}\ell_j,\ o=\sum_j e^{m_j-m}o_j/\ell \)。</li>
+      <li><b>CUDA graphs：</b>小 batch decode 每步的 GPU 计算可能只有几毫秒，而 Python + 数百次 kernel launch 的 CPU 开销同一量级。录制成 graph 后重放，CPU 开销几乎消失（需要静态形状，所以引擎会为若干 batch size 预录制）。<code>torch.compile</code> 的 “reduce-overhead” 模式就使用 CUDA graphs。</li>
+      <li><b>融合：</b>把 RMSNorm + 量化、RoPE + attention、SwiGLU 的逐元素部分、采样等融合进一个 kernel，减少 HBM 往返。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>During decode there's only one query per sequence, so with a small batch FlashAttention can't launch enough blocks to fill the GPU, especially at long context. FlashDecoding splits the KV cache along the sequence dimension, computes partial attention with local max and sum statistics in parallel, and merges them with the same log-sum-exp trick as online softmax. Separately, CUDA graphs record the hundreds of small kernels in a decode step and replay them with one launch, which matters because at small batch the CPU launch overhead can rival the GPU time; and kernel fusion cuts memory round trips.</p></div>
+</section>
+
+<section class="concept" id="c-longctx-serving">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>长上下文服务的成本</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>长上下文的代价有三处：prefill 的注意力 \(O(T^2)\) 计算（TTFT 变长），KV cache 显存 \(O(T)\)（并发数下降，吞吐下降），以及 decode 每步读取 KV 的带宽 \(O(T)\)（TPOT 变长）。</p><p class="en">Long context costs quadratic prefill attention, linear KV memory that limits concurrency, and linear KV reads per decode step that slow every token.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Prefill：</b>每层注意力 FLOPs ≈ \(4T^2 d\)（QKᵀ 和 AV 各 \(2T^2d\)；因果 mask 理论上可省一半）。对 7B（d=4096，L=32）而言，大约在 T 达到数万时注意力项就与线性层 \(2NT\) 相当。超长 prompt 需要 context parallel / ring attention 把序列切到多卡（见模块 09）。</li>
+      <li><b>KV 显存：</b>例如 70B GQA-8 在 128k 下每序列 40 GiB——单卡（甚至单机）只能服务极少量并发。这是 API 对长上下文收更高价格的原因之一。</li>
+      <li><b>Decode 带宽：</b>每步读的 KV 字节随 T 线性增长，长上下文下会超过权重本身（7B MHA 在 32k 时 KV 16 GiB，已超过 13.5 GB 权重）。</li>
+      <li><b>缓解：</b>GQA/MLA、KV 量化、滑窗/混合注意力（部分层全局、部分层局部）、prefix caching（长文档复用）、KV offload 到 CPU、稀疏注意力/检索式 KV 选择。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Long context hurts in three places. Prefill attention grows quadratically, so time to first token climbs. The KV cache grows linearly per sequence, so fewer sequences fit and throughput drops. And every decode step must read the whole cache, so inter-token latency also grows linearly, eventually exceeding the cost of reading the weights. The mitigations are GQA or MLA, KV quantization, hybrid local-global attention, prefix caching, offloading, and sparse or retrieval-based attention over the cache.</p></div>
+</section>
+
+<!-- ============================ §8 ============================ -->
+<h2 class="sec" id="s-scenarios"><span class="num">§8 · INTERVIEW SCENARIOS</span>面试场景题（模拟面试）</h2>
+<p class="sec-intro">下面的题目模拟面试官的开放式提问。先自己用英文口头回答（限时 2–3 分钟），再展开参考思路。好的回答结构：<b>先给数量级 / 诊断框架 → 再列假设 → 最后给可执行的实验或改动</b>。</p>
+
+<section class="concept" id="c-scenarios">
+  <div class="concept-head"><span class="pri p1">★</span><h3>12 道场景题</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>回答场景题的通用套路：先确定瓶颈属于 compute、memory bandwidth、memory capacity、通信还是调度/CPU 开销，再对症下药。</p><p class="en">For any inference scenario, first identify the bottleneck: compute, bandwidth, capacity, communication, or scheduling overhead, then pick the matching fix.</p></div>
+  <div class="followups"><ol>
+    <li><b>S1. What's the maximum batch size for LLaMA-2-13B at 4k context on one 80GB GPU in bf16?</b><details><summary>思路</summary><div class="inner">
+      <p>权重：13B × 2 B ≈ 26 GB。KV/token：\(2\times40\times5120\times2\) = 800 KiB（13B 是 MHA：L=40，d=5120）。每个 4k 序列：3.125 GiB ≈ 3.36 GB。剩余 ≈ 80 − 26 = 54 GB → 理论上限约 16 个序列。扣除激活、CUDA context、碎片等（预留约 10–15%），实际约 13–14 个。</p>
+      <p>能提高的方法：KV 用 FP8（翻倍到约 30）；权重 INT8/INT4（多出 13–19 GB）；PagedAttention（多数请求实际用不到 4k，按需分配可以支持更多并发）；TP=2。</p>
+      <p class="en">"Weights take about 26 GB, KV is 800 KB per token, so 3.3 GB per 4k sequence; the remaining 54 GB fits roughly 16 sequences in theory, more like 13 or 14 after overhead."</p></div></details></li>
+    <li><b>S2. Our decode throughput is low. How do you debug it?</b><details><summary>思路</summary><div class="inner">
+      <p>(1) 先算理论值：batch × BW / (权重字节 + KV 字节)，和实测比较。(2) batch 是否太小？看并发请求数、调度器是否在攒 batch、KV 显存是否限制了 batch（显存利用率、抢占次数）。(3) GPU 是否在等 CPU？profile 看 kernel 之间的空隙（Python 开销、未启用 CUDA graphs、采样/去 token 化在 CPU 上、tokenizer 瓶颈）。(4) kernel 是否高效：是否用了 paged/flash attention、量化 kernel 是否真的被调用、是否有不必要的 dtype 转换。(5) 多卡：TP 的 all-reduce 是否走了 PCIe 而不是 NVLink。(6) 长上下文下 KV 读取占主导 → GQA/KV 量化。</p></div></details></li>
+    <li><b>S3. TTFT is high but TPOT is fine. What could be wrong?</b><details><summary>思路</summary><div class="inner">
+      <p>TTFT = 排队 + prefill。(1) 排队：请求到达率过高、调度策略让新请求等待（比如优先 decode）、没有足够实例。(2) prefill 慢：prompt 很长（attention 二次项）、没有 prefix caching（多轮对话每轮重算历史；prompt 开头有变化内容导致缓存不命中）、prefill 被切成太小的 chunk。(3) 解决：prefix caching、更大的 chunk / 优先 prefill、PD 分离并增加 prefill 实例、对长 prompt 用 TP 或 context parallel、缩短 system prompt。</p></div></details></li>
+    <li><b>S4. When does speculative decoding fail to help or even hurt?</b><details><summary>思路</summary><div class="inner">
+      <p>(1) 大 batch / 高负载：系统已接近 compute-bound，验证额外 token 不再免费。(2) 接受率低：draft 与 target 不匹配（领域不同、target 经过大量 RL 后分布偏移、高 temperature、不同 chat template）。(3) draft 成本高或 γ 设得过大。(4) 工程开销：draft 的 KV、回滚、和 paged KV/continuous batching 的协同。(5) 对超长输出且内容不可预测的创造性任务收益较小；对代码编辑、RAG（大量复制输入）收益大。</p></div></details></li>
+    <li><b>S5. After INT4 quantization, the model's math accuracy dropped a lot but chat quality looks fine. Why, and what do you do?</b><details><summary>思路</summary><div class="inner">
+      <p>原因：多步推理中每一步的小误差会累积，一个错误 token 就可能毁掉整条推理链；长 CoT 意味着更多出错机会；聊天质量的评估更宽松。另外，校准数据如果全是普通网页文本，对数学/代码相关的激活分布覆盖不足。</p>
+      <p>做法：用包含数学/代码/长 CoT 的校准集；用更小的 group size（64）；对敏感层（首尾层、attention 输出投影、LM head）保持高精度；改用 W8A8 / FP8；尝试 AWQ vs GPTQ；QAT 或量化后少量蒸馏微调；评测时测 pass@1 而非 perplexity。</p></div></details></li>
+    <li><b>S6. How would you serve a 70B model at low latency for interactive chat?</b><details><summary>思路</summary><div class="inner">
+      <p>bf16 权重 140 GB → 至少 2 张 80GB，一般 TP=4 或 8 以降低每 token 延迟（每卡读 1/k 权重），走 NVLink。FP8 权重（70 GB）可以减少卡数或提升速度。加上：continuous batching + paged KV、prefix caching（system prompt）、speculative decoding（低负载时，用同族 8B 或 EAGLE head）、CUDA graphs。估算：bf16 TP=4 的 batch=1 上限 ≈ 4×3.35 TB/s ÷ 140 GB ≈ 96 tok/s（理想值，实际受通信影响更低）。</p></div></details></li>
+    <li><b>S7. Your RL training spends 80% of its time on rollout generation. How do you speed it up?</b><details><summary>思路</summary><div class="inner">
+      <p>Rollout 就是推理问题：用高效推理引擎（vLLM/SGLang）而不是训练框架的 generate；大 batch + continuous batching；GRPO 对同一 prompt 采 G 个回答 → prefix caching / 共享 prompt KV；长尾问题：少数超长回答拖住整个 batch → 设置最大长度、异步/部分 rollout（未完成的回答带到下一轮）、过度采样后提前截止；FP8 rollout（注意 rollout 与训练的数值不一致导致的 off-policy 偏差，可用重要性采样修正）；训练与推理分离部署并异步执行（权重同步的代价）。</p></div></details></li>
+    <li><b>S8. The model generates repetitive loops in production. What do you check?</b><details><summary>思路</summary><div class="inner">
+      <p>解码参数（是否被设成 greedy 或 T 很低）、是否需要轻微 repetition/presence penalty 或 min-p/top-p；chat template / stop token 是否正确（模型不知道何时停止）；量化后的数值问题；长上下文超出训练长度（RoPE 外推失败）；KV cache 相关 bug（位置偏移错误、cache 复用错误）。区分“模型行为问题”和“系统 bug”：用参考实现（不带 cache、bf16）复现同一个 prompt。</p></div></details></li>
+    <li><b>S9. Outputs differ between batch size 1 and batch size 32 with temperature 0. Is this a bug?</b><details><summary>思路</summary><div class="inner">
+      <p>不一定。不同 batch size 会选择不同的 kernel/切分方式，浮点加法的归约顺序不同 → logits 有微小差异 → 当 top-2 非常接近时 argmax 翻转，之后的序列完全分岔。这是“batch 不变性”问题；要做到确定性需要 batch-invariant kernel（以性能为代价）。若差异很大（不是偶发），检查 padding/mask 是否正确、位置 id 在左 padding 时是否处理正确。</p></div></details></li>
+    <li><b>S10. You have 1M prompts to label offline as cheaply as possible. How do you configure inference?</b><details><summary>思路</summary><div class="inner">
+      <p>离线 = 只关心吞吐，不关心延迟：尽可能大的 batch（直到 KV 显存满）、按长度排序/分桶减少浪费、共享前缀的 prompt 放在一起（prefix caching）、FP8/INT8 W8A8 加速 compute-bound 部分、关闭 speculative decoding、限制输出长度（例如结构化输出 + 约束解码）、多副本数据并行而不是大 TP。</p></div></details></li>
+    <li><b>S11. Estimate the cost per million output tokens for an 8B model on an H100.</b><details><summary>思路</summary><div class="inner">
+      <p>用 §3 的估算：batch 64、2k 上下文时理想吞吐约 6,500 tok/s，按 50% 效率算约 3,000 tok/s ≈ 1,080 万 token/小时。若 H100 每小时约 2–3 美元，则每百万输出 token 约 0.2–0.3 美元（只算 GPU，粗略量级；且没有计入 prefill）。关键是展示推理链：吞吐由 batch 和带宽决定 → 换算成每小时 token → 除以 GPU 价格。</p></div></details></li>
+    <li><b>S12. Should we use a MoE model or a dense model for serving at scale?</b><details><summary>思路</summary><div class="inner">
+      <p>MoE：每 token 计算量低（激活参数少），在 compute-bound 的大 batch 场景很划算；但总参数必须放进显存（需要更多卡 / EP），小 batch 时每步要读的专家权重接近激活参数，而大 batch 下几乎所有专家都被激活，读取量接近总参数；all-to-all 通信、负载不均衡也增加复杂度。高吞吐大规模部署（大 EP + PD 分离）时 MoE 性价比很高；小规模、低并发、显存受限时 dense 更简单。</p></div></details></li>
+  </ol></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>My general approach to any serving question is to first do a back-of-the-envelope estimate from parameter count, KV bytes per token, memory bandwidth and FLOPs, then compare that against what we observe. If we're far below the bandwidth bound at small batch, it's usually overhead: kernel launches, CPU-side work, or poor batching. If memory is full, it's KV capacity, and the fixes are GQA, KV quantization, paging and prefix sharing. If it's prefill-heavy, I look at caching, chunking and disaggregation.</p></div>
+</section>
+
+<!-- ============================ §9 ============================ -->
+<h2 class="sec" id="s-exercises"><span class="num">§9 · EXERCISES</span>练习（数值题 + 编码题）</h2>
+<p class="sec-intro">所有数值答案都已用脚本计算核对。建议先在纸上算，限时 3–5 分钟一题——面试中这类题就是要你“边说边算”。</p>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.1</b> · 难度 ★</div>
+<p>LLaMA-3-8B（L=32，32 个 query 头，8 个 KV 头，\(d_h\)=128），bf16 KV。batch=8、每个序列 32k token 时 KV cache 有多大？</p>
+<details><summary>提示</summary><div class="inner">每 token 用 \(n_{kv}\)=8，不是 32。</div></details>
+<details><summary>参考答案</summary><div class="inner">每 token：\(2\times32\times8\times128\times2\) = 128 KiB。总计：128 KiB × 32768 × 8 = <b>32 GiB</b>。比 16 GB 的权重还大一倍。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.2</b> · 难度 ★</div>
+<p>一个 70B 模型用 INT4 weight-only 量化（忽略 scale 开销），在单张 H100（3.35 TB/s）上 batch=1 decode 的理论速度上限是多少？和 bf16 相比呢？</p>
+<details><summary>参考答案</summary><div class="inner">INT4 权重 = 35 GB；3.35e12 / 35e9 ≈ <b>96 tok/s</b>（上限）。bf16 需要 140 GB，单卡放不下；即使放得下，上限也只有约 24 tok/s。这就是 weight-only 量化对小 batch 有效的原因：速度 ∝ 1/权重字节。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.3</b> · 难度 ★★</div>
+<p>证明：在 bf16 权重下，(B×d)·(d×d) 矩阵乘的算术强度约为 B（当 B≪d）。在 H100 上，batch 需要多大才能让线性层变为 compute-bound？</p>
+<details><summary>参考答案</summary><div class="inner">FLOPs = \(2Bd^2\)；字节 = \(2d^2 + 2Bd + 2Bd\)（权重 + 输入 + 输出），B≪d 时 ≈ \(2d^2\)。AI ≈ \(2Bd^2/2d^2 = B\)。脊点 ≈ 989e12/3.35e12 ≈ 295 → B ≳ 300。d=4096 时实测：B=256 → AI ≈ 228（输入输出项开始有影响）。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.4</b> · 难度 ★★</div>
+<p>speculative decoding 中 α=0.7，draft 相对成本 c=0.1。(a) γ=3 时期望每轮产出多少 token？加速比多少？(b) 最优 γ 是多少？</p>
+<details><summary>参考答案</summary><div class="inner">(a) \(E = (1-0.7^4)/(1-0.7) = 0.7599/0.3 \approx 2.53\) 个 token；加速比 = 2.53/(3×0.1+1) ≈ <b>1.95×</b>。<br>(b) 枚举 γ=1..7 的加速比：1.55, 1.83, 1.95, <b>1.98</b>, 1.96, 1.91, 1.85 → 最优 γ=4（约 1.98×），之后下降。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.5</b> · 难度 ★★</div>
+<p>目标分布 p=[0.5, 0.3, 0.2]，draft 分布 q=[0.2, 0.5, 0.3]。求接受率 α 和拒绝后的残差分布。</p>
+<details><summary>参考答案</summary><div class="inner">\(\alpha = \sum\min(p,q) = 0.2+0.3+0.2 = 0.7\)。\((p-q)^+ = [0.3, 0, 0]\)，归一化后 = [1, 0, 0]。验证：P(输出 token 0) = min(0.5,0.2) + 0.3×1 = 0.5 ✓；token 1：0.3 + 0 = 0.3 ✓；token 2：0.2 ✓。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.6</b> · 难度 ★★</div>
+<p>编码：实现 top-p 过滤 <code>top_p_filter(logits, p)</code>（numpy，1D），要求越过 p 的那个 token 保留、至少保留 1 个 token。用 logits=log([0.5,0.2,0.15,0.1,0.05]) 测试 p=0.6 应保留 2 个，p=0.9 应保留 4 个。</p>
+<details><summary>提示</summary><div class="inner">排序 → softmax → cumsum → 用“该 token 之前的累计质量 &lt; p”决定保留 → 映射回原顺序。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+
+def softmax(z):
+    z = z - z.max(); e = np.exp(z); return e / e.sum()
+
+def top_p_filter(logits, p):
+    if p &gt;= 1.0:
+        return logits
+    order = np.argsort(-logits)
+    probs = softmax(logits[order])
+    cum = np.cumsum(probs)
+    keep_sorted = (cum - probs) &lt; p          # first token always kept (0 &lt; p)
+    keep = np.zeros_like(keep_sorted)
+    keep[order] = keep_sorted                # scatter back to original order
+    return np.where(keep, logits, -np.inf)
+
+lg = np.log(np.array([0.5, 0.2, 0.15, 0.1, 0.05]))
+assert np.isfinite(top_p_filter(lg, 0.6)).sum() == 2
+assert np.isfinite(top_p_filter(lg, 0.9)).sum() == 4
+assert np.isfinite(top_p_filter(lg, 0.45)).sum() == 1</code></pre>
+复杂度 \(O(V\log V)\)。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.7</b> · 难度 ★</div>
+<p>对向量 x=[0.1, −0.5, 1.27, 0.02] 做对称 absmax 量化：(a) INT8；(b) INT4。写出 scale、整数值和反量化结果，INT4 的最大误差是多少？</p>
+<details><summary>参考答案</summary><div class="inner">(a) INT8：s = 1.27/127 = 0.01；q = [10, −50, 127, 2]；反量化完全恢复 [0.1, −0.5, 1.27, 0.02]。<br>(b) INT4：s = 1.27/7 ≈ 0.1814；q = round([0.55, −2.76, 7, 0.11]) = [1, −3, 7, 0]；反量化 ≈ [0.181, −0.544, 1.27, 0]；最大误差 ≈ 0.081（第一个元素），而 0.02 被量化为 0——小值在粗网格下被“吞掉”，这就是为什么离群值（这里的 1.27）会伤害同组其他值的精度。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.8</b> · 难度 ★★</div>
+<p>编码：实现带 KV cache 的增量 decode，并写一个测试证明“有 cache 的 greedy 生成”与“每步重算整个序列”的结果完全相同。（提示：注意 mask 偏移和位置编码的绝对位置。）</p>
+<details><summary>参考答案</summary><div class="inner">见 <a href="#c-kv-why">§2 KV cache 概念中的代码</a>。关键测试：<code>assert torch.equal(generate(m, p, 20, use_cache=False), generate(m, p, 20, use_cache=True))</code>；更强的测试是比较 logits：对完整序列做一次前向，与“prefill 前 10 个 + decode 第 11 个”的 logits 比较 <code>allclose</code>。常见 bug：decode 时位置从 0 开始而不是从当前长度开始；mask 用 <code>tril()</code> 而不是 <code>tril(diagonal=S-T)</code>。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.9</b> · 难度 ★★</div>
+<p>8B 模型（GQA，KV 128 KiB/token）在单张 H100 上服务一个 4000 token 的 prompt，生成 500 token（batch=1）。估算 TTFT 和总生成时间（prefill 按 50% MFU，decode 按理论带宽）。</p>
+<details><summary>参考答案</summary><div class="inner">TTFT ≈ \(2\times8\text{e}9\times4000/(0.5\times989\text{e}12)\) ≈ <b>0.13 s</b>（忽略 attention 二次项）。decode 每步读 16 GB 权重 + 约 4250×128 KiB ≈ 0.56 GB KV → ≈ 4.9 ms/token → 500 token ≈ <b>2.5 s</b>。总计约 2.6 s——生成时间远大于 prefill，这就是为什么长输出（推理模型）的体验主要由 TPOT 决定。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.10</b> · 难度 ★★★</div>
+<p>编码：FlashDecoding 的 split-KV 合并。给定一个 query 和长度 1000 的 K、V，分成 4 段分别计算 \((m_j, \ell_j, o_j)\)（局部最大值、局部指数和、未归一化输出），再合并成与完整 softmax attention 完全相同的结果。</p>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(0); d, S = 16, 1000
+q = rng.normal(size=d); K = rng.normal(size=(S, d)); V = rng.normal(size=(S, d))
+sc = K @ q / np.sqrt(d)
+w = np.exp(sc - sc.max()); ref = (w / w.sum()) @ V
+
+def partial(sl):
+    s = sc[sl]; m = s.max(); e = np.exp(s - m)
+    return m, e.sum(), e @ V[sl]           # (local max, local sum, unnormalized out)
+
+parts = [partial(slice(i, i + 256)) for i in range(0, S, 256)]
+m = max(p[0] for p in parts)
+l = sum(np.exp(mj - m) * lj for mj, lj, _ in parts)
+o = sum(np.exp(mj - m) * oj for mj, _, oj in parts) / l
+assert np.allclose(o, ref)</code></pre>
+每段可以在不同的线程块上并行计算；合并只需 O(段数)。这与 FlashAttention 的 online softmax 是同一个恒等式。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.11</b> · 难度 ★★</div>
+<p>70B 模型（L=80，GQA-8，\(d_h\)=128）以 FP8 权重部署在单张 80GB GPU 上。预留 15% 开销，最多能同时服务几个 8k 上下文的请求？如果 KV 也用 FP8 呢？</p>
+<details><summary>参考答案</summary><div class="inner">权重 70 GB → 剩 10 GB，扣除开销约 8.5 GB。KV/token（bf16）= 320 KiB → 8k 序列 ≈ 2.68 GB → 约 <b>3 个</b>。FP8 KV → 1.34 GB/序列 → 约 <b>6 个</b>。结论：单卡勉强能跑，但并发极低、吞吐很差；实际部署会用 2–4 卡 TP。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.12</b> · 难度 ★</div>
+<p>logits = [2, 1, 0]。分别计算 T=1、0.5、2 时的 softmax 分布。T=0.5 和“把 T=1 的概率平方再归一化”是否相同？</p>
+<details><summary>参考答案</summary><div class="inner">T=1：[0.665, 0.245, 0.090]；T=0.5：[0.867, 0.117, 0.016]；T=2：[0.506, 0.307, 0.186]。相同：\(\mathrm{softmax}(z/0.5) \propto e^{2z} = (e^{z})^2 \propto p^2\)。验证：0.665² : 0.245² : 0.090² = 0.442 : 0.060 : 0.0081 → 归一化 [0.867, 0.117, 0.016] ✓。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.13</b> · 难度 ★★★</div>
+<p>推导：在 OBS/GPTQ 框架下，把权重 \(w_q\) 固定为 \(\hat w_q\) 后，其余权重的最优补偿为 \(\delta = -\frac{w_q-\hat w_q}{[H^{-1}]_{qq}}H^{-1}_{:,q}\)。</p>
+<details><summary>提示</summary><div class="inner">最小化 \(\frac12\delta^\top H\delta\)，约束 \(e_q^\top\delta = \hat w_q - w_q\)，用拉格朗日乘子。</div></details>
+<details><summary>参考答案</summary><div class="inner">拉格朗日函数 \(\mathcal{L} = \frac12\delta^\top H\delta - \lambda(e_q^\top\delta - (\hat w_q - w_q))\)。对 δ 求导：\(H\delta = \lambda e_q \Rightarrow \delta = \lambda H^{-1}e_q\)。代入约束：\(\lambda [H^{-1}]_{qq} = \hat w_q - w_q \Rightarrow \lambda = \frac{\hat w_q - w_q}{[H^{-1}]_{qq}}\)。所以 \(\delta = -\frac{w_q - \hat w_q}{[H^{-1}]_{qq}}H^{-1}_{:,q}\)，误差增量 \(\frac12\delta^\top H\delta = \frac12\lambda^2[H^{-1}]_{qq} = \frac{(w_q-\hat w_q)^2}{2[H^{-1}]_{qq}}\)。已用 numpy 验证该闭式解等于对其余权重做最小二乘的解。</div></details></div>
+
+<!-- ============================ CHEAT SHEET ============================ -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET 一页速查</span>一页速查</h2>
+<p class="sec-intro">面试前一晚过一遍。</p>
+<div class="table-wrap"><table>
+  <tr><th>主题</th><th>必背</th></tr>
+  <tr><td>Temperature</td><td>\(\mathrm{softmax}(z/T)\)；\(p(T)\propto p^{1/T}\)；T→0 argmax，T→∞ uniform；不改变排名</td></tr>
+  <tr><td>top-k / top-p / min-p</td><td>固定 k 个 / 累计 ≥ p 的最小集合（越过 p 的保留）/ \(p_i \ge p_{\min}\cdot p_{\max}\)</td></tr>
+  <tr><td>处理器顺序</td><td>mask/惩罚 → temperature → top-k → top-p/min-p → softmax → sample</td></tr>
+  <tr><td>Repetition penalty</td><td>正 logit ÷θ，负 logit ×θ；frequency −α·count；presence −α·1[count&gt;0]</td></tr>
+  <tr><td>KV 公式</td><td>\(2\cdot L\cdot n_{kv}\cdot d_h\cdot b\cdot S\cdot B\)</td></tr>
+  <tr><td>KV 数字</td><td>7B MHA：512 KiB/token，4k=2 GiB，128k=64 GiB；GQA-8：128 KiB/token；70B GQA-8：320 KiB/token；13B MHA：800 KiB/token</td></tr>
+  <tr><td>Roofline</td><td>AI = FLOPs/bytes；线性层 AI ≈ batch token 数；脊点 H100 ≈ 295，A100 ≈ 153</td></tr>
+  <tr><td>Decode 上限</td><td>batch=1：tok/s ≈ BW / 权重字节；7B bf16：A100 ≈ 150，H100 ≈ 250</td></tr>
+  <tr><td>Prefill</td><td>FLOPs ≈ \(2N\cdot T\)（+ 注意力 \(\approx 4LT^2d\)）；TTFT = 排队 + prefill</td></tr>
+  <tr><td>GPU 规格（约）</td><td>A100：312 TF bf16，2.0 TB/s；H100 SXM：989 TF bf16 dense，3.35 TB/s；均 80 GB</td></tr>
+  <tr><td>服务系统</td><td>Orca = iteration-level batching；vLLM = PagedAttention（block table、CoW）；SGLang = RadixAttention；Sarathi = chunked prefill；DistServe/Splitwise = PD 分离</td></tr>
+  <tr><td>Spec decoding</td><td>接受 \(\min(1,p/q)\)；拒绝从 \(\mathrm{norm}((p-q)^+)\) 采样；\(\alpha = \sum\min(p,q) = 1-\mathrm{TV}\)；\(E[\text{tokens}] = \frac{1-\alpha^{\gamma+1}}{1-\alpha}\)；speedup ÷ \((\gamma c+1)\)</td></tr>
+  <tr><td>量化</td><td>\(s = \max|x|/(2^{b-1}-1)\)；per-tensor &lt; per-channel &lt; per-group 精度；weight-only 加速 memory-bound；W8A8 加速 compute-bound</td></tr>
+  <tr><td>方法一句话</td><td>LLM.int8 = 离群维度 fp16；SmoothQuant = \(s_j = \max|X_j|^\alpha/\max|W_j|^{1-\alpha}\)；GPTQ = OBS 误差补偿；AWQ = 激活显著通道放大</td></tr>
+  <tr><td>70B 权重</td><td>bf16 140 GB；INT8/FP8 70 GB；INT4 35 GB</td></tr>
+  <tr><td>格式</td><td>bf16 1/8/7；fp16 1/5/10（max 65504）；e4m3 max 448；e5m2 max 57344</td></tr>
+</table></div>
+
+<h3 id="s-qlist">高频面试题清单</h3>
+<div class="table-wrap"><table>
+  <tr><th>#</th><th>问题</th><th>对应概念</th></tr>
+  <tr><td>1</td><td>Why is beam search bad for open-ended generation?</td><td><a href="#c-greedy-beam">Greedy &amp; Beam</a></td></tr>
+  <tr><td>2</td><td>What does temperature do mathematically?</td><td><a href="#c-temperature">Temperature</a></td></tr>
+  <tr><td>3</td><td>Top-k vs top-p vs min-p?</td><td><a href="#c-truncation">截断采样</a></td></tr>
+  <tr><td>4</td><td>Implement a sampler with temperature/top-k/top-p.</td><td><a href="#c-truncation">截断采样</a>, <a href="#c-processor-order">处理器顺序</a></td></tr>
+  <tr><td>5</td><td>How do repetition penalties work?</td><td><a href="#c-penalties">重复惩罚</a></td></tr>
+  <tr><td>6</td><td>How does JSON-constrained decoding work?</td><td><a href="#c-constrained">约束解码</a></td></tr>
+  <tr><td>7</td><td>Why does KV caching work? Why not cache Q?</td><td><a href="#c-kv-why">KV cache 原理</a></td></tr>
+  <tr><td>8</td><td>Compute the KV cache size for model X.</td><td><a href="#c-kv-size">KV 公式</a></td></tr>
+  <tr><td>9</td><td>How do GQA/MQA/MLA reduce memory?</td><td><a href="#c-kv-shrink">压缩 KV</a></td></tr>
+  <tr><td>10</td><td>What is an attention sink? How does StreamingLLM work?</td><td><a href="#c-kv-shrink">压缩 KV</a></td></tr>
+  <tr><td>11</td><td>Difference between prefill and decode?</td><td><a href="#c-prefill-decode">Prefill vs Decode</a></td></tr>
+  <tr><td>12</td><td>Why is decoding memory-bound? Explain roofline.</td><td><a href="#c-roofline">Roofline</a></td></tr>
+  <tr><td>13</td><td>How many tokens/s can a 7B model do on an H100?</td><td><a href="#c-decode-bw">带宽上限</a></td></tr>
+  <tr><td>14</td><td>TTFT vs TPOT vs throughput vs goodput?</td><td><a href="#c-latency-metrics">延迟指标</a></td></tr>
+  <tr><td>15</td><td>What is continuous batching?</td><td><a href="#c-cont-batching">Continuous batching</a></td></tr>
+  <tr><td>16</td><td>Why is vLLM fast? Explain PagedAttention.</td><td><a href="#c-paged">PagedAttention</a></td></tr>
+  <tr><td>17</td><td>What is prefix caching / RadixAttention?</td><td><a href="#c-prefix-cache">Prefix caching</a></td></tr>
+  <tr><td>18</td><td>What problem does chunked prefill solve?</td><td><a href="#c-chunked-prefill">Chunked prefill</a></td></tr>
+  <tr><td>19</td><td>Why disaggregate prefill and decode?</td><td><a href="#c-pd-disagg">PD 分离</a></td></tr>
+  <tr><td>20</td><td>Explain speculative decoding.</td><td><a href="#c-spec-algo">Spec 算法</a></td></tr>
+  <tr><td>21</td><td>Prove speculative sampling is lossless.</td><td><a href="#c-spec-proof">证明</a></td></tr>
+  <tr><td>22</td><td>Expected speedup of speculative decoding? When does it fail?</td><td><a href="#c-spec-speedup">加速比</a>, <a href="#c-scenarios">S4</a></td></tr>
+  <tr><td>23</td><td>Medusa vs EAGLE?</td><td><a href="#c-spec-variants">变体</a></td></tr>
+  <tr><td>24</td><td>bf16 vs fp16 vs fp8?</td><td><a href="#c-formats">数值格式</a></td></tr>
+  <tr><td>25</td><td>Per-tensor vs per-channel vs group quantization?</td><td><a href="#c-quant-basics">量化基础</a></td></tr>
+  <tr><td>26</td><td>Why are activations hard to quantize? SmoothQuant?</td><td><a href="#c-outliers">离群值</a></td></tr>
+  <tr><td>27</td><td>Explain GPTQ and AWQ.</td><td><a href="#c-gptq-awq">GPTQ/AWQ</a></td></tr>
+  <tr><td>28</td><td>Max batch size for 13B at 4k on 80GB?</td><td><a href="#c-scenarios">S1</a></td></tr>
+  <tr><td>29</td><td>How to speed up RL rollouts?</td><td><a href="#c-scenarios">S7</a></td></tr>
+  <tr><td>30</td><td>Why do outputs differ at temperature 0 across batch sizes?</td><td><a href="#c-scenarios">S9</a></td></tr>
+</table></div>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m08" data-title="模块 08 自测卡片"></div>
+<div class="footer-nav"><a href="m07-reasoning.html">← 07 推理能力与测试时计算</a><a href="m09-distributed.html">09 分布式训练与效率 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m08.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>

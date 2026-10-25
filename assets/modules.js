@@ -39,7 +39,7 @@ window.MODULES = [
     title: '推理能力与测试时计算',
     desc: 'CoT 为什么有效、测试时计算的扩展方式、推理模型训练流程、隐式推理。',
     topics: 'CoT 理论 · self-consistency · best-of-N · 树搜索 · 串行 vs 并行扩展 · overthinking · latent reasoning' },
-  { id: 'm08', num: '08', phase: 'p2', pri: 2, status: 'planned', file: 'modules/m08-inference.html',
+  { id: 'm08', num: '08', phase: 'p2', pri: 2, status: 'ready', file: 'modules/m08-inference.html',
     title: '推理与解码系统',
     desc: '解码策略、KV cache 显存计算、prefill/decode、vLLM、speculative decoding、量化。',
     topics: 'top-p/min-p · KV cache 计算 · 算力 vs 带宽瓶颈 · PagedAttention · speculative decoding · GPTQ/AWQ' },
