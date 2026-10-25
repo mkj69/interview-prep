@@ -19,7 +19,7 @@ window.MODULES = [
     title: '数学与经典机器学习',
     desc: '线性代数、概率统计、信息论、优化器和经典 ML，重点是和 LLM 训练直接相关的部分。',
     topics: 'SVD · MLE/MAP · KL（前向/反向）· 重要性采样 · Adam/AdamW · 学习率调度 · 偏差方差' },
-  { id: 'm03', num: '03', phase: 'p1', pri: 1, status: 'planned', file: 'modules/m03-dl-basics.html',
+  { id: 'm03', num: '03', phase: 'p1', pri: 1, status: 'ready', file: 'modules/m03-dl-basics.html',
     title: '深度学习基础',
     desc: '反向传播、激活函数、初始化、归一化、残差、数值稳定性。',
     topics: '手推 MLP 梯度 · SwiGLU · Kaiming · BN/LN/RMSNorm · 残差 · softmax 稳定性 · CE 梯度 p−y' },

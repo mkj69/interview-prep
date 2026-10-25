@@ -1,0 +1,1299 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · 深度学习基础 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m03">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 03 · Phase 1 · Foundations</div>
+<h1 class="title">深度学习<em>基础</em></h1>
+<p class="lede">反向传播、softmax 与交叉熵、激活函数、初始化、归一化、残差、正则化、训练动力学。这些是所有 LLM 问题的"地基"：面试官问 Transformer、RL、训练稳定性时，最后都会落到这里的几条公式上。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完之后你应该能：(1) 在白板上从零推出 2 层 MLP 的全部梯度并标出每个张量的 shape；(2) 不看资料推出 \(\partial\,\mathrm{CE}(\mathrm{softmax}(z))/\partial z = p - y\)，并解释 log-sum-exp 为什么稳定；(3) 说清楚 Xavier / Kaiming 的方差推导、GPT-2 的 \(1/\sqrt{2N}\) 残差缩放；(4) 比较 BatchNorm / LayerNorm / RMSNorm，并解释为什么 LLM 用 RMSNorm + Pre-Norm；(5) 写出 SwiGLU 并算出为什么隐藏维度是 \(\tfrac{8}{3}d\)；(6) 用"雅可比连乘"解释梯度消失/爆炸以及残差为什么有用。<br><br>
+<b>建议顺序：</b>§1 反向传播 → §2 softmax/CE（这两节是全章最高频，务必能手推）→ §4 初始化 → §5 归一化 → §6 残差 → §3 激活函数 → §7/§9 → §8 简要扫一遍 → §10 练习至少做 6 道（尤其 10.1、10.2、10.7）。<br>
+<b>与其他模块的关系：</b>数学前置（链式法则、KL、Adam）在 <a href="m02-math-ml.html">02</a>；numpy/PyTorch 写法在 <a href="m01-pytorch.html">01</a>；Pre-Norm vs Post-Norm、注意力细节在 <a href="m04-transformer.html">04</a>；μP、loss spike、大规模训练稳定性在 <a href="m05-pretraining.html">05</a>；手写题汇总在 <a href="m14-ml-coding.html">14</a>。<br>
+<b>关于代码：</b>本页所有 numpy 代码都已实际运行并通过有限差分梯度检查；PyTorch 代码块逻辑与对应 numpy 实现一致（由 numpy 版本验证）。</div>
+
+<!-- ============================================================ §1 -->
+<h2 class="sec" id="s-backprop"><span class="num">§1 · BACKPROPAGATION</span>反向传播</h2>
+<p class="sec-intro">反向传播 = 在计算图上高效地应用链式法则。面试最常见的形式是："Derive the gradients of a 2-layer MLP"、"Why is backprop reverse mode?"、"Implement backward for X without autograd"。本节把这三件事讲透。</p>
+
+<section class="concept" id="c-chain">
+  <div class="concept-head"><span class="pri p1">★</span><h3>计算图上的链式法则</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把计算写成有向无环图（DAG）；每个节点的梯度 = 所有"下游消费者"传回来的梯度之和，每条边乘上本地导数。</p><p class="en">Backprop is the chain rule applied on a DAG: each node's gradient is the sum over its consumers of upstream gradient times local derivative.</p></div>
+  <div class="deep">
+    <p><b>直觉。</b>设标量损失 \(L\)，中间变量 \(u\) 被若干个节点 \(v_1,\dots,v_k\) 使用。\(u\) 稍微变化 \(\delta u\)，会通过每一条路径影响 \(L\)，一阶近似下影响可以相加：</p>
+    $$\frac{\partial L}{\partial u} = \sum_{j=1}^{k} \frac{\partial L}{\partial v_j}\,\frac{\partial v_j}{\partial u}.$$
+    <p>这就是"多路径求和"（multivariate chain rule）。反向传播的算法就是：</p>
+    <ol>
+      <li><b>Forward：</b>按拓扑序计算每个节点的值，并<b>缓存</b>反向需要的中间量（激活值、mask、归一化的 \(\hat x\) 等）。</li>
+      <li><b>Backward：</b>令 \(\bar L = \partial L/\partial L = 1\)，按<b>逆拓扑序</b>访问节点；每个节点拿到自己的"adjoint" \(\bar v = \partial L/\partial v\)，乘上本地导数，<b>累加</b>（+=）到它的输入的 adjoint 上。</li>
+    </ol>
+    <p>记号：常用 \(\bar v\) 或 <code>dv</code> 表示 \(\partial L/\partial v\)，它和 \(v\) <b>同形状</b>（标量损失对张量求导，梯度形状等于张量形状）。这是手推时最重要的检查工具：<b>shape 对不上，公式一定错</b>。</p>
+    <div class="box why"><span class="lbl">直觉</span>为什么是"累加"？一个变量被用两次（比如残差 \(y = x + f(x)\)，或者权重共享），两条路径的贡献都要算上。PyTorch 里 <code>.grad</code> 默认累加也是这个原因——所以每步训练前要 <code>optimizer.zero_grad()</code>。</div>
+    <h4>典型节点的本地反向规则（背下来）</h4>
+    <table>
+      <tr><th>前向</th><th>反向（给定 \(\bar y\)）</th><th>备注</th></tr>
+      <tr><td>\(y = a + b\)</td><td>\(\bar a \mathrel{+}= \bar y,\ \bar b \mathrel{+}= \bar y\)</td><td>加法 = 梯度"分发器"；广播时要对被广播的维度求和</td></tr>
+      <tr><td>\(y = a \odot b\)</td><td>\(\bar a = \bar y \odot b,\ \bar b = \bar y \odot a\)</td><td>乘法 = 梯度"交换器"</td></tr>
+      <tr><td>\(Y = XW\)</td><td>\(\bar X = \bar Y W^\top,\ \bar W = X^\top \bar Y\)</td><td>用 shape 凑出来</td></tr>
+      <tr><td>\(y = \max(x,0)\)</td><td>\(\bar x = \bar y \odot \mathbb{1}[x\gt 0]\)</td><td>ReLU = 梯度"开关"</td></tr>
+      <tr><td>\(y = \sigma(x)\)</td><td>\(\bar x = \bar y \odot y(1-y)\)</td><td>用前向输出即可</td></tr>
+      <tr><td>\(y = \tanh(x)\)</td><td>\(\bar x = \bar y \odot (1-y^2)\)</td><td></td></tr>
+      <tr><td>\(y = \sum_i x_i\)</td><td>\(\bar x_i = \bar y\)</td><td>求和 ↔ 广播 互为反向</td></tr>
+      <tr><td>\(y = \tfrac1n\sum_i x_i\)</td><td>\(\bar x_i = \bar y / n\)</td><td>mean 的梯度要除 n</td></tr>
+      <tr><td>\(y = \max_i x_i\)</td><td>只有 argmax 位置得到 \(\bar y\)</td><td>max-pool 同理</td></tr>
+    </table>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>忘了<b>广播的反向是求和</b>：bias \(b\in\mathbb{R}^h\) 被加到 \((B,h)\) 的每一行，\(\bar b = \sum_{\text{batch}} \bar H\)。</li>
+      <li>忘了"一个变量被用多次要累加"，在残差、权重共享（tied embedding）里尤其常见。</li>
+      <li>把 \(\partial L/\partial W\) 写成和 \(W\) 形状不一样的东西（比如雅可比矩阵）。标量损失下梯度永远和参数同形状。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Backprop is just the chain rule organized on a computational graph. In the forward pass I compute every node and cache what the backward pass needs. Then I start from dL/dL = 1 and walk the graph in reverse topological order: each node takes the gradient flowing into its output, multiplies by its local derivative, and accumulates the result into its inputs' gradients. Accumulation matters because a variable used in several places — like the input to a residual block — receives gradient from every path. A useful sanity check is that the gradient of a scalar loss always has the same shape as the tensor it's taken with respect to.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What's the memory cost of backprop, and how can you reduce it?</b><details><summary>思路</summary><div class="inner">反向需要前向缓存的激活值，内存 ∝ 层数 × batch × 序列长度 × 宽度。降低方法：<b>activation checkpointing / rematerialization</b>（只存部分层的输入，反向时重算，约多花 1/3 计算换 O(√L) 甚至更少的激活内存）；混合精度存激活；融合算子（如 FlashAttention 不存 \(N\times N\) 注意力矩阵，反向重算）。详见 <a href="m09-distributed.html">09</a>。</div></details></li>
+    <li><b>How many FLOPs does the backward pass take relative to forward?</b><details><summary>思路</summary><div class="inner">对矩阵乘 \(Y=XW\)：前向 1 个 matmul；反向要算 \(\bar X = \bar Y W^\top\) 和 \(\bar W = X^\top \bar Y\) 两个同规模 matmul，所以反向 ≈ 2× 前向，总共 ≈ 3× 前向。这就是训练 FLOPs \(\approx 6ND\)（前向 \(2ND\)，反向 \(4ND\)）的来源，见 <a href="m04-transformer.html">04</a>/<a href="m05-pretraining.html">05</a>。</div></details></li>
+    <li><b>Why do we need <code>zero_grad()</code> in PyTorch?</b><details><summary>思路</summary><div class="inner">因为 <code>.grad</code> 是累加的（这正是多路径求和的实现方式），不清零就会把上一步的梯度加进来。这一特性也被有意用于 <b>gradient accumulation</b>：多个 micro-batch 依次 backward 后再 step，等效于大 batch（注意 loss 要除以累积步数）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-modes">
+  <div class="concept-head"><span class="pri p1">★</span><h3>前向模式 vs 反向模式自动微分；VJP 与 JVP</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>反向模式一次 backward 就能得到标量对<b>所有</b>参数的梯度（代价 ≈ 常数倍前向），前向模式一次只能得到对<b>一个</b>输入方向的导数；深度学习是"百万输入 → 1 个标量输出"，所以用反向模式。</p><p class="en">Reverse mode computes vector–Jacobian products, so one backward pass gives the gradient of a scalar w.r.t. all parameters; forward mode gives one directional derivative per pass.</p></div>
+  <div class="deep">
+    <p>考虑复合函数 \(f = f_L\circ\cdots\circ f_1\)，输入 \(x\in\mathbb{R}^n\)，输出 \(y\in\mathbb{R}^m\)。雅可比是乘积：</p>
+    $$J = J_L J_{L-1}\cdots J_1,\qquad J_\ell = \frac{\partial h_\ell}{\partial h_{\ell-1}}.$$
+    <p>矩阵乘法满足结合律，但<b>乘的顺序决定代价</b>：</p>
+    <ul>
+      <li><b>Forward mode（JVP，Jacobian-vector product）：</b>从右往左乘，\(J v = J_L(\cdots(J_1 v))\)。每次传播一个"切向量" \(v\in\mathbb{R}^n\)。要得到完整雅可比需要 \(n\) 次。</li>
+      <li><b>Reverse mode（VJP，vector-Jacobian product）：</b>从左往右乘，\(u^\top J = ((u^\top J_L)J_{L-1})\cdots J_1\)。每次传播一个"余切向量" \(u\in\mathbb{R}^m\)。要得到完整雅可比需要 \(m\) 次。</li>
+    </ul>
+    <p>训练时 \(m=1\)（标量 loss），\(n\) = 参数量（\(10^9\) 量级），所以反向模式只要 <b>1 次</b>，前向模式要 \(10^9\) 次。代价是反向模式需要存储前向的中间激活（内存），前向模式不需要。</p>
+    <div class="box why"><span class="lbl">直觉</span>反向传播里，从来<b>不显式构造</b>雅可比矩阵。比如 ReLU 的雅可比是 \(n\times n\) 对角矩阵，VJP 就是逐元素乘 mask；矩阵乘 \(Y=XW\) 对 \(W\) 的雅可比是 4 阶张量，VJP 就是 \(X^\top\bar Y\)。每个算子只需要实现"给定上游梯度 \(\bar y\)，返回 \(\bar y^\top J\)"这个函数——这正是 PyTorch <code>autograd.Function.backward</code> 的接口。</div>
+    <p><b>什么时候用前向模式？</b>输出比输入多的时候（\(m \gg n\)），或者需要 Hessian-vector product（"forward-over-reverse"：对梯度再做一次 JVP，得到 \(Hv\)，代价约为几次梯度计算，不需要构造 Hessian）。JAX 的 <code>jvp</code>/<code>vjp</code>、PyTorch 的 <code>torch.func.jvp</code>/<code>vjp</code> 都提供这两种原语。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"反向模式比前向模式快"并不总对——它在 \(m \ll n\) 时快。另一个误区是以为反向传播要构造雅可比矩阵：实际上只算 VJP，内存和计算都和前向同阶。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The Jacobian of a deep network is a product of layer Jacobians, and the order in which we multiply them determines the cost. Forward mode multiplies right to left, propagating one tangent direction per pass, so getting a full gradient would take as many passes as there are inputs. Reverse mode multiplies left to right, propagating a vector–Jacobian product, so a single pass gives the gradient of one scalar output with respect to every input. Since training has billions of parameters but one scalar loss, reverse mode wins by a factor of billions. The price is memory: we have to store forward activations to evaluate the local Jacobians on the way back.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you compute a Hessian-vector product without forming the Hessian?</b><details><summary>思路</summary><div class="inner">\(Hv = \nabla_\theta(\nabla_\theta L \cdot v)\)：先求梯度 \(g\)（保留计算图，<code>create_graph=True</code>），再对标量 \(g^\top v\) 求一次梯度（reverse-over-reverse）；或者对梯度函数做 JVP（forward-over-reverse，更省）。代价约 2–4 次梯度计算。用途：估计 sharpness（最大特征值，用幂迭代）、牛顿-CG、影响函数。</div></details></li>
+    <li><b>What's a VJP for matrix multiplication? Derive it quickly.</b><details><summary>思路</summary><div class="inner">\(Y=XW\)，\(X\in\mathbb{R}^{B\times d}, W\in\mathbb{R}^{d\times h}\)。\(Y_{bj}=\sum_i X_{bi}W_{ij}\)，所以 \(\partial L/\partial W_{ij} = \sum_b \bar Y_{bj} X_{bi} = (X^\top \bar Y)_{ij}\)；\(\partial L/\partial X_{bi}=\sum_j \bar Y_{bj}W_{ij} = (\bar Y W^\top)_{bi}\)。shape 检查：\(X^\top\bar Y\) 是 \((d,B)(B,h)=(d,h)\) ✓。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-mlp-grad">
+  <div class="concept-head"><span class="pri p1">★</span><h3>手推 2 层 MLP 的全部梯度（矩阵形式 + shape）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\bar Z = (P-Y)/B\)；\(\bar W_2 = A^\top \bar Z\)，\(\bar b_2 = \mathbf{1}^\top\bar Z\)；\(\bar A = \bar Z W_2^\top\)；\(\bar H = \bar A\odot\mathbb{1}[H\gt 0]\)；\(\bar W_1 = X^\top\bar H\)，\(\bar b_1 = \mathbf 1^\top \bar H\)。</p><p class="en">Each linear layer's weight gradient is (input transposed) times (upstream gradient); the input gradient is (upstream gradient) times (weight transposed).</p></div>
+  <div class="deep">
+    <p><b>设定（行向量约定，和 PyTorch 一致）：</b></p>
+    <table>
+      <tr><th>量</th><th>定义</th><th>shape</th></tr>
+      <tr><td>\(X\)</td><td>输入 batch</td><td>\((B, d)\)</td></tr>
+      <tr><td>\(H\)</td><td>\(XW_1 + b_1\)（\(b_1\) 广播到每行）</td><td>\((B, h)\)</td></tr>
+      <tr><td>\(A\)</td><td>\(\mathrm{ReLU}(H)\)</td><td>\((B, h)\)</td></tr>
+      <tr><td>\(Z\)</td><td>\(AW_2 + b_2\)（logits）</td><td>\((B, C)\)</td></tr>
+      <tr><td>\(P\)</td><td>\(\mathrm{softmax}(Z)\) 按行</td><td>\((B, C)\)</td></tr>
+      <tr><td>\(Y\)</td><td>one-hot 标签</td><td>\((B, C)\)</td></tr>
+      <tr><td>\(L\)</td><td>\(-\tfrac1B\sum_b\sum_c Y_{bc}\log P_{bc}\)</td><td>标量</td></tr>
+    </table>
+    <p><b>Step 1：输出层。</b>由 §2 的推导，对单个样本 \(\partial \ell_b/\partial z_b = p_b - y_b\)；loss 是 batch 平均，所以</p>
+    $$\bar Z = \frac{1}{B}(P - Y)\quad (B,C).$$
+    <p><b>Step 2：第二层线性。</b>\(Z = AW_2 + \mathbf 1 b_2^\top\)。按 VJP 规则：</p>
+    $$\bar W_2 = A^\top\bar Z\ \ (h,C),\qquad \bar b_2 = \sum_{b}\bar Z_{b,:}\ \ (C,),\qquad \bar A = \bar Z W_2^\top\ \ (B,h).$$
+    <p>逐元素验证 \(\bar W_2\)：\(Z_{bc} = \sum_k A_{bk}(W_2)_{kc} + (b_2)_c\)，所以 \(\partial L/\partial (W_2)_{kc} = \sum_b \bar Z_{bc}A_{bk} = (A^\top\bar Z)_{kc}\)。✓</p>
+    <p><b>Step 3：ReLU。</b>逐元素，雅可比是对角的：</p>
+    $$\bar H = \bar A \odot \mathbb{1}[H \gt  0]\quad (B,h).$$
+    <p><b>Step 4：第一层线性。</b>同 Step 2：</p>
+    $$\bar W_1 = X^\top \bar H\ \ (d,h),\qquad \bar b_1 = \sum_b \bar H_{b,:}\ \ (h,),\qquad \bar X = \bar H W_1^\top\ \ (B,d).$$
+    <div class="box why"><span class="lbl">直觉</span>记忆口诀："<b>权重梯度 = 输入ᵀ × 上游梯度；输入梯度 = 上游梯度 × 权重ᵀ；bias 梯度 = 上游梯度按 batch 求和</b>"。每一步都可以只靠 shape 凑出来：\(\bar W_2\) 必须是 \((h,C)\)，手上有 \(A:(B,h)\) 和 \(\bar Z:(B,C)\)，唯一能凑出 \((h,C)\) 的乘法就是 \(A^\top\bar Z\)。注意 \(\bar W\) 是对 batch 的<b>求和</b>（因为 \(1/B\) 已经在 \(\bar Z\) 里了）。</div>
+    <p><b>换成列向量约定</b>（很多教材 \(h = W x\)，\(W\in\mathbb{R}^{h\times d}\)）：单样本时 \(\bar W = \bar h\, x^\top\)（外积），\(\bar x = W^\top \bar h\)。两种约定只差转置，面试时先说清楚你用哪种。</p>
+  </div>
+  <details class="deep"><summary>代码：numpy 前向/反向 + 有限差分梯度检查（已运行通过，相对误差 ~1e-9）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(0)
+def num_grad(f, x, eps=1e-6):
+    g = np.zeros_like(x)
+    it = np.nditer(x, flags=['multi_index'])
+    for _ in it:
+        i = it.multi_index
+        old = x[i]
+        x[i] = old + eps; fp = f()
+        x[i] = old - eps; fm = f()
+        x[i] = old
+        g[i] = (fp - fm) / (2 * eps)
+    return g
+
+def rel_err(a, b):
+    return np.max(np.abs(a - b) / np.maximum(1e-8, np.abs(a) + np.abs(b)))
+
+def log_softmax(z):
+    z = z - z.max(axis=-1, keepdims=True)
+    return z - np.log(np.exp(z).sum(axis=-1, keepdims=True))
+
+def softmax(z):
+    return np.exp(log_softmax(z))
+
+def ce_loss(z, y):                 # z: (B,C) logits, y: (B,) int labels
+    B = z.shape[0]
+    return -log_softmax(z)[np.arange(B), y].mean()
+
+def ce_grad(z, y):                 # dL/dz = (p - onehot)/B
+    B = z.shape[0]
+    g = softmax(z)
+    g[np.arange(B), y] -= 1
+    return g / B
+
+def mlp_forward(X, W1, b1, W2, b2):
+    H = X @ W1 + b1            # (B,h)
+    A = np.maximum(H, 0)       # ReLU
+    Z = A @ W2 + b2            # (B,C)
+    return H, A, Z
+
+def mlp_backward(X, y, W1, b1, W2, b2):
+    H, A, Z = mlp_forward(X, W1, b1, W2, b2)
+    dZ = ce_grad(Z, y)         # (B,C)
+    dW2 = A.T @ dZ             # (h,C)
+    db2 = dZ.sum(0)            # (C,)
+    dA = dZ @ W2.T             # (B,h)
+    dH = dA * (H &gt; 0)          # (B,h)
+    dW1 = X.T @ dH             # (d,h)
+    db1 = dH.sum(0)
+    return ce_loss(Z, y), (dW1, db1, dW2, db2)
+
+B, d, h, C = 5, 4, 6, 3
+X = rng.normal(size=(B, d)); y = rng.integers(0, C, size=B)
+W1 = rng.normal(size=(d, h)); b1 = rng.normal(size=h) * 0.1
+W2 = rng.normal(size=(h, C)); b2 = rng.normal(size=C) * 0.1
+loss, grads = mlp_backward(X, y, W1, b1, W2, b2)
+for p, g, name in zip((W1, b1, W2, b2), grads, ("W1", "b1", "W2", "b2")):
+    ng = num_grad(lambda: ce_loss(mlp_forward(X, W1, b1, W2, b2)[2], y), p)
+    e = rel_err(g, ng); print("mlp", name, e); assert e &lt; 1e-5
+
+# softmax stability
+z = np.array([[1000., 1001., 1002.]])
+assert np.all(np.isfinite(softmax(z))); assert abs(softmax(z).sum() - 1) &lt; 1e-12
+# ce grad check standalone
+z = rng.normal(size=(4, 5)); yy = rng.integers(0, 5, 4)
+assert rel_err(ce_grad(z, yy), num_grad(lambda: ce_loss(z, yy), z)) &lt; 1e-6
+
+# softmax jacobian
+p = softmax(rng.normal(size=(1, 4)))[0]
+J = np.diag(p) - np.outer(p, p)
+zz = np.log(p).copy()
+def sm_i(i): return lambda: softmax(zz[None])[0][i]
+Jn = np.stack([num_grad(sm_i(i), zz) for i in range(4)])
+assert np.allclose(J, Jn, atol=1e-7); print("softmax jacobian ok")
+
+# label smoothing grad: p - q
+def ls_loss(z, y, eps):
+    B, C = z.shape
+    q = np.full((B, C), eps / C); q[np.arange(B), y] += 1 - eps
+    return -(q * log_softmax(z)).sum(-1).mean(), q
+l, q = ls_loss(z, yy, 0.1)
+g = (softmax(z) - q) / z.shape[0]
+assert rel_err(g, num_grad(lambda: ls_loss(z, yy, 0.1)[0], z)) &lt; 1e-6; print("label smoothing ok")</code></pre>
+    <p><b>梯度检查要点：</b>用<b>中心差分</b> \((f(x+\epsilon)-f(x-\epsilon))/2\epsilon\)（误差 \(O(\epsilon^2)\)，单边差分是 \(O(\epsilon)\)）；用 float64；\(\epsilon\approx10^{-5}\sim10^{-6}\)；看<b>相对误差</b> \(|a-b|/(|a|+|b|)\)，\(\lt 10^{-6}\) 基本正确，\(\gt 10^{-3}\) 一定有 bug。ReLU 在 0 处不可导，测试时如果某个 \(H\) 恰好贴近 0 可能出现假报警；关闭 dropout 等随机性再检查。</p>
+    <p>PyTorch 版本对照（手写梯度 vs autograd）：</p>
+<pre><code class="language-python">import torch, torch.nn.functional as F
+torch.manual_seed(0)
+B, d, h, C = 8, 5, 16, 3
+X = torch.randn(B, d, dtype=torch.float64); y = torch.randint(0, C, (B,))
+W1 = torch.randn(d, h, dtype=torch.float64, requires_grad=True); b1 = torch.zeros(h, dtype=torch.float64, requires_grad=True)
+W2 = torch.randn(h, C, dtype=torch.float64, requires_grad=True); b2 = torch.zeros(C, dtype=torch.float64, requires_grad=True)
+H = X @ W1 + b1; A = H.relu(); Z = A @ W2 + b2
+loss = F.cross_entropy(Z, y); loss.backward()
+with torch.no_grad():
+    dZ = (Z.softmax(-1) - F.one_hot(y, C).double()) / B
+    dW2 = A.T @ dZ; db2 = dZ.sum(0)
+    dH = (dZ @ W2.T) * (H &gt; 0)
+    dW1 = X.T @ dH; db1 = dH.sum(0)
+for m, a in ((dW1, W1.grad), (db1, b1.grad), (dW2, W2.grad), (db2, b2.grad)):
+    assert torch.allclose(m, a, atol=1e-10)
+print("ok")</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>loss 用的是 mean 却忘了在 \(\bar Z\) 里除以 \(B\)，或者除了两次（在 \(\bar Z\) 除了又在 \(\bar W\) 除）。</li>
+      <li>ReLU 的 mask 用 \(A\gt 0\) 还是 \(H\gt 0\)：两者等价（\(A=\max(H,0)\)），但对 LeakyReLU/GELU 必须用 \(H\)。</li>
+      <li>\(\bar W_1 = X^\top\bar H\) 写成 \(\bar H^\top X\)——那是 \((h,d)\)，是 \(\bar W_1^\top\)。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Let me use row-vector convention: X is batch by d, W1 is d by h, W2 is h by C. Starting from the top, the gradient of mean cross-entropy with respect to the logits is (P minus Y) over B. For the second linear layer, the weight gradient is A-transpose times that, the bias gradient is its sum over the batch, and the gradient flowing back to A is dZ times W2-transpose. ReLU just masks that gradient wherever the pre-activation was negative. Then the first layer repeats the same pattern: dW1 is X-transpose times dH. I always double-check by shapes — dW2 has to be h by C, and A-transpose times dZ is the only product that gives that.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What changes if the loss is a sum instead of a mean?</b><details><summary>思路</summary><div class="inner">梯度整体乘 \(B\)。等效于学习率乘 \(B\)，所以换 reduction 时要相应调整学习率；梯度累积时同理（每个 micro-batch 的 loss 除以累积步数才等价于大 batch 的 mean）。</div></details></li>
+    <li><b>How would you verify your backward implementation?</b><details><summary>思路</summary><div class="inner">有限差分梯度检查（float64，中心差分，相对误差）；对比 autograd（<code>torch.autograd.gradcheck</code>）；以及"能否在一个极小数据集上过拟合到 loss≈0"——这是训练代码最好的冒烟测试。</div></details></li>
+    <li><b>What's the gradient w.r.t. the input X, and when would you need it?</b><details><summary>思路</summary><div class="inner">\(\bar X = \bar H W_1^\top\)。用途：对抗样本（FGSM 用 \(\mathrm{sign}(\nabla_X L)\)）、saliency map / integrated gradients（可解释性，见 <a href="m11-interp.html">11</a>）、多层网络中传给更下面一层。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §2 -->
+<h2 class="sec" id="s-softmax"><span class="num">§2 · SOFTMAX &amp; CROSS-ENTROPY</span>Softmax 与交叉熵</h2>
+<p class="sec-intro">LLM 的每一个 token 预测都是 softmax + 交叉熵。"推导 p − y"几乎是必考题；数值稳定性（log-sum-exp）是写代码题时面试官一定会盯的点。</p>
+
+<section class="concept" id="c-softmax-jac">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Softmax 的雅可比与 ∂CE/∂z = p − y</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\partial p_i/\partial z_j = p_i(\delta_{ij}-p_j)\)，即 \(J=\mathrm{diag}(p)-pp^\top\)；和交叉熵复合后雅可比消掉，得到极简洁的 \(\partial L/\partial z = p - y\)。</p><p class="en">The softmax Jacobian is diag(p) minus p p-transpose, and composed with cross-entropy the gradient on the logits collapses to p minus y.</p></div>
+  <div class="deep">
+    <p><b>定义：</b>\(p_i = \dfrac{e^{z_i}}{\sum_k e^{z_k}}\)，\(L = -\sum_i y_i \log p_i\)，其中 \(y\) 是一个概率分布（one-hot 或 label smoothing 后的分布），\(\sum_i y_i = 1\)。</p>
+    <h4>推导 1：softmax 雅可比</h4>
+    <p>先对 \(\log p_i = z_i - \log\sum_k e^{z_k}\) 求导（对数求导更干净）：</p>
+    $$\frac{\partial \log p_i}{\partial z_j} = \delta_{ij} - \frac{e^{z_j}}{\sum_k e^{z_k}} = \delta_{ij} - p_j.$$
+    <p>由于 \(\partial p_i/\partial z_j = p_i\cdot \partial\log p_i/\partial z_j\)：</p>
+    $$\frac{\partial p_i}{\partial z_j} = p_i(\delta_{ij} - p_j)\quad\Longrightarrow\quad J = \mathrm{diag}(p) - pp^\top.$$
+    <p>性质：\(J\) 对称、半正定、\(J\mathbf 1 = p - p(p^\top\mathbf 1) = 0\)（给所有 logit 加同一个常数，softmax 不变，所以 \(\mathbf 1\) 在零空间里）。</p>
+    <h4>推导 2：CE ∘ softmax</h4>
+    $$\frac{\partial L}{\partial z_j} = -\sum_i y_i\frac{\partial\log p_i}{\partial z_j} = -\sum_i y_i(\delta_{ij} - p_j) = -y_j + p_j\sum_i y_i = p_j - y_j.$$
+    <p>最后一步用了 \(\sum_i y_i=1\)。向量形式 \(\nabla_z L = p - y\)。对 batch 平均的 loss，再除以 \(B\)。</p>
+    <div class="box why"><span class="lbl">直觉</span>\(p-y\) 就是"预测分布减目标分布"：正确类的 logit 被往上推（梯度 \(p_y - 1 \lt  0\)，梯度下降会增大它），其他类按其概率被往下推。模型越自信地错，梯度越大；预测完全正确时梯度趋于 0。这和线性回归 MSE 的梯度 \(\hat y - y\)、logistic 回归的 \(\sigma(z)-y\) 形式完全一样——它们都是指数族 + 正则链接函数（canonical link）的共同性质。</div>
+    <p><b>为什么不分开算？</b>如果先算 \(\partial L/\partial p_i = -y_i/p_i\) 再乘雅可比，\(p_i\) 很小时会出现除以接近 0 的数，数值不稳定；合并后的 \(p-y\) 没有除法。这就是为什么框架里 <code>F.cross_entropy</code> 直接吃 logits、内部融合了 log_softmax + NLL。</p>
+  </div>
+  <details class="deep"><summary>代码：数值验证 softmax 雅可比</summary><div class="inner">
+<pre><code class="language-python">p = softmax(rng.normal(size=(1, 4)))[0]
+J = np.diag(p) - np.outer(p, p)
+zz = np.log(p).copy()                      # softmax(log p) = p
+def sm_i(i): return lambda: softmax(zz[None])[0][i]
+Jn = np.stack([num_grad(sm_i(i), zz) for i in range(4)])
+assert np.allclose(J, Jn, atol=1e-7)       # passes</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>推导时忘了 \(\sum_i y_i = 1\) 这一步；如果 \(y\) 不归一化（比如多标签），结果就不是 \(p-y\)，而是 \(p\sum_i y_i - y\)。</li>
+      <li>把 softmax 当成逐元素函数，以为雅可比是对角的。softmax 每个输出依赖所有输入。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The cleanest derivation goes through the log: log p_i equals z_i minus log-sum-exp of z, so its derivative with respect to z_j is delta_ij minus p_j. Cross-entropy is minus the sum of y_i log p_i, so the gradient is minus the sum of y_i times (delta_ij minus p_j), which is p_j minus y_j once you use that y sums to one. Intuitively, the gradient is just predicted distribution minus target distribution, so a confidently wrong prediction gets a big push and a correct one gets almost none. It's also numerically nice — no division by small probabilities — which is why frameworks fuse log-softmax with the NLL loss and take logits as input.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What is the Hessian of CE w.r.t. the logits? Is the loss convex in z?</b><details><summary>思路</summary><div class="inner">\(\nabla_z^2 L = \partial(p-y)/\partial z = J = \mathrm{diag}(p)-pp^\top\)，它是半正定的（是类别分布的协方差矩阵：\(\mathrm{Cov}[e_c]\)，\(c\sim p\)），所以 CE 对 logits 是凸的（log-sum-exp 是凸函数）。但对网络参数一般非凸。这也是 softmax 回归是凸问题的原因。</div></details></li>
+    <li><b>In an LLM, the gradient on the logits is p − y over the whole vocabulary. What does that imply for the output embedding?</b><details><summary>思路</summary><div class="inner">输出层 \(z = W_U h\)，\(\bar W_U = (p-y)h^\top\)：<b>每一步所有词的 unembedding 向量都会收到梯度</b>（被往 \(-h\) 方向推，强度 \(p_v\)），只有目标词被往 \(+h\) 推。这就是为什么词表很大时 logits 层的计算/显存很贵（\(B\times T\times V\) 的 logits），有 chunked / fused CE kernel 来避免物化完整 logits。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-lse">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Log-sum-exp 技巧、log_softmax 与"logits 进 loss"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\log\sum_i e^{z_i} = m + \log\sum_i e^{z_i - m}\)，\(m=\max_i z_i\)：减去最大值后指数最大是 \(e^0=1\)，不会上溢，且和至少为 1，log 不会下溢到 \(-\infty\)。</p><p class="en">Subtract the max before exponentiating: softmax is shift-invariant, so the result is unchanged but nothing overflows.</p></div>
+  <div class="deep">
+    <p><b>问题：</b>float32 中 \(e^{89}\) 就超过最大值（约 \(3.4\times10^{38}\)）变成 inf；fp16 只要 \(e^{12}\) 左右（最大 65504）就溢出。LLM 的 logits 很容易到几十。另一方面，若所有 \(z_i\) 都很负，\(e^{z_i}\) 全部下溢成 0，\(\log 0=-\infty\)。</p>
+    <p><b>技巧：</b>softmax 对平移不变：\(\mathrm{softmax}(z) = \mathrm{softmax}(z - c)\)。取 \(c=\max z\)：</p>
+    $$\log\mathrm{softmax}(z)_i = (z_i - m) - \log\sum_k e^{z_k - m}.$$
+    <p>此时 \(z_k - m\le 0\)，每项 \(\le 1\)，且 \(k=\arg\max\) 那一项正好是 1，所以和 \(\ge 1\)，log \(\ge 0\)，永远有限。</p>
+    <p><b>为什么要 log_softmax 而不是 log(softmax)？</b>先算 softmax 再取 log：某个 \(p_i\) 下溢到 0 时，\(\log p_i = -\infty\)，loss 变 inf、梯度 NaN。直接算 log_softmax 结果是一个有限的大负数。所以：</p>
+    <ul>
+      <li>PyTorch：<code>F.cross_entropy(logits, target)</code> = <code>F.nll_loss(F.log_softmax(logits), target)</code>；<b>传 logits，不要传 softmax 之后的概率</b>（否则相当于做了两次 softmax，梯度被严重压扁，训练变慢甚至不收敛）。</li>
+      <li>二分类：<code>F.binary_cross_entropy_with_logits</code> 而不是 <code>sigmoid</code> + <code>BCELoss</code>。</li>
+      <li>KL 散度：<code>F.kl_div</code> 的输入要求是 <b>log 概率</b>。</li>
+    </ul>
+    <p><b>LLM 实践：</b>logits 和 softmax 通常在 fp32 里算（即使模型 bf16），因为词表大、尾部概率小。PaLM 还用了 z-loss（惩罚 \(\log Z\) 的平方，让 log-partition 接近 0）来提升稳定性，见 <a href="m05-pretraining.html">05</a>。注意力里的 softmax 同理需要减 max；FlashAttention 的 online softmax 就是"分块地维护 running max 和 running sum"的 LSE 技巧，见 <a href="m04-transformer.html">04</a>。</p>
+  </div>
+  <details class="deep"><summary>代码：稳定 softmax / CE（numpy）+ PyTorch 对照</summary><div class="inner">
+<pre><code class="language-python">z = np.array([[1000., 1001., 1002.]])
+print(softmax(z))                     # [[0.090 0.245 0.665]] — finite
+# naive: np.exp(z) / np.exp(z).sum()  -> nan (inf / inf)</code></pre>
+<pre><code class="language-python">import torch, torch.nn.functional as F
+z = torch.tensor([[1000., 1001., 1002.]])
+assert torch.isfinite(F.log_softmax(z, -1)).all()
+assert torch.isfinite(F.cross_entropy(z, torch.tensor([0])))
+# naive is broken
+assert not torch.isfinite(torch.log(torch.exp(z) / torch.exp(z).sum())).all()
+# BCE with logits stable
+zl = torch.tensor([800., -800.]); yl = torch.tensor([0., 1.])
+l = F.binary_cross_entropy_with_logits(zl, yl); assert torch.isfinite(l) and abs(l.item() - 800) &lt; 1e-3
+# label smoothing equivalence
+torch.manual_seed(0)
+logits = torch.randn(4, 5); y = torch.randint(0, 5, (4,)); eps = 0.1
+q = torch.full((4, 5), eps / 5); q[torch.arange(4), y] += 1 - eps
+ref = -(q * F.log_softmax(logits, -1)).sum(-1).mean()
+assert torch.allclose(F.cross_entropy(logits, y, label_smoothing=eps), ref, atol=1e-6)
+print("ok")</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>模型最后一层加了 <code>nn.Softmax</code>，再接 <code>nn.CrossEntropyLoss</code>——这是最经典的 bug 之一。另一个：手写 softmax 时只在 <code>exp</code> 前减 max，但 <code>keepdims</code> 忘了写导致广播错维度。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Softmax is invariant to adding a constant to all logits, so before exponentiating I subtract the max. Then every exponent is at most zero, nothing overflows, and the sum is at least one, so the log is finite. For the loss I compute log-softmax directly as z minus max minus log of the shifted sum, rather than taking the log of softmax, because a probability can underflow to zero and give minus infinity. That's why you pass raw logits into cross-entropy in PyTorch — passing probabilities effectively applies softmax twice and squashes the gradients.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How does online softmax work (e.g., in FlashAttention)?</b><details><summary>思路</summary><div class="inner">逐块读入 logits，维护 running max \(m\) 和 running 归一化项 \(\ell=\sum e^{z-m}\)。来一个新块，新 max \(m'=\max(m, m_{\text{blk}})\)，\(\ell' = \ell e^{m-m'} + \sum_{\text{blk}} e^{z-m'}\)；输出累加器也乘 \(e^{m-m'}\) 修正。这样一遍扫描、不存完整矩阵就能得到精确 softmax 加权和。</div></details></li>
+    <li><b>Why compute the softmax in fp32 even in a bf16 model?</b><details><summary>思路</summary><div class="inner">bf16 只有 8 位尾数（约 2–3 位有效十进制数字），大词表的归一化求和误差大，小概率的 log 精度差；指数运算放大相对误差。fp32 下的 LSE 和 CE 稳定得多。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-label-smooth">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Label smoothing 与 temperature</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Label smoothing 把目标换成 \(q = (1-\epsilon)\,y + \epsilon/C\)，梯度变成 \(p-q\)，阻止 logits 无限变大；temperature \(T\) 把 logits 除以 \(T\)：\(T\lt 1\) 更尖、\(T\gt 1\) 更平。</p><p class="en">Label smoothing mixes the one-hot target with a uniform distribution so the model can't drive logits to infinity; temperature rescales logits to sharpen or flatten the distribution.</p></div>
+  <div class="deep">
+    <p><b>Label smoothing</b>（Szegedy et al., Inception-v3）：one-hot 目标下，要让 \(p_y\to1\) 需要 logit 差距 \(\to\infty\)，模型被鼓励变得过度自信。平滑后最优解 \(p = q\) 是有限 logits（正确类比其他类高 \(\log\frac{(1-\epsilon)+\epsilon/C}{\epsilon/C}\)）。等价写法：</p>
+    $$L_{\text{LS}} = (1-\epsilon)\,\mathrm{CE}(y, p) + \epsilon\,\mathrm{CE}(u, p),\quad u=\text{uniform}.$$
+    <p>第二项 \(=\mathrm{KL}(u\Vert p) + \log C\)，是一个让 \(p\) 别离均匀分布太远的正则。由 §2 推导（\(q\) 也归一化），梯度是 \(p - q\)。效果：常改善校准（calibration）和泛化；原始 Transformer（Vaswani 2017）用了 \(\epsilon=0.1\)。缺点：会损害知识蒸馏中 teacher 的"暗知识"、让表示簇更紧；LLM 预训练一般不用。PyTorch：<code>F.cross_entropy(..., label_smoothing=0.1)</code>（注意它的均匀部分包含正确类，即 \(\epsilon/C\) 加到所有类上）。</p>
+    <p><b>Temperature：</b>\(p_i \propto \exp(z_i/T)\)。\(T\to0\) 趋于 argmax（greedy），\(T\to\infty\) 趋于均匀。用途：</p>
+    <ul>
+      <li><b>采样</b>：LLM 解码温度（见 <a href="m08-inference.html">08</a>）；RL rollout 时温度影响探索与 on-policy 一致性（见 <a href="m06-rl-posttraining.html">06</a>）。</li>
+      <li><b>知识蒸馏</b>（Hinton 2015）：teacher/student 都用高温 \(T\) 软化分布，loss 乘 \(T^2\) 以保持梯度量级（因为对 logits 的梯度含 \(1/T\) 因子，软目标项梯度约按 \(1/T^2\) 缩放）。</li>
+      <li><b>校准</b>：temperature scaling 在验证集上拟合一个标量 \(T\)，不改变 argmax，只改善置信度。</li>
+      <li><b>对比学习</b>：InfoNCE 的 \(\tau\)（CLIP 中是可学习的）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>With a one-hot target, the only way to reach zero loss is to push the correct logit infinitely above the others, which encourages overconfidence. Label smoothing replaces the target with a mixture of one-hot and uniform, so the optimum is at finite logits, and the gradient becomes p minus the smoothed target. It usually improves calibration. Temperature divides the logits by T before the softmax: below one sharpens the distribution, above one flattens it — it's used in sampling, distillation, and post-hoc calibration.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why multiply the distillation loss by T²?</b><details><summary>思路</summary><div class="inner">软目标的 CE 对 student logits 的梯度是 \(\frac1T(p_s^{(T)}-p_t^{(T)})\)；当 \(T\) 大时 \(p^{(T)}\approx \frac1C + \frac{z}{CT}\) 量级的差也约 \(\propto 1/T\)，总体梯度 \(\propto 1/T^2\)。乘 \(T^2\) 让软目标项和硬目标项的梯度量级在改变 \(T\) 时保持可比。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-bce">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Sigmoid + BCE：梯度与稳定写法</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\ell = -[y\log\sigma(z) + (1-y)\log(1-\sigma(z))]\)，\(\partial\ell/\partial z = \sigma(z) - y\)；稳定写法 \(\ell = \max(z,0) - zy + \log(1+e^{-|z|})\)。</p><p class="en">Binary cross-entropy on a sigmoid also has gradient prediction minus target; compute it from logits with the softplus form to avoid log of zero.</p></div>
+  <div class="deep">
+    <p><b>推导：</b>\(\sigma'(z)=\sigma(1-\sigma)\)，\(\log\sigma(z) = -\log(1+e^{-z})\)，\(\log(1-\sigma(z)) = -z - \log(1+e^{-z})\)。所以</p>
+    $$\ell = y\log(1+e^{-z}) + (1-y)\big(z + \log(1+e^{-z})\big) = (1-y)z + \log(1+e^{-z}).$$
+    $$\frac{\partial\ell}{\partial z} = (1-y) - \frac{e^{-z}}{1+e^{-z}} = (1-y) - (1-\sigma(z)) = \sigma(z) - y.$$
+    <p><b>稳定写法：</b>\((1-y)z + \log(1+e^{-z})\) 在 \(z\ll0\) 时 \(e^{-z}\) 上溢。利用 \(\log(1+e^{-z}) = \max(-z,0) + \log(1+e^{-|z|})\) 得到</p>
+    $$\ell = \max(z,0) - zy + \log(1+e^{-|z|}),$$
+    <p>其中 \(e^{-|z|}\le1\) 永不溢出，用 <code>log1p</code> 保证小值精度。这就是 <code>BCEWithLogitsLoss</code> 的实现。sigmoid 本身也要分段算：\(z\ge0\) 用 \(1/(1+e^{-z})\)，\(z\lt 0\) 用 \(e^z/(1+e^z)\)。</p>
+    <p><b>在 LLM 里出现在：</b>奖励模型的 Bradley–Terry loss \(-\log\sigma(r_w - r_l)\)、DPO loss \(-\log\sigma(\beta\cdot\text{margin})\)（见 <a href="m06-rl-posttraining.html">06</a>）——都应该写成 <code>-F.logsigmoid(x)</code>，而不是 <code>-torch.log(torch.sigmoid(x))</code>。</p>
+  </div>
+  <details class="deep"><summary>代码：numpy 稳定 BCE + 梯度检查</summary><div class="inner">
+<pre><code class="language-python">def bce_with_logits(z, y):
+    # log(1+e^{-|z|}) + max(z,0) - z*y
+    return (np.maximum(z, 0) - z * y + np.log1p(np.exp(-np.abs(z)))).mean()
+def sigmoid(z):
+    return np.where(z &gt;= 0, 1 / (1 + np.exp(-np.abs(z))), np.exp(-np.abs(z)) / (1 + np.exp(-np.abs(z))))
+z = rng.normal(size=7) * 3; yb = rng.integers(0, 2, 7).astype(float)
+naive = -(yb * np.log(sigmoid(z)) + (1 - yb) * np.log(1 - sigmoid(z))).mean()
+assert abs(naive - bce_with_logits(z, yb)) &lt; 1e-10
+g = (sigmoid(z) - yb) / z.size
+assert rel_err(g, num_grad(lambda: bce_with_logits(z, yb), z)) &lt; 1e-6
+assert np.isfinite(bce_with_logits(np.array([800., -800.]), np.array([0., 1.])))
+print("bce ok", bce_with_logits(np.array([800., -800.]), np.array([0., 1.])))</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>多标签分类（每类独立是/否）用 sigmoid+BCE，多类互斥用 softmax+CE；把多类问题用 sigmoid 做也能训练，但输出不是归一化分布。另外 <code>-log(sigmoid(x))</code> 在 \(x=-100\) 时 fp32 下得到 inf，而 <code>softplus(-x)</code> 得到 100。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For sigmoid plus binary cross-entropy, if you write log sigma of z as minus log of one plus e to the minus z, the loss simplifies to (1 minus y) z plus softplus of minus z, and the derivative is just sigma of z minus y — the same predicted-minus-target form as softmax cross-entropy. Numerically, I'd compute it from logits as max(z, 0) minus z times y plus log1p of e to the minus absolute z, which never overflows. In practice that means using BCE-with-logits or logsigmoid, which is exactly what reward-model and DPO losses should use.</p></div>
+</section>
+
+<!-- ============================================================ §3 -->
+<h2 class="sec" id="s-act"><span class="num">§3 · ACTIVATIONS</span>激活函数</h2>
+<p class="sec-intro">面试中激活函数常以两种方式出现：基础题（"为什么 sigmoid 会梯度消失？ReLU 的问题是什么？"）和 LLM 题（"LLaMA 的 FFN 长什么样？SwiGLU 为什么隐藏维度是 8/3 d？"）。</p>
+
+<section class="concept" id="c-sat">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Sigmoid / tanh 的饱和，ReLU 与 dying ReLU，LeakyReLU</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>sigmoid 导数最大只有 0.25，两端饱和导数→0，深层连乘后梯度消失，且输出非零中心；ReLU 正半轴导数恒为 1、计算便宜、稀疏，但负半轴梯度为 0，神经元可能"死掉"；LeakyReLU 给负半轴一个小斜率。</p><p class="en">Sigmoid saturates and its derivative is at most a quarter, so gradients vanish through depth; ReLU passes gradient unchanged for positive inputs but can die; leaky variants keep a small negative slope.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>激活</th><th>公式</th><th>导数</th><th>优点</th><th>问题</th></tr>
+      <tr><td>Sigmoid</td><td>\(\sigma(x) = \frac{1}{1+e^{-x}}\)</td><td>\(\sigma(1-\sigma)\le\frac14\)</td><td>输出在 (0,1)，可当概率/门</td><td>饱和、非零中心、exp 较贵</td></tr>
+      <tr><td>tanh</td><td>\(\tanh x = 2\sigma(2x)-1\)</td><td>\(1-\tanh^2 \le 1\)</td><td>零中心</td><td>仍然饱和</td></tr>
+      <tr><td>ReLU</td><td>\(\max(0,x)\)</td><td>\(\mathbb 1[x\gt 0]\)</td><td>不饱和（正半轴）、稀疏、便宜</td><td>dying ReLU、非零中心、0 处不可导</td></tr>
+      <tr><td>LeakyReLU</td><td>\(\max(\alpha x, x)\)，\(\alpha\approx0.01\)</td><td>\(1\) 或 \(\alpha\)</td><td>不会死</td><td>多一个超参</td></tr>
+      <tr><td>GELU</td><td>\(x\Phi(x)\)</td><td>\(\Phi(x)+x\phi(x)\)</td><td>平滑、非单调小负区</td><td>略贵</td></tr>
+      <tr><td>SiLU/Swish</td><td>\(x\sigma(x)\)</td><td>\(\sigma(x)(1+x(1-\sigma(x)))\)</td><td>平滑，与 GELU 形状相近</td><td>略贵</td></tr>
+    </table>
+    <p><b>饱和 → 梯度消失：</b>反向时每层乘 \(\sigma'(h)\le 1/4\)，\(L\) 层后至少衰减 \(4^{-L}\)（还要乘权重）。当输入 \(|x|\) 大时 \(\sigma'\approx 0\)，梯度几乎完全消失。（§10 的练习有数值演示：30 层 sigmoid 网络第一层梯度比最后一层小 \(10^{19}\) 倍。）</p>
+    <p><b>非零中心：</b>sigmoid 输出全正，那么下一层权重 \(W\) 的梯度 \(\bar W = x^\top \bar h\) 对同一输出单元的所有输入权重符号相同（都由 \(\bar h_j\) 的符号决定），导致更新只能"之字形"前进。</p>
+    <p><b>Dying ReLU：</b>若某个神经元的 pre-activation 对所有训练样本都 \(\lt 0\)（比如一次大学习率更新把 bias 推得很负），它的输出恒为 0、梯度恒为 0，再也不会被更新。缓解：合适的初始化（Kaiming）、较小学习率、LeakyReLU/GELU、归一化层。</p>
+    <div class="box why"><span class="lbl">直觉</span>为什么非线性是必须的？没有非线性，多层线性层的复合仍是线性映射 \(W_2W_1x\)，深度毫无意义。ReLU 网络是分段线性函数，层数越多可以表示的"线性区域"数量指数增长。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"ReLU 解决了梯度消失"只对了一半：它解决了激活函数本身的饱和，但深层网络的梯度依然是权重雅可比的连乘，仍可能消失/爆炸——还需要好的初始化、归一化、残差。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Sigmoid's derivative is at most one quarter and goes to zero at both tails, so stacking many sigmoid layers multiplies lots of small numbers and the gradient vanishes; its outputs are also all positive, which makes weight updates zig-zag. ReLU has derivative exactly one on the positive side, so it doesn't saturate there, and it's cheap and sparse. Its weakness is that a unit whose input is negative for every example gets zero gradient forever — a dead ReLU. Leaky ReLU, GELU, or SiLU keep some gradient on the negative side and avoid that.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why are sigmoids still used inside LSTMs and GLUs if they saturate?</b><details><summary>思路</summary><div class="inner">在门控里 sigmoid 的作用是产生 (0,1) 的"开关"系数，正需要它的有界性；梯度主要沿着另一条不经过饱和函数的路径流动（LSTM 的 cell state 加法路径，GLU 的线性分支）。</div></details></li>
+    <li><b>What's the derivative of ReLU at 0, and does it matter?</b><details><summary>思路</summary><div class="inner">数学上不可导（次梯度在 [0,1] 之间），框架约定取 0。实践中激活恰好等于 0 的概率为 0（连续分布），所以无关紧要；但梯度检查时若点离 0 很近会出现假报警。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-gelu">
+  <div class="concept-head"><span class="pri p1">★</span><h3>GELU（exact vs tanh 近似）与 SiLU</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\mathrm{GELU}(x) = x\,\Phi(x)\)（\(\Phi\) 为标准正态 CDF），可近似为 \(0.5x\big(1+\tanh(\sqrt{2/\pi}(x+0.044715x^3))\big)\)；\(\mathrm{SiLU}(x)=x\,\sigma(x)\)。都是"用一个软门乘以输入"。</p><p class="en">GELU weights the input by the Gaussian CDF; SiLU weights it by a sigmoid — both are smooth, self-gated versions of ReLU.</p></div>
+  <div class="deep">
+    <p><b>来源：</b>GELU（Hendrycks &amp; Gimpel, <a href="https://arxiv.org/abs/1606.08415" target="_blank" rel="noreferrer">arXiv 1606.08415</a>）的动机是"随机地以概率 \(\Phi(x)\) 保留输入"的期望：\(\mathbb E[x\cdot m],\ m\sim\mathrm{Bernoulli}(\Phi(x))\) 就是 \(x\Phi(x)\)。BERT、GPT-2/3 使用 GELU。</p>
+    <p><b>exact vs tanh：</b>exact 用 erf：\(\Phi(x) = \tfrac12(1+\mathrm{erf}(x/\sqrt2))\)。tanh 近似在早期是为了速度（GPT-2 代码用的就是 tanh 版）。两者在 \([-5,5]\) 上最大绝对误差约 \(5\times10^{-4}\)（本页实测 4.7e-4）。PyTorch：<code>F.gelu(x)</code>（exact，默认）vs <code>F.gelu(x, approximate='tanh')</code>。<b>加载预训练权重时要用和训练时相同的版本</b>，否则会有小的数值偏差。</p>
+    <p><b>SiLU / Swish：</b>\(x\sigma(\beta x)\)，\(\beta=1\) 时叫 SiLU。Swish 是 Ramachandran et al. 用自动搜索找到的。GELU 与 SiLU 形状非常相似：都平滑、在负半轴有一个小"凹陷"（非单调），GELU 最小值约 \(-0.17\)（在 \(x\approx-0.75\)），SiLU 最小值约 \(-0.28\)（在 \(x\approx-1.28\)）。事实上 \(\Phi(x)\approx\sigma(1.702x)\)。</p>
+    <p><b>为什么平滑激活更好？</b>经验上在 Transformer 中略优于 ReLU；平滑带来更好的优化几何（导数连续）、负半轴非零梯度避免死神经元。但差距通常不大——真正的提升来自 GLU 结构（下一节）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>GELU multiplies the input by the standard normal CDF, so it's like a smooth, probabilistic ReLU: large positive inputs pass through, large negative ones are zeroed, and there's a small non-monotonic dip near zero. The original GPT-2 used a tanh approximation for speed; the exact version uses erf, and they differ by less than about 1e-3, but you should match whichever one the checkpoint was trained with. SiLU is x times sigmoid of x, which has almost the same shape, and it's what LLaMA-style models use inside SwiGLU.</p></div>
+</section>
+
+<section class="concept" id="c-swiglu">
+  <div class="concept-head"><span class="pri p1">★</span><h3>GLU 家族与 SwiGLU（以及为什么隐藏维度是 8/3·d）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\mathrm{FFN}_{\text{SwiGLU}}(x) = \big(\mathrm{SiLU}(xW_g)\odot xW_u\big)W_d\)：三个矩阵而不是两个；为了参数量与 \(4d\) 的普通 FFN 相同，把隐藏维度从 \(4d\) 缩到 \(\tfrac23\cdot4d=\tfrac83d\)。</p><p class="en">SwiGLU gates one linear projection with the SiLU of another; with three matrices instead of two, the hidden size is cut to two-thirds of 4d to keep parameters and FLOPs equal.</p></div>
+  <div class="deep">
+    <p><b>GLU 家族</b>（Dauphin et al. 2016 提出 GLU；Shazeer 2020 <a href="https://arxiv.org/abs/2002.05202" target="_blank" rel="noreferrer">"GLU Variants Improve Transformer"</a> 系统比较）：</p>
+    $$\mathrm{GLU}(x) = \sigma(xW)\odot xV,\quad \mathrm{ReGLU} = \mathrm{ReLU}(xW)\odot xV,\quad \mathrm{GEGLU} = \mathrm{GELU}(xW)\odot xV,\quad \mathrm{SwiGLU} = \mathrm{SiLU}(xW)\odot xV.$$
+    <p>Transformer 的 FFN 就变为 \(\mathrm{FFN}(x) = (\mathrm{act}(xW)\odot xV)W_2\)。一条分支经过非线性当"门"，另一条是线性"内容"，逐元素相乘——这引入了<b>乘法交互</b>（二次项），表达力更强。Shazeer 的实验中 GEGLU/SwiGLU 的困惑度最好。</p>
+    <h4>参数量计算（必会）</h4>
+    <p>普通 FFN：\(W_1\in\mathbb R^{d\times 4d}\)，\(W_2\in\mathbb R^{4d\times d}\)，参数 \(2\cdot d\cdot4d = 8d^2\)。</p>
+    <p>SwiGLU：\(W_g, W_u\in\mathbb R^{d\times h}\)，\(W_d\in\mathbb R^{h\times d}\)，参数 \(3dh\)。令 \(3dh = 8d^2\) ⇒ \(h = \tfrac83 d\)。</p>
+    <p>Shazeer 原文：基线 \(d_{ff}=3072\)，GLU 变体用 \(d_{ff}=2048\)（即 \(\times\tfrac23\)），使参数和计算量相同。LLaMA（<a href="https://arxiv.org/abs/2302.13971" target="_blank" rel="noreferrer">Touvron et al. 2023</a>）明确写道使用 \(\tfrac23\cdot4d\) 的维度而不是 PaLM 的 \(4d\)；PaLM（<a href="https://arxiv.org/abs/2204.02311" target="_blank" rel="noreferrer">Chowdhery et al. 2022</a>）用 SwiGLU 但没有缩小维度（FFN 更大）。</p>
+    <p><b>具体数字：</b>LLaMA-7B，\(d=4096\)：\(\tfrac83\cdot4096 = 10922.67\)，官方代码再向上取整到 256 的倍数（硬件友好），得到 <b>11008</b>。每层 FFN 参数 \(3\times4096\times11008\approx 135\mathrm M\)。</p>
+    <div class="box why"><span class="lbl">直觉</span>为什么 GLU 有效？Shazeer 的原文没有给理论解释（他半开玩笑地把成功归于"divine benevolence"）。常见的直觉：门控提供了输入相关的、按维度的缩放，类似一种轻量的"注意力"；乘法交互让每个隐藏单元可以表示两个线性特征的乘积。</div>
+  </div>
+  <details class="deep"><summary>代码：PyTorch SwiGLU + RMSNorm（LLaMA 风格），参数量验证</summary><div class="inner">
+<pre><code class="language-python">import torch, torch.nn as nn, torch.nn.functional as F
+class RMSNorm(nn.Module):
+    def __init__(self, d, eps=1e-6):
+        super().__init__(); self.eps = eps; self.weight = nn.Parameter(torch.ones(d))
+    def forward(self, x):
+        x32 = x.float()
+        x32 = x32 * torch.rsqrt(x32.pow(2).mean(-1, keepdim=True) + self.eps)
+        return (x32 * self.weight.float()).to(x.dtype)
+class SwiGLU(nn.Module):
+    def __init__(self, d, hidden=None, multiple_of=256):
+        super().__init__()
+        hidden = hidden or int(8 * d / 3)
+        hidden = multiple_of * ((hidden + multiple_of - 1) // multiple_of)
+        self.w_gate = nn.Linear(d, hidden, bias=False)
+        self.w_up = nn.Linear(d, hidden, bias=False)
+        self.w_down = nn.Linear(hidden, d, bias=False)
+    def forward(self, x):
+        return self.w_down(F.silu(self.w_gate(x)) * self.w_up(x))
+m = SwiGLU(4096); assert m.w_up.out_features == 11008
+x = torch.randn(2, 7, 64); n = RMSNorm(64)
+out = n(x); assert torch.allclose(out.pow(2).mean(-1), torch.ones(2, 7), atol=1e-3)
+assert SwiGLU(64)(x).shape == x.shape
+print("ok")</code></pre>
+<pre><code class="language-python">def ffn_params(d, kind):
+    if kind == "relu": return 2 * d * (4 * d)
+    hdim = int(8 * d / 3); return 3 * d * hdim
+d = 4096
+print("FFN params relu", ffn_params(d, "relu"), "swiglu", ffn_params(d, "swiglu"))
+assert abs(ffn_params(d, "swiglu") / ffn_params(d, "relu") - 1) &lt; 1e-3
+# LLaMA-7B: hidden 11008
+print("llama 8/3*4096 =", 8 * 4096 / 3, "rounded to multiple of 256:", 256 * ((int(8 * 4096 / 3) + 255) // 256))
+assert 256 * ((int(8 * 4096 / 3) + 255) // 256) == 11008
+
+# GELU exact vs tanh approx
+from math import erf, sqrt, pi, tanh
+xs = np.linspace(-5, 5, 1001)
+gelu = np.array([0.5 * v * (1 + erf(v / sqrt(2))) for v in xs])
+gelu_t = 0.5 * xs * (1 + np.tanh(sqrt(2 / pi) * (xs + 0.044715 * xs ** 3)))
+print("gelu max abs diff", np.abs(gelu - gelu_t).max()); assert np.abs(gelu - gelu_t).max() &lt; 1e-3
+silu = xs / (1 + np.exp(-xs)); print("silu min", silu.min(), "at", xs[silu.argmin()])
+print("gelu min", gelu.min(), "at", xs[gelu.argmin()])</code></pre>
+    <p>运行结果：ReLU-FFN 134,217,728 参数，SwiGLU（\(h=\lfloor 8d/3\rfloor=10922\)）134,209,536 参数，几乎相等；取整到 256 倍数得 11008 ✓。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>说"SwiGLU 有 2 个矩阵"——是 3 个（gate、up、down）。</li>
+      <li>以为 \(8/3\) 是某种最优比例——它只是为了与 \(4d\) 基线<b>参数匹配</b>。后来的模型常用别的比例（例如 LLaMA-2-70B、LLaMA-3 用更大的 FFN 倍率），要以具体 config 为准。</li>
+      <li>FLOPs：SwiGLU 的 matmul FLOPs 同样是 \(2\cdot 3dh\) 每 token，与参数匹配后和普通 FFN 相同；逐元素乘法的开销可以忽略。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>SwiGLU replaces the FFN's single up-projection and activation with two parallel projections: one goes through SiLU and acts as a gate, the other is linear, and they're multiplied elementwise before the down-projection. That means three weight matrices instead of two. To keep the parameter count equal to a standard 4d FFN, you solve 3 d h equals 8 d squared, giving h equals eight-thirds d — that's what Shazeer did in the GLU variants paper and what LLaMA adopted, rounding to a hardware-friendly multiple, which is how you get 11008 for d equals 4096. Empirically the gated variants give better perplexity at equal compute.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What fraction of a dense transformer's parameters are in the FFN?</b><details><summary>思路</summary><div class="inner">每层注意力 \(4d^2\)（Q,K,V,O，不考虑 GQA），FFN \(8d^2\)，所以 FFN 约占 2/3（不计 embedding）。用 GQA 时注意力更少，FFN 占比更高。这也是 MoE 选择把 FFN 换成专家的原因（见 <a href="m04-transformer.html">04</a>）。</div></details></li>
+    <li><b>Can you write the SwiGLU forward in two lines?</b><details><summary>思路</summary><div class="inner"><code>h = F.silu(x @ W_g) * (x @ W_u)</code>；<code>return h @ W_d</code>。实现中常把 \(W_g, W_u\) 拼成一个 \(d\times 2h\) 的矩阵一次 matmul 再 <code>chunk(2, -1)</code>，提高效率。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §4 -->
+<h2 class="sec" id="s-init"><span class="num">§4 · INITIALIZATION</span>初始化</h2>
+<p class="sec-intro">初始化的核心目标只有一个：<b>让前向激活和反向梯度的方差在层与层之间保持稳定</b>。推导只需要"独立随机变量乘积与求和的方差"。</p>
+
+<section class="concept" id="c-varprop">
+  <div class="concept-head"><span class="pri p1">★</span><h3>方差传播与 Xavier / Kaiming 推导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(y = Wx\) 中 \(\mathrm{Var}(y_i) = n_{\text{in}}\mathrm{Var}(W)\,\mathbb E[x^2]\)。线性/tanh：\(\mathrm{Var}(W)=1/n_{\text{in}}\)（Xavier 折中取 \(2/(n_{\text{in}}+n_{\text{out}})\)）；ReLU 砍掉一半能量：\(\mathrm{Var}(W)=2/n_{\text{in}}\)（Kaiming/He）。</p><p class="en">Choose the weight variance so each layer preserves the second moment of activations: one over fan-in for linear or tanh, two over fan-in for ReLU because it zeroes half the signal.</p></div>
+  <div class="deep">
+    <p><b>设定：</b>\(y_i = \sum_{j=1}^{n_{\text{in}}} W_{ij}x_j\)，假设 \(W_{ij}\) 独立同分布、零均值、方差 \(\mathrm{Var}(W)\)，且与 \(x\) 独立。</p>
+    <p><b>Step 1：一项的方差。</b>\(W\) 与 \(x\) 独立且 \(\mathbb E[W]=0\)：</p>
+    $$\mathrm{Var}(W_{ij}x_j) = \mathbb E[W_{ij}^2x_j^2] - (\mathbb E[W_{ij}]\mathbb E[x_j])^2 = \mathrm{Var}(W)\,\mathbb E[x_j^2].$$
+    <p>注意这里是 \(\mathbb E[x^2]\)（二阶矩），不是 \(\mathrm{Var}(x)\)——只有 \(x\) 零均值时两者才相等。</p>
+    <p><b>Step 2：求和。</b>各项零均值且两两不相关（\(W_{ij}\) 独立），所以</p>
+    $$\mathrm{Var}(y_i) = n_{\text{in}}\,\mathrm{Var}(W)\,\mathbb E[x^2].$$
+    <p><b>Step 3a：线性或 tanh（在 0 附近近似线性，输出零均值）。</b>\(\mathbb E[x^2]=\mathrm{Var}(x)\)。要 \(\mathrm{Var}(y)=\mathrm{Var}(x)\) ⇒ \(\boxed{\mathrm{Var}(W)=1/n_{\text{in}}}\)（LeCun 初始化）。</p>
+    <p><b>反向同理：</b>\(\bar x_j = \sum_i W_{ij}\bar y_i\)，求和是对 \(n_{\text{out}}\) 项，所以要保持梯度方差需 \(\mathrm{Var}(W)=1/n_{\text{out}}\)。<b>Xavier/Glorot</b>（2010）取调和折中：</p>
+    $$\mathrm{Var}(W) = \frac{2}{n_{\text{in}}+n_{\text{out}}},\qquad \text{uniform: } W\sim U\Big[-\sqrt{\tfrac{6}{n_{\text{in}}+n_{\text{out}}}},\ \sqrt{\tfrac{6}{n_{\text{in}}+n_{\text{out}}}}\Big].$$
+    <p>（均匀分布 \(U[-a,a]\) 的方差是 \(a^2/3\)，令 \(a^2/3 = 2/(n_{\text{in}}+n_{\text{out}})\) 得 \(a=\sqrt{6/(n_{\text{in}}+n_{\text{out}})}\)。）</p>
+    <p><b>Step 3b：ReLU（Kaiming/He 2015）。</b>设上一层 pre-activation \(h\) 零均值、关于 0 对称，\(x=\mathrm{ReLU}(h)\)。则</p>
+    $$\mathbb E[x^2] = \mathbb E[h^2\mathbb 1[h\gt 0]] = \tfrac12\mathbb E[h^2] = \tfrac12\mathrm{Var}(h).$$
+    <p>代入：\(\mathrm{Var}(h^{(\ell+1)}) = n_{\text{in}}\mathrm{Var}(W)\cdot\tfrac12\mathrm{Var}(h^{(\ell)})\)。要层间不变 ⇒</p>
+    $$\boxed{\mathrm{Var}(W) = \frac{2}{n_{\text{in}}}},\qquad \text{std} = \sqrt{2/n_{\text{in}}}.$$
+    <p>这个 "2" 就是 PyTorch 中 <code>calculate_gain('relu') = √2</code> 的来源（gain 乘在 std 上）。tanh 的 gain 是 5/3，SELU 是 3/4，linear/sigmoid 是 1。<code>kaiming_normal_(w, mode='fan_in')</code> 保前向，<code>mode='fan_out'</code> 保反向。</p>
+    <div class="box why"><span class="lbl">直觉</span>每一层把信号的方差乘以一个因子 \(\alpha = n_{\text{in}}\mathrm{Var}(W)\cdot c_{\text{act}}\)。\(L\) 层后是 \(\alpha^L\)：\(\alpha=0.5\) 时 50 层后缩小 \(10^{15}\) 倍，\(\alpha=2\) 时放大 \(10^{15}\) 倍。初始化就是让 \(\alpha=1\)。本页实测：50 层 ReLU 网络，用 \(1/n\) 方差初始化，输出 std 衰减到 \(1.7\times10^{-8}\)；用 Kaiming \(2/n\)，输出 std 保持在 0.75 左右。</div>
+    <p><b>PyTorch 默认初始化：</b><code>nn.Linear</code> 默认用 <code>kaiming_uniform_(a=√5)</code>，效果上等价于 \(U[-1/\sqrt{n_{\text{in}}}, 1/\sqrt{n_{\text{in}}}]\)，方差 \(1/(3n_{\text{in}})\)——比 Kaiming 小，深层 ReLU 网络会逐渐衰减（实践中被归一化层弥补）。LLM 代码（GPT-2、nanoGPT、Megatron）一般显式用 \(\mathcal N(0, 0.02^2)\)。</p>
+  </div>
+  <details class="deep"><summary>代码：50 层网络的激活 std（numpy，已运行）</summary><div class="inner">
+<pre><code class="language-python">def forward_std(init, act, L=50, n=512):
+    x = rng.normal(size=(256, n))
+    for _ in range(L):
+        if init == "xavier": W = rng.normal(size=(n, n)) * np.sqrt(1 / n)   # Var = 1/fan_in (LeCun ~ Xavier for fan_in=fan_out)
+        elif init == "kaiming": W = rng.normal(size=(n, n)) * np.sqrt(2 / n)
+        else: W = rng.normal(size=(n, n)) * 0.01
+        x = act(x @ W)
+    return x.std()
+relu = lambda t: np.maximum(t, 0)
+s_x, s_k, s_s = forward_std("xavier", relu), forward_std("kaiming", relu), forward_std("small", relu)
+print("relu 50 layers: xavier %.2e kaiming %.3f small %.2e" % (s_x, s_k, s_s))
+assert s_x &lt; 1e-5 and 0.3 &lt; s_k &lt; 3 and s_s &lt; 1e-30
+s_t = forward_std("xavier", np.tanh); print("tanh xavier", s_t)
+# 输出: relu 50 layers: xavier 1.72e-08 kaiming 0.755 small 7.16e-41</code></pre>
+<pre><code class="language-python">import math, torch, torch.nn as nn
+torch.manual_seed(0)
+lin = nn.Linear(1024, 1024)
+nn.init.kaiming_normal_(lin.weight, mode='fan_in', nonlinearity='relu')
+assert abs(lin.weight.std().item() - math.sqrt(2 / 1024)) &lt; 2e-3
+# GPT-2 style residual projection scaling
+n_layer = 12
+proj = nn.Linear(768, 768)
+nn.init.normal_(proj.weight, mean=0.0, std=0.02 / math.sqrt(2 * n_layer))
+assert abs(proj.weight.std().item() - 0.02 / math.sqrt(24)) &lt; 1e-3
+# clipping
+model = nn.Sequential(nn.Linear(10, 10), nn.ReLU(), nn.Linear(10, 1))
+loss = (model(torch.randn(32, 10)) * 1e4).pow(2).mean(); loss.backward()
+pre = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+post = torch.sqrt(sum(p.grad.pow(2).sum() for p in model.parameters()))
+assert pre &gt; 1.0 and abs(post.item() - 1.0) &lt; 1e-4
+print("ok")</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>全零初始化：同层所有神经元输出相同、梯度相同，永远对称，等于只有一个神经元（symmetry breaking 失败）。bias 可以初始化为 0，权重不行。</li>
+      <li>推导里用 \(\mathrm{Var}(x)\) 而不是 \(\mathbb E[x^2]\)，对 ReLU 输出（非零均值）会得到错误因子。</li>
+      <li>Kaiming 的"2"来自 ReLU 砍掉一半，不是来自"前向反向两个方向"。Xavier 的"2"才来自 \(n_{\text{in}}+n_{\text{out}}\) 平均。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The idea is to keep the second moment of activations constant across layers. For y equals Wx with i.i.d. zero-mean weights independent of x, each output's variance is fan-in times Var(W) times E[x squared]. For a linear or tanh layer with zero-mean inputs that gives Var(W) equals one over fan-in; Xavier averages the forward and backward conditions to get two over fan-in plus fan-out. With ReLU, the activation zeroes the negative half, so E[x squared] is only half the pre-activation variance, and you need to double the weight variance: two over fan-in, which is Kaiming init. Without that factor, a 50-layer ReLU net shrinks the signal by many orders of magnitude.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Does initialization still matter when you have normalization layers?</b><details><summary>思路</summary><div class="inner">影响变小但仍重要：归一化修正了前向尺度，但残差分支的相对大小、初始时的梯度量级、最初几百步的稳定性仍依赖初始化；Pre-LN Transformer 中残差流不被归一化，方差随层数累加（下一个概念）。在大规模下还要考虑超参随宽度的迁移，这就是 μP（见 <a href="m05-pretraining.html">05</a>）。</div></details></li>
+    <li><b>Why does GPT-2 use std 0.02 rather than Xavier?</b><details><summary>思路</summary><div class="inner">经验值。对 \(d=768\)，\(1/\sqrt{768}\approx0.036\)，0.02 略小；对大模型 0.02 比 \(1/\sqrt d\) 大（\(d=12288\) 时 \(1/\sqrt d\approx 0.009\)）。一些后续工作改用随宽度缩放（\(\propto 1/\sqrt{d}\)）的初始化，或 μP 风格的参数化。面试中回答"经验选择 + 配合 LayerNorm 和残差缩放"即可。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-gpt2init">
+  <div class="concept-head"><span class="pri p1">★</span><h3>残差缩放：GPT-2 的 1/√(2N) 与零初始化技巧</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>残差流 \(x_{L} = x_0 + \sum_\ell f_\ell(x_\ell)\)，若各分支输出独立、方差为 \(s^2\)，则总方差约 \(\mathrm{Var}(x_0)+Ls^2\)，随深度线性增长；把每个残差分支的输出投影初始化缩小 \(1/\sqrt{L}\)（GPT-2 中 \(L=2N\)，每个 block 有 attn+MLP 两个分支）使总方差与深度无关。</p><p class="en">Each residual branch adds variance to the stream, so GPT-2 scales the init of output projections by one over root two N, where 2N is the number of residual additions.</p></div>
+  <div class="deep">
+    <p><b>推导：</b>Pre-LN Transformer 中 \(x_{\ell+1} = x_\ell + f_\ell(\mathrm{LN}(x_\ell))\)。分支输入被 LN 归一化，所以每个分支输出方差约为常数 \(s^2\)（由输出投影 \(W_O\) 或 \(W_{\text{down}}\) 的初始化决定），与 \(x_\ell\) 近似不相关。于是</p>
+    $$\mathrm{Var}(x_{L}) \approx \mathrm{Var}(x_0) + \sum_{\ell=1}^{L}s^2 = \mathrm{Var}(x_0) + L s^2.$$
+    <p>深度 \(L\) 增大，残差流越来越大，后面的分支相对贡献越来越小，也会使 final LN 前的尺度、梯度规模随深度变化。把每个分支输出层的 std 乘以 \(1/\sqrt{L}\)，\(Ls^2\) 就变为常数。</p>
+    <p><b>GPT-2 原文</b>（<a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf" target="_blank" rel="noreferrer">Radford et al. 2019</a>）：把残差层权重在初始化时乘以 \(1/\sqrt N\)，\(N\) 为残差层数；同时把 LayerNorm 移到每个子块的输入（Pre-LN），并在最后一个块后加一个额外的 LN。nanoGPT 的实现是对 <code>c_proj</code>（attention 输出投影和 MLP 第二层）用 \(\mathrm{std}=0.02/\sqrt{2\cdot n_{\text{layer}}}\)，因为每个 block 有 2 次残差加法。</p>
+    <p><b>零初始化家族（同一思想的极端形式）：</b>让每个残差分支初始时输出 0，网络初始就是恒等映射，"从浅网络开始逐渐变深"。</p>
+    <ul>
+      <li>ResNet：每个残差块最后一个 BN 的 \(\gamma\) 初始化为 0（Goyal et al. 2017 的大 batch 训练技巧）。</li>
+      <li>Fixup、ReZero（\(x + \alpha f(x)\)，\(\alpha\) 初始为 0）、SkipInit。</li>
+      <li>扩散模型/ControlNet 的 zero-conv；LoRA 中 \(B\) 初始化为 0 使初始 \(\Delta W = BA = 0\)。</li>
+      <li>一些 LLM 实现把输出投影直接零初始化（注意不能 Q、K 也全零——但输出投影置零时梯度仍能流入它本身，所以没有对称性问题）。</li>
+    </ul>
+    <p>更系统的宽度/深度超参迁移见 μP / depth-μP（<a href="m05-pretraining.html">05</a>）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把 \(1/\sqrt{2N}\) 应用到<b>所有</b>权重上——它只用于写回残差流的输出投影（attn 的 \(W_O\)、MLP 的 \(W_{\text{down}}\)）。另外 "N" 是 block 数时要乘 2，原文表述是"残差层数"。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In a pre-norm transformer, every attention and MLP branch adds its output to the residual stream, and since the branch inputs are normalized, each addition contributes roughly constant variance. After L additions the stream's variance grows linearly with depth. GPT-2 counteracts that by scaling the initialization of the output projections — the ones that write into the residual stream — by one over the square root of the number of residual layers, which in nanoGPT is 0.02 over root of 2 times n_layer because each block has two branches. Zero-initializing the last layer of each branch, as in ReZero or zero-gamma in ResNets, is the extreme version: the network starts as the identity.</p></div>
+</section>
+
+<!-- ============================================================ §5 -->
+<h2 class="sec" id="s-norm"><span class="num">§5 · NORMALIZATION</span>归一化</h2>
+<p class="sec-intro">"BatchNorm 和 LayerNorm 的区别？为什么 Transformer 用 LayerNorm？RMSNorm 和 LayerNorm 有什么不同？" 是极高频题。关键是讲清楚<b>在哪个维度上算统计量</b>，以及由此带来的 train/eval 差异和对序列的适用性。</p>
+
+<section class="concept" id="c-bn">
+  <div class="concept-head"><span class="pri p1">★</span><h3>BatchNorm：训练/推理模式与 running stats</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>BN 对每个特征（通道）在 batch（以及空间）维度上算均值方差并归一化，再做可学习仿射 \(\gamma\hat x+\beta\)；训练用当前 batch 统计量并更新滑动平均，推理用滑动平均——所以 train/eval 行为不同。</p><p class="en">BatchNorm normalizes each feature using statistics across the batch, uses running averages at inference, and therefore behaves differently in train and eval mode.</p></div>
+  <div class="deep">
+    <p><b>训练时</b>，对输入 \(x\in\mathbb R^{B\times D}\)（CNN 中是 \(B\times C\times H\times W\)，在 \(B,H,W\) 上统计，每通道一组）：</p>
+    $$\mu_j = \frac1B\sum_b x_{bj},\quad \sigma_j^2 = \frac1B\sum_b(x_{bj}-\mu_j)^2,\quad \hat x_{bj} = \frac{x_{bj}-\mu_j}{\sqrt{\sigma_j^2+\epsilon}},\quad y_{bj} = \gamma_j\hat x_{bj}+\beta_j.$$
+    <p>同时更新 running stats：<code>running = (1 − momentum)·running + momentum·batch_stat</code>（PyTorch 默认 momentum=0.1；running_var 用无偏估计 \(\frac{B}{B-1}\sigma^2\)）。</p>
+    <p><b>推理时</b>用 running_mean / running_var，输出只依赖单个样本（确定性、batch=1 可用），而且可以把 BN 折叠进前一层卷积/线性的权重里（BN folding）。</p>
+    <p><b>为什么有效？</b>原文声称减少 "internal covariate shift"；后续研究（Santurkar et al. 2018）认为主要是让损失面更平滑（更好的 Lipschitz 性、梯度更可预测），从而允许更大学习率。BN 还有 batch 噪声带来的正则效果。</p>
+    <h4>为什么 BN 不适合序列模型 / LLM</h4>
+    <ul>
+      <li><b>依赖 batch：</b>统计量跨样本，小 batch 时噪声大；分布式训练需要同步（SyncBN）开销。</li>
+      <li><b>变长序列 + padding：</b>不同位置有效样本数不同，padding 会污染统计量；对每个时间步分别统计在 RNN 里很别扭。</li>
+      <li><b>自回归生成：</b>推理时一次处理一个 token，batch 统计量与训练时不一致；train/eval 差异在分布漂移时更严重。</li>
+      <li><b>因果泄露：</b>在 batch/序列维度上统计会让一个样本的输出依赖其他样本（甚至未来 token），违反独立性/因果性。</li>
+    </ul>
+  </div>
+  <details class="deep"><summary>代码：numpy BatchNorm（train/eval）与 PyTorch 模式切换</summary><div class="inner">
+<pre><code class="language-python">class BatchNorm1d:
+    def __init__(self, D, momentum=0.1, eps=1e-5):
+        self.g, self.b = np.ones(D), np.zeros(D)
+        self.rm, self.rv = np.zeros(D), np.ones(D)
+        self.m, self.eps, self.training = momentum, eps, True
+    def __call__(self, x):                         # x: (B, D)
+        if self.training:
+            mu, var = x.mean(0), x.var(0)          # biased var for normalizing
+            n = x.shape[0]
+            self.rm = (1 - self.m) * self.rm + self.m * mu
+            self.rv = (1 - self.m) * self.rv + self.m * var * n / (n - 1)  # unbiased for running
+        else:
+            mu, var = self.rm, self.rv
+        return self.g * (x - mu) / np.sqrt(var + self.eps) + self.b
+bn = BatchNorm1d(4)
+for _ in range(200): bn(rng.normal(loc=3, scale=2, size=(64, 4)))
+assert np.allclose(bn.rm, 3, atol=0.3) and np.allclose(bn.rv, 4, atol=0.8)
+bn.training = False
+out = bn(rng.normal(loc=3, scale=2, size=(1000, 4)))
+assert abs(out.mean()) &lt; 0.2 and abs(out.std() - 1) &lt; 0.15; print("bn ok")</code></pre>
+<pre><code class="language-python">import torch, torch.nn as nn
+torch.manual_seed(0)
+d = nn.Dropout(p=0.3); x = torch.ones(1000, 1000)
+d.train(); y = d(x)
+assert abs((y == 0).float().mean().item() - 0.3) &lt; 0.01 and abs(y.mean().item() - 1) &lt; 0.01
+assert torch.allclose(y[y != 0], torch.full_like(y[y != 0], 1 / 0.7))
+d.eval(); assert torch.equal(d(x), x)
+bn = nn.BatchNorm1d(4); bn.train()
+for _ in range(200): bn(torch.randn(64, 4) * 2 + 3)
+assert torch.allclose(bn.running_mean, torch.full((4,), 3.), atol=0.3)
+bn.eval(); out = bn(torch.randn(1, 4) * 2 + 3); assert out.shape == (1, 4)
+print("ok")</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>忘了 <code>model.eval()</code>：BN 会用测试 batch 的统计量并<b>污染 running stats</b>，dropout 也仍然开着。注意 <code>model.eval()</code> 和 <code>torch.no_grad()</code> 是两回事：前者切换层的行为，后者关闭梯度记录；推理时两者通常都要。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>BatchNorm normalizes each feature using the mean and variance computed across the batch, then applies a learned scale and shift. During training it uses the current batch statistics and keeps an exponential moving average; at inference it uses those running averages, so the output depends only on the single example. That batch dependence is the problem for language models: small or variable batches give noisy statistics, padding in variable-length sequences pollutes them, autoregressive decoding processes one token at a time, and statistics across the batch leak information between examples. That's why transformers use per-token normalization like LayerNorm or RMSNorm instead.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your model works in training but performs badly at eval time. Where would you look first?</b><details><summary>思路</summary><div class="inner">先查 <code>model.eval()</code> 是否调用；BN running stats 是否被小 batch/分布不同的数据污染（可以重新在训练分布上 recalibrate stats）；dropout 是否关闭；数据预处理是否一致；fine-tuning 小 batch 时考虑冻结 BN（eval 模式）或换 GroupNorm。</div></details></li>
+    <li><b>What are GroupNorm and InstanceNorm?</b><details><summary>思路</summary><div class="inner">都是对单个样本统计：InstanceNorm 对每个样本每个通道在空间维上统计（风格迁移）；GroupNorm 把通道分组，每组在 (组内通道, H, W) 上统计，batch 无关，常用于检测/分割（小 batch）和扩散模型 U-Net。LayerNorm 可看作 GroupNorm 组数 = 1。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-ln">
+  <div class="concept-head"><span class="pri p1">★</span><h3>LayerNorm 与 RMSNorm（为什么可以去掉中心化）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>LayerNorm 对每个 token 在特征维上减均值除标准差；RMSNorm 只除以 RMS \(\sqrt{\tfrac1d\sum x_i^2}\)，不减均值、通常无 bias——少一次归约、更快，质量相当，LLaMA 等主流 LLM 都用 RMSNorm。</p><p class="en">LayerNorm normalizes each token across features; RMSNorm drops the mean subtraction and only rescales by the root-mean-square, which is cheaper and works just as well.</p></div>
+  <div class="deep">
+    <p><b>LayerNorm</b>（Ba et al. 2016），对 \(x\in\mathbb R^d\)（一个 token 的隐藏向量）：</p>
+    $$\mu = \frac1d\sum_i x_i,\quad \sigma^2 = \frac1d\sum_i(x_i-\mu)^2,\quad \mathrm{LN}(x) = \gamma\odot\frac{x-\mu}{\sqrt{\sigma^2+\epsilon}}+\beta.$$
+    <p>统计量只依赖单个 token 自身 ⇒ 训练/推理行为一致、与 batch 大小和序列长度无关、天然适合自回归。</p>
+    <p><b>RMSNorm</b>（Zhang &amp; Sennrich 2019，<a href="https://arxiv.org/abs/1910.07467" target="_blank" rel="noreferrer">arXiv 1910.07467</a>）：</p>
+    $$\mathrm{RMSNorm}(x) = \gamma\odot\frac{x}{\sqrt{\frac1d\sum_i x_i^2+\epsilon}}.$$
+    <p><b>为什么可以去掉中心化？</b></p>
+    <ul>
+      <li>论文的假设：LayerNorm 的成功主要来自<b>重缩放不变性</b>（re-scaling invariance，对输入整体乘常数不敏感，稳定梯度尺度），而不是重中心化不变性。实验上 RMSNorm 质量与 LN 相当。</li>
+      <li>效率：少算一次均值（一次跨特征维的归约）和减法，且无 \(\beta\)。论文报告在不同模型上提速约 7%–64%（具体视实现而定）；在 LLM 中归一化是 memory-bound 的小算子，省一次归约有实际意义。</li>
+      <li>几何：LN 等价于"投影到与 \(\mathbf 1\) 正交的超平面，再缩放到半径 \(\sqrt d\) 的球上"；RMSNorm 只做"缩放到球上"。高维中隐藏向量的均值往往接近 0，二者差别不大。</li>
+    </ul>
+    <p>LLaMA 明确使用 Pre-normalization + RMSNorm（<a href="https://arxiv.org/abs/2302.13971" target="_blank" rel="noreferrer">Touvron et al. 2023</a>）。实现细节：通常把输入 cast 到 fp32 计算 RMS 再 cast 回来（平方和在 bf16 下精度差）。</p>
+    <h4>LayerNorm 的反向（手写题常考）</h4>
+    <p>记 \(\hat x = (x-\mu)\cdot r\)，\(r = (\sigma^2+\epsilon)^{-1/2}\)，\(g = \bar y\odot\gamma\)（对 \(\hat x\) 的梯度）。则</p>
+    $$\bar\gamma = \sum_{\text{tokens}}\bar y\odot\hat x,\qquad \bar\beta = \sum_{\text{tokens}}\bar y,\qquad \bar x = r\Big(g - \overline{g} - \hat x\cdot\overline{g\odot\hat x}\Big),$$
+    <p>其中 \(\overline{\,\cdot\,}\) 表示在特征维上的平均。推导：\(\hat x\) 通过三条路径依赖 \(x_j\)：直接项、\(\mu\)、\(\sigma^2\)。</p>
+    <ul>
+      <li>\(\partial\hat x_i/\partial x_j = r(\delta_{ij} - \tfrac1d) + (x_i-\mu)\,\partial r/\partial x_j\)。</li>
+      <li>\(\partial\sigma^2/\partial x_j = \tfrac2d(x_j-\mu)\)（\(\mu\) 的那部分贡献为 \(\tfrac{-2}{d}\sum_i(x_i-\mu)=0\)），\(\partial r/\partial x_j = -\tfrac12 r^3\cdot\tfrac2d(x_j-\mu) = -\tfrac{r^3}{d}(x_j-\mu) = -\tfrac{r^2}{d}\hat x_j\)，因此 \((x_i-\mu)\,\partial r/\partial x_j = -\tfrac{r}{d}\hat x_i\hat x_j\)。</li>
+      <li>所以 \(\partial\hat x_i/\partial x_j = r\big(\delta_{ij} - \tfrac1d - \tfrac1d\hat x_i\hat x_j\big)\)。</li>
+      <li>\(\bar x_j = \sum_i g_i\,\partial\hat x_i/\partial x_j = r\big(g_j - \tfrac1d\sum_i g_i - \hat x_j\tfrac1d\sum_i g_i\hat x_i\big)\)。✓</li>
+    </ul>
+    <p>直觉：\(\bar x\) 是把 \(g\) 投影掉"沿 \(\mathbf 1\) 方向"和"沿 \(\hat x\) 方向"的分量再乘 \(r\)——因为 LN 的输出对这两个方向的输入扰动不敏感（平移不变、缩放不变）。RMSNorm 的反向类似，只少了减均值那一项：\(\bar x = r(g - \hat x\cdot\overline{g\odot\hat x})\)，\(\hat x = x\cdot r\)。</p>
+  </div>
+  <details class="deep"><summary>代码：LayerNorm 前向/反向、RMSNorm（numpy，梯度检查通过）</summary><div class="inner">
+<pre><code class="language-python">def ln_forward(x, g, b, eps=1e-5):
+    mu = x.mean(-1, keepdims=True)
+    var = x.var(-1, keepdims=True)
+    rstd = 1 / np.sqrt(var + eps)
+    xhat = (x - mu) * rstd
+    return xhat * g + b, (xhat, rstd)
+
+def ln_backward(dy, g, cache):
+    xhat, rstd = cache
+    D = xhat.shape[-1]
+    dg = (dy * xhat).reshape(-1, D).sum(0)
+    db = dy.reshape(-1, D).sum(0)
+    dxhat = dy * g
+    dx = rstd * (dxhat - dxhat.mean(-1, keepdims=True)
+                 - xhat * (dxhat * xhat).mean(-1, keepdims=True))
+    return dx, dg, db
+
+x = rng.normal(size=(3, 8)); gm = rng.normal(size=8); bt = rng.normal(size=8)
+dy = rng.normal(size=(3, 8))
+yv, cache = ln_forward(x, gm, bt)
+dx, dg, db = ln_backward(dy, gm, cache)
+f = lambda: (ln_forward(x, gm, bt)[0] * dy).sum()
+for a, p, n in ((dx, x, "x"), (dg, gm, "g"), (db, bt, "b")):
+    e = rel_err(a, num_grad(f, p)); print("ln", n, e); assert e &lt; 1e-5
+
+def rmsnorm(x, g, eps=1e-6):
+    return x / np.sqrt((x * x).mean(-1, keepdims=True) + eps) * g
+r = rmsnorm(x, np.ones(8))
+assert np.allclose((r ** 2).mean(-1), 1, atol=1e-4)</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>说 "LayerNorm 在 batch 维上归一化"——是在<b>特征维</b>上，每个 token 独立。</li>
+      <li>以为 RMSNorm 输出的均值为 0——它不减均值，输出均值一般非零；它保证的是 RMS = 1（再乘 \(\gamma\)）。</li>
+      <li>LN 的 \(\sigma^2\) 用的是有偏估计（除以 \(d\)），不是 \(d-1\)。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>LayerNorm normalizes each token's hidden vector across its features — subtract the mean, divide by the standard deviation, then apply a learned gain and bias — so it doesn't depend on the batch or sequence length and behaves the same at train and inference time. RMSNorm drops the mean subtraction and the bias and only divides by the root-mean-square. The argument from the RMSNorm paper is that the useful property is re-scaling invariance, not re-centering; empirically quality is about the same, and it saves a reduction, which matters for a memory-bound kernel. That's why LLaMA and most modern LLMs use pre-norm RMSNorm.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What does the LayerNorm gradient look like intuitively?</b><details><summary>思路</summary><div class="inner">上游梯度去掉沿全 1 方向和沿 \(\hat x\) 方向的分量，再乘 \(1/\sigma\)。因此 LN 的输入梯度与输入正交于这两个方向，且被输入尺度除——输入变大时梯度变小，这是一种自动的"梯度尺度调节"，也是 LN 对权重缩放不变的体现。</div></details></li>
+    <li><b>Pre-Norm vs Post-Norm — which is used and why?</b><details><summary>思路</summary><div class="inner">Post-Norm（原 Transformer）：\(x_{\ell+1} = \mathrm{LN}(x_\ell + f(x_\ell))\)，残差路径被 LN 打断，深层时梯度难以传到底，需要 warmup，训练不稳定，但调好后最终效果可能略好。Pre-Norm：\(x_{\ell+1} = x_\ell + f(\mathrm{LN}(x_\ell))\)，残差路径是干净的恒等映射，梯度直通，深层易训练，是 GPT-2 以后的主流；缺点是残差流方差随深度增长、深层的有效贡献变小，因此最后需要 final norm。详见 <a href="m04-transformer.html">04</a>。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-qknorm">
+  <div class="concept-head"><span class="pri p3">○</span><h3>QK-norm 与其他归一化位置</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>QK-norm 对 query 和 key 分别做 LayerNorm/RMSNorm 后再点积，防止注意力 logits 无限增长导致 softmax 饱和（熵坍塌）和训练发散。</p><p class="en">QK-norm normalizes queries and keys before the dot product so attention logits can't blow up, which stabilizes large-scale training.</p></div>
+  <div class="deep">
+    <p>注意力 logits \(q^\top k/\sqrt{d}\) 随训练可能越来越大，softmax 变成接近 one-hot（attention entropy collapse），梯度消失、loss spike。对 \(q,k\) 先归一化再点积（可以配一个可学习的温度/尺度），logits 大小被 \(\|q\|\|k\|\) 有界控制。最早见于 Henry et al. 2020（<a href="https://arxiv.org/abs/2010.04245" target="_blank" rel="noreferrer">Query-Key Normalization for Transformers</a>），后来在 ViT-22B 等大规模训练中用于稳定训练，近年的不少开源 LLM 也采用。其他位置的归一化：最后一层后的 final norm、"sandwich norm"（子层输出再归一化）、embedding 后的 norm。详细讨论放在 <a href="m04-transformer.html">04</a>（结构）与 <a href="m05-pretraining.html">05</a>（稳定性）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>QK-norm applies a LayerNorm or RMSNorm to queries and keys before the dot product. Without it, attention logits can grow during training until the softmax becomes nearly one-hot, which kills gradients and causes loss spikes. Normalizing q and k bounds the logits, and a learned scale lets the model still choose how sharp attention should be.</p></div>
+</section>
+
+<!-- ============================================================ §6 -->
+<h2 class="sec" id="s-resid"><span class="num">§6 · RESIDUALS &amp; GRADIENT FLOW</span>残差与梯度流</h2>
+<p class="sec-intro">把"梯度消失/爆炸"讲成雅可比矩阵连乘，再说明残差把乘积变成"恒等 + 小扰动"——这是面试官最想听到的结构化回答。</p>
+
+<section class="concept" id="c-vanish">
+  <div class="concept-head"><span class="pri p1">★</span><h3>梯度消失 / 爆炸：雅可比连乘</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\partial L/\partial h_0 = J_1^\top J_2^\top\cdots J_L^\top\,\partial L/\partial h_L\)；\(L\) 个矩阵连乘，若典型奇异值 \(\lt 1\) 就指数消失，\(\gt 1\) 就指数爆炸。</p><p class="en">The gradient at early layers is a product of L layer Jacobians, so it shrinks or grows exponentially with depth unless their singular values stay near one.</p></div>
+  <div class="deep">
+    <p>对 \(h_\ell = \phi(W_\ell h_{\ell-1})\)，雅可比 \(J_\ell = \partial h_\ell/\partial h_{\ell-1} = \mathrm{diag}(\phi'(a_\ell))W_\ell\)。于是</p>
+    $$\frac{\partial L}{\partial h_0} = \Big(\prod_{\ell=1}^{L} J_\ell\Big)^{\!\top}\frac{\partial L}{\partial h_L},\qquad \Big\|\frac{\partial L}{\partial h_0}\Big\|\ \lesssim\ \prod_\ell \|\mathrm{diag}(\phi'_\ell)\|\,\|W_\ell\|\cdot\Big\|\frac{\partial L}{\partial h_L}\Big\|.$$
+    <ul>
+      <li><b>消失：</b>sigmoid 的 \(\phi'\le1/4\)；权重太小；饱和。前面层几乎学不动。</li>
+      <li><b>爆炸：</b>权重太大（\(\|W\|\gt 1\)）；RNN 中同一个 \(W_{hh}\) 乘 \(T\) 次，最大特征值 \(\gt 1\) 就爆炸，\(\lt 1\) 就消失（长程依赖学不到）。</li>
+    </ul>
+    <p><b>对策清单（按"作用在哪个因子上"组织）：</b></p>
+    <table>
+      <tr><th>因子</th><th>对策</th></tr>
+      <tr><td>\(\phi'\)</td><td>ReLU/GELU 替代 sigmoid/tanh</td></tr>
+      <tr><td>\(\|W\|\)</td><td>Xavier/Kaiming 初始化、正交初始化（RNN）、权重衰减</td></tr>
+      <tr><td>激活尺度</td><td>BatchNorm / LayerNorm / RMSNorm</td></tr>
+      <tr><td>乘积结构本身</td><td>残差连接（下一节）、LSTM/GRU 的加法 cell state</td></tr>
+      <tr><td>爆炸的症状</td><td>梯度裁剪（clip by norm）</td></tr>
+    </table>
+    <div class="box why"><span class="lbl">直觉</span>深网络的"动力学等距"（dynamical isometry）：如果所有 \(J_\ell\) 的奇异值都≈1，梯度范数在传播中保持不变。初始化、归一化、残差都在不同程度上逼近这个状态。本页 §10 的演示：30 层 sigmoid MLP 第一层梯度 / 最后一层梯度 ≈ \(10^{-19}\)；30 层 ReLU 残差网络（分支按 \(1/\sqrt L\) 缩放）这个比值 ≈ 0.3。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The gradient at an early layer is the product of all the layer Jacobians above it, and each Jacobian is the activation derivative times the weight matrix. A product of L matrices behaves exponentially: if the typical singular value is below one, the gradient vanishes; above one, it explodes. Saturating activations like sigmoid make it vanish, large weights or recurrent weight sharing make it explode. The fixes act on different factors: non-saturating activations, variance-preserving initialization, normalization, residual connections that change the product structure, and gradient clipping as a safety net for explosions.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you diagnose vanishing vs exploding gradients in practice?</b><details><summary>思路</summary><div class="inner">记录每层（或每个参数组）的梯度范数、激活范数、更新量/参数量比（update-to-weight ratio，经验上 ~1e-3 量级合理）。消失：底层梯度范数比顶层小很多个数量级、底层参数几乎不变；爆炸：总梯度范数突然暴涨、loss 变 NaN/spike。还可看注意力熵、logit 最大值等。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-resid">
+  <div class="concept-head"><span class="pri p1">★</span><h3>残差连接为什么有效；残差流视角</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(h_{\ell} = h_{\ell-1} + f_\ell(h_{\ell-1})\) 的雅可比是 \(I + \partial f_\ell/\partial h\)，连乘展开后总包含恒等项，梯度有一条不衰减的"高速公路"直通底层；且初始时网络接近恒等，优化从浅网络开始。</p><p class="en">A residual block's Jacobian is identity plus a correction, so the gradient always has a direct identity path to early layers.</p></div>
+  <div class="deep">
+    <p><b>梯度视角：</b></p>
+    $$\frac{\partial h_L}{\partial h_0} = \prod_{\ell=1}^{L}\Big(I + \frac{\partial f_\ell}{\partial h_{\ell-1}}\Big) = I + \sum_\ell \frac{\partial f_\ell}{\partial h} + \sum_{\ell\lt m}\cdots$$
+    <p>展开式第一项就是 \(I\)：即使所有 \(\partial f/\partial h\) 很小，\(\partial L/\partial h_0\) 至少包含 \(\partial L/\partial h_L\) 本身。对比普通网络的纯乘积，指数衰减消失了。</p>
+    <p><b>优化视角：</b>He et al. 2015（ResNet）的观察：更深的普通网络<b>训练误差</b>反而更高（degradation，不是过拟合）。理论上深网络至少能学成"浅网络 + 恒等层"，但让一堆非线性层去拟合恒等映射很难；残差把目标改成学"残差" \(f = H - I\)，拟合 0 很容易（权重趋于 0 即可）。</p>
+    <p><b>集成视角：</b>Veit et al. 2016 把 \(L\) 个残差块展开成 \(2^L\) 条路径，认为 ResNet 行为像很多浅网络的集成（删掉单个块性能只轻微下降），有效梯度主要来自较短路径。</p>
+    <p><b>残差流视角（Transformer / 可解释性）：</b>在 Pre-Norm Transformer 中，<b>残差流</b> \(x\in\mathbb R^d\) 是贯穿全网的"总线"：每个注意力层和 MLP 层从中读（经过 LN 和线性投影）、往里写（加上输出投影）。因为所有写入都是加法，最终 logits = unembed(final_norm(\(x_0 + \sum_\ell \text{out}_\ell\)))，可以对每个组件的贡献做线性分解——这是 logit lens、direct logit attribution、circuit 分析的基础（见 <a href="m11-interp.html">11</a>）。也解释了为什么输出投影的初始化要按深度缩放（§4）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"残差只解决梯度消失"不完整——也解决了优化难度（degradation）和让网络初始近恒等。另外残差要求分支输入输出维度一致；不一致时用投影（1×1 conv 或线性层）做 shortcut。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>With a residual block, the output is the input plus a learned correction, so the block's Jacobian is the identity plus the branch Jacobian. When you multiply those through depth, the expansion always contains the identity term, so the gradient at the top reaches the bottom undiminished regardless of what the branches do. It also makes optimization easier: each block only has to learn a residual, and at initialization the network is close to the identity, effectively starting shallow. In transformers, I like the residual-stream view: every attention and MLP layer reads from and adds to a shared stream, which is what makes linear attribution of the output to individual components possible.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If residuals guarantee an identity path, why do we still need normalization?</b><details><summary>思路</summary><div class="inner">残差保证梯度不消失，但不控制前向尺度：残差流方差会随深度累积（\(\approx \mathrm{Var}(x_0)+Ls^2\)），分支输入尺度变化大，学习率难以统一；归一化让每个分支看到尺度稳定的输入。两者互补。</div></details></li>
+    <li><b>How do residual connections relate to LSTMs?</b><details><summary>思路</summary><div class="inner">LSTM 的 cell state 更新 \(c_t = f_t\odot c_{t-1} + i_t\odot\tilde c_t\) 是沿时间的加法路径（遗忘门 ≈1 时梯度近乎无损传播），是"时间上的残差"。Highway Network 把这种门控引入深度方向，ResNet 是去掉门的特例。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-clip">
+  <div class="concept-head"><span class="pri p1">★</span><h3>梯度裁剪：按范数 vs 按值</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>按全局范数裁剪：若 \(\|g\|\gt c\)，令 \(g\leftarrow g\cdot c/\|g\|\)，<b>保持方向</b>只缩小步长；按值裁剪把每个分量截断到 \([-c,c]\)，会改变方向。LLM 训练标准做法是全局范数裁剪到 1.0。</p><p class="en">Clipping by global norm rescales the whole gradient vector and preserves its direction; clipping by value truncates each coordinate and distorts it.</p></div>
+  <div class="deep">
+    $$\text{clip-by-norm: } g \leftarrow g\cdot\min\Big(1, \frac{c}{\|g\|_2}\Big),\qquad \|g\|_2 = \sqrt{\textstyle\sum_{\text{all params}}\|g_p\|^2}.$$
+    <ul>
+      <li><b>全局范数</b>（所有参数拼起来算一个范数）vs <b>逐参数范数</b>：PyTorch <code>clip_grad_norm_(model.parameters(), 1.0)</code> 是全局的，返回裁剪<b>前</b>的范数——这个值本身就是重要的监控指标（spike 前常先出现梯度范数异常）。</li>
+      <li><b>为什么要裁剪：</b>损失面上偶尔有"悬崖"（RNN 中常见，Pascanu et al. 2013），一个巨大梯度会把参数甩到很远的地方；裁剪限制了单步移动距离。</li>
+      <li><b>与 Adam 的关系：</b>Adam 的更新本身按 \(\sqrt{v}\) 归一化，单个分量的更新幅度大致 ≤ lr，但一次异常梯度会污染 \(m,v\) 的滑动平均很多步；裁剪在进入优化器前保护这些统计量。</li>
+      <li><b>混合精度时</b>，fp16 + loss scaling 下要先 <code>scaler.unscale_(optimizer)</code> 再裁剪，否则裁剪的是放大后的梯度。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>按值裁剪改变梯度方向，一般不推荐；裁剪阈值设得太小会让每一步都被裁剪，等效于"归一化梯度下降 + 更小学习率"。如果训练中几乎每步都在裁剪，说明学习率太大或有别的问题。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Clipping by norm computes the L2 norm of the gradient across all parameters, and if it exceeds a threshold, rescales the whole gradient down to that norm. The direction is preserved; only the step length is capped. Clipping by value truncates each coordinate independently, which changes the direction, so it's rarely used. For LLM pretraining the standard is global norm clipping at 1.0, and I always log the pre-clip norm because spikes in it are an early warning sign of instability.</p></div>
+</section>
+
+<!-- ============================================================ §7 -->
+<h2 class="sec" id="s-reg"><span class="num">§7 · REGULARIZATION &amp; GENERALIZATION</span>正则化与泛化</h2>
+<p class="sec-intro">经典正则化手段，以及一个 LLM 时代的反直觉问题："为什么大模型预训练通常不用 dropout？"</p>
+
+<section class="concept" id="c-dropout">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Dropout（inverted dropout，train/eval）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>训练时以概率 \(p\) 把激活置零，并把保留的激活除以 \(1-p\)（inverted dropout），使期望不变；推理时什么都不做。</p><p class="en">Inverted dropout zeros activations with probability p and scales survivors by one over one minus p during training, so inference needs no change.</p></div>
+  <div class="deep">
+    <p>\(m_i\sim\mathrm{Bernoulli}(1-p)\)，\(y = \frac{m\odot x}{1-p}\)，则 \(\mathbb E[y] = x\)。反向：\(\bar x = \bar y\odot m/(1-p)\)（用同一个 mask）。</p>
+    <p><b>为什么"inverted"？</b>原始版本在推理时把权重乘 \((1-p)\)；inverted 版本把缩放挪到训练时，推理代码完全不变，是所有框架的标准实现。</p>
+    <p><b>为什么有效：</b>(1) 防止神经元之间的共适应（co-adaptation），迫使特征冗余、鲁棒；(2) 近似对指数多个共享权重的子网络做集成（推理时用期望近似几何平均）；(3) 注入噪声的正则。</p>
+    <p><b>注意：</b>dropout 改变了激活的<b>方差</b>（不只是期望），所以 train/eval 之间仍存在分布差异（"variance shift"），与 BN 一起用时需要注意顺序。Transformer 中 dropout 的位置：注意力权重上（attention dropout）、每个子层输出加回残差前（residual dropout）、embedding 后。</p>
+  </div>
+  <details class="deep"><summary>代码：numpy inverted dropout</summary><div class="inner">
+<pre><code class="language-python">def dropout(x, p, training, rng):
+    if not training or p == 0: return x
+    mask = (rng.random(x.shape) &gt;= p) / (1 - p)
+    return x * mask
+xx = np.ones((2000, 500))
+out = dropout(xx, 0.3, True, rng)
+assert abs(out.mean() - 1) &lt; 0.01 and abs((out == 0).mean() - 0.3) &lt; 0.01
+assert np.array_equal(dropout(xx, 0.3, False, rng), xx); print("dropout ok")</code></pre>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>During training, dropout zeroes each activation with probability p and, in the inverted form, divides the survivors by one minus p so the expected value is unchanged; at inference you just turn it off, which is why model.eval matters. It prevents units from co-adapting and can be seen as training an implicit ensemble of subnetworks that share weights. In transformers it's typically applied to attention probabilities and to sublayer outputs before the residual add.</p></div>
+</section>
+
+<section class="concept" id="c-wd">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Weight decay、数据增强、early stopping</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Weight decay 每步把权重乘 \((1-\eta\lambda)\)；对 SGD 等价于 L2 正则，对 Adam 不等价，所以用解耦的 AdamW。数据增强编码不变性先验；early stopping 用验证集选停止点，效果类似 L2。</p><p class="en">Weight decay shrinks weights each step; it equals L2 regularization for SGD but not for Adam, hence AdamW. Augmentation encodes invariances, and early stopping acts like implicit L2.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>L2 vs decoupled weight decay：</b>L2 把 \(\tfrac\lambda2\|\theta\|^2\) 加进 loss，梯度变 \(g+\lambda\theta\)；在 Adam 里这项也被 \(1/\sqrt{v}\) 缩放，梯度大的参数被衰减得少，违背初衷。AdamW（Loshchilov &amp; Hutter）直接 \(\theta\leftarrow\theta - \eta\lambda\theta\)，与自适应缩放解耦。推导见 <a href="m02-math-ml.html">02</a>。LLM 中常见 \(\lambda=0.1\)，且通常<b>不对 bias、LayerNorm/RMSNorm 的增益（以及常常 embedding）做 weight decay</b>。</li>
+      <li><b>为什么 LLM 还要 weight decay？</b>不只是防过拟合（单 epoch 下过拟合不是主要问题），它还控制参数范数、与学习率共同决定有效步长，影响训练动力学和最终 loss；与归一化层配合时，权重尺度不影响前向但影响有效学习率。</li>
+      <li><b>数据增强：</b>图像（裁剪、翻转、颜色、Mixup/CutMix）、语音（SpecAugment）、文本（回译、合成数据）。本质是把已知的不变性告诉模型。</li>
+      <li><b>Early stopping：</b>在验证 loss 最低点停止。对线性模型 + GD，训练步数 \(t\) 和学习率相当于 L2 强度 \(\sim 1/(\eta t)\) 的正则。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Weight decay multiplies the weights by slightly less than one each step. For plain SGD that's identical to adding an L2 penalty, but with Adam the L2 gradient gets divided by the adaptive denominator, so heavily-updated weights get decayed less — that's why AdamW decouples the decay from the gradient. In LLM training we typically use decay around 0.1 and exclude biases and norm gains. Data augmentation injects invariances, and early stopping behaves like an implicit L2 penalty.</p></div>
+</section>
+
+<section class="concept" id="c-nodropout">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>为什么 LLM 预训练通常不用 dropout</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>预训练数据极大、通常只训 ~1 个 epoch，模型处于欠拟合区间，不需要正则；dropout 会降低每步的有效容量/信号、增加噪声和开销。微调（小数据多 epoch）时才常开 dropout。</p><p class="en">Pretraining is single-epoch on huge data, so models are underfitting rather than overfitting; dropout just wastes capacity and compute. It's mainly used in fine-tuning.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>证据：</b>PaLM（<a href="https://arxiv.org/abs/2204.02311" target="_blank" rel="noreferrer">Chowdhery et al. 2022</a>）明确写到预训练不用 dropout，微调时多数情况用 0.1。LLaMA 系列的训练配置也未使用 dropout。GPT-2/GPT-3 早期配置有 0.1 的 dropout，后来的实践普遍去掉。</li>
+      <li><b>原因：</b>(1) 训练 loss ≈ 验证 loss（每个样本只见一次，没有 train/val 差距可言）；(2) 在固定计算预算下，dropout 让模型每步只用部分容量，达到同样 loss 需要更多 FLOPs；(3) dropout 的随机 mask 有额外内存/时间开销，并让分布式训练复现性更难。</li>
+      <li><b>反例：</b>数据不够、要多 epoch 重复数据时（数据受限的 scaling），正则化又会变得重要；小模型/小数据的微调、某些 RLHF 设置里 dropout 会导致策略在 train/eval 下不一致（RL 中通常关闭 dropout，以免 logprob 计算不一致）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Modern LLM pretraining is roughly one pass over trillions of tokens, so every batch is fresh data and training loss tracks validation loss — the model is capacity-limited, not overfitting. Regularizers like dropout then just slow learning per FLOP and add noise. PaLM, for example, explicitly pretrained without dropout and used 0.1 only for fine-tuning. When you fine-tune on a small dataset for multiple epochs, or you're forced to repeat data, overfitting comes back and dropout or other regularization becomes useful again — though in RL fine-tuning people usually disable it so log-probs are consistent between rollout and training.</p></div>
+</section>
+
+<section class="concept" id="c-grok">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Double descent 与 grokking（简要）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Double descent：测试误差随模型大小（或训练时长、数据量）先降、在插值阈值附近升、再降；grokking：在小算法数据集上，模型先完美记住训练集，很久之后测试准确率才突然跳到 100%。</p><p class="en">Double descent: test error peaks near the interpolation threshold then falls again; grokking: generalization appears long after memorization on small algorithmic tasks.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Double descent</b>：Belkin et al. 2019（<a href="https://arxiv.org/abs/1812.11118" target="_blank" rel="noreferrer">arXiv 1812.11118</a>）提出"经典 U 形 + 过参数化区的第二次下降"；Nakkiran et al.（<a href="https://arxiv.org/abs/1912.02292" target="_blank" rel="noreferrer">Deep Double Descent, arXiv 1912.02292</a>）在深度网络中展示了模型规模维度、训练轮数维度（epoch-wise）上的双下降，并指出在峰值附近更多数据可能反而有害。峰值出现在模型"刚好能插值训练集"时，此时解唯一且对噪声敏感；更大的模型在众多插值解中由隐式偏置挑到更平滑的解。标签噪声越大峰越明显，合适的正则可以削平峰。</li>
+      <li><b>Grokking</b>：Power et al.（<a href="https://arxiv.org/abs/2201.02177" target="_blank" rel="noreferrer">arXiv 2201.02177</a>）在模运算等小数据集上观察到。weight decay 对其出现很关键。机制解释：Nanda et al.（<a href="https://arxiv.org/abs/2301.05217" target="_blank" rel="noreferrer">Progress measures for grokking via mechanistic interpretability</a>）在模加法上逆向出基于傅里叶的电路，表明泛化电路在"记忆期"中就在逐渐形成，突变只是在测试准确率上看起来突然；weight decay 逐渐清除记忆成分。</li>
+    </ul>
+    <p>面试中的意义：说明"更大模型/更长训练 ⇒ 更过拟合"的经典直觉在深度学习中不总成立；隐式正则（SGD、weight decay、架构）很重要。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Double descent says that as you increase model size, test error first follows the classic U-shape, peaks around the point where the model can just interpolate the training data, and then decreases again in the overparameterized regime — Nakkiran and colleagues showed this also happens over training epochs. Grokking is a related surprise: on small algorithmic tasks, a network memorizes the training set, and only much later, with weight decay, does test accuracy suddenly jump. Mechanistic work on modular addition showed the generalizing circuit forms gradually during the apparent plateau.</p></div>
+</section>
+
+<!-- ============================================================ §8 -->
+<h2 class="sec" id="s-cnnrnn"><span class="num">§8 · CNN / RNN BRIEF</span>CNN 与 RNN 简要</h2>
+<p class="sec-intro">研究岗面试很少深挖 CNN/RNN，但会用它们作为对比来问 Transformer 的设计动机。掌握归纳偏置和"为什么被替代"即可。</p>
+
+<section class="concept" id="c-cnn">
+  <div class="concept-head"><span class="pri p3">○</span><h3>CNN：权重共享、局部性、感受野</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>卷积 = 局部连接 + 权重共享，带来平移等变性和参数效率；感受野随深度线性（或靠 stride/dilation 指数）增长。</p><p class="en">Convolutions share local filters across positions, giving translation equivariance and parameter efficiency; the receptive field grows with depth, stride and dilation.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>参数量：</b>\(C_{\text{in}}\times C_{\text{out}}\times k\times k\)（+ bias），与图像大小无关。输出尺寸：\(\lfloor (H + 2P - k)/S\rfloor + 1\)。</li>
+      <li><b>感受野：</b>堆叠 \(L\) 个 \(3\times3\)、stride 1 的卷积，感受野 \(2L+1\)；一般递推 \(r_\ell = r_{\ell-1} + (k_\ell-1)\prod_{i\lt \ell}s_i\)。两个 3×3 的感受野 = 一个 5×5，但参数更少（\(18C^2\) vs \(25C^2\)）且多一个非线性（VGG 的论点）。</li>
+      <li><b>归纳偏置：</b>局部性 + 平移等变（pooling 带来近似平移不变）。数据少时这是优势；ViT 没有这些偏置，需要更多数据或增强才能匹敌 CNN。</li>
+      <li><b>1D 因果卷积</b>（WaveNet、TCN）以及现代 SSM/Mamba 中的短卷积，都在序列模型中仍有身影。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A convolution applies the same small filter at every position, so it's local and weight-shared, which gives translation equivariance and makes the parameter count independent of input size. Depth grows the receptive field — two stacked 3-by-3 convs see a 5-by-5 region with fewer parameters and an extra nonlinearity. Those inductive biases make CNNs data-efficient, which is exactly what ViTs give up and compensate for with scale.</p></div>
+</section>
+
+<section class="concept" id="c-rnn">
+  <div class="concept-head"><span class="pri p3">○</span><h3>RNN / LSTM 门控，以及为什么 Transformer 取代了 RNN</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RNN 把历史压缩成固定大小的隐藏状态，顺序计算、BPTT 梯度易消失/爆炸；LSTM 用门控加法 cell state 缓解。Transformer 用注意力让任意两位置直接交互（路径长度 O(1)），并在训练时完全并行。</p><p class="en">RNNs compress history into a fixed state and must run sequentially; transformers let every position attend to every other directly and train fully in parallel.</p></div>
+  <div class="deep">
+    <p><b>Vanilla RNN：</b>\(h_t = \tanh(W_{hh}h_{t-1} + W_{xh}x_t + b)\)。BPTT 的梯度含 \(\prod_t \mathrm{diag}(\tanh')W_{hh}\)，同一矩阵反复相乘 ⇒ 随时间步指数消失/爆炸。</p>
+    <p><b>LSTM：</b></p>
+    $$\begin{aligned} f_t,i_t,o_t &= \sigma(W_{f,i,o}[h_{t-1},x_t]+b),\quad \tilde c_t = \tanh(W_c[h_{t-1},x_t]+b_c)\\ c_t &= f_t\odot c_{t-1} + i_t\odot\tilde c_t,\qquad h_t = o_t\odot\tanh(c_t)\end{aligned}$$
+    <p>\(\partial c_t/\partial c_{t-1} = \mathrm{diag}(f_t)\)（忽略门对 \(c\) 的间接依赖）：遗忘门接近 1 时梯度几乎无损传递（常把遗忘门 bias 初始化为 1 或更大）。GRU 合并为更新门/重置门，参数更少。</p>
+    <h4>为什么 Transformer 取代了 RNN</h4>
+    <table>
+      <tr><th></th><th>RNN</th><th>Transformer</th></tr>
+      <tr><td>训练并行性</td><td>沿时间顺序，O(T) 步串行</td><td>所有位置并行（teacher forcing + causal mask）</td></tr>
+      <tr><td>任意两位置最长路径</td><td>O(T)</td><td>O(1)</td></tr>
+      <tr><td>记忆</td><td>固定大小隐藏状态（信息瓶颈）</td><td>KV cache 随长度增长，可直接检索</td></tr>
+      <tr><td>每层计算</td><td>O(T d²)</td><td>O(T² d + T d²)</td></tr>
+      <tr><td>推理每 token</td><td>O(1) 状态、常数开销</td><td>O(T) 读 KV cache</td></tr>
+    </table>
+    <p>硬件角度：Transformer 是大块矩阵乘，GPU 利用率高，能扩展到海量数据。近年的线性注意力/SSM（Mamba、RWKV 等）尝试在保持并行训练的同时恢复 RNN 式的常数推理开销——但长程检索能力仍是挑战。详见 <a href="m04-transformer.html">04</a>。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>An RNN processes tokens one at a time and squeezes the whole history into a fixed-size hidden state; backprop through time multiplies the same recurrent matrix repeatedly, so gradients vanish or explode, and LSTMs mitigate that with a gated, additive cell state. Transformers won for two main reasons: training is fully parallel across positions, which maps beautifully onto GPUs and lets you scale data and model size, and any two positions interact through a single attention step instead of a path of length T. The trade-off is quadratic attention cost and a KV cache that grows with context, which is what recent state-space and linear-attention models try to address.</p></div>
+</section>
+
+<!-- ============================================================ §9 -->
+<h2 class="sec" id="s-dyn"><span class="num">§9 · TRAINING DYNAMICS</span>训练动力学直觉</h2>
+<p class="sec-intro">研究岗面试常问开放式调试题："你的 loss 不降/震荡/NaN，怎么办？" 这一节给出结构化的诊断框架。</p>
+
+<section class="concept" id="c-loss-curves">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>读 loss 曲线与调试清单</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>先验证管线（能否过拟合一个小 batch、初始 loss 是否 ≈ \(\log C\)），再看曲线形状判断是学习率、数据还是过拟合问题。</p><p class="en">First sanity-check the pipeline — initial loss near log C and overfitting a tiny batch — then read the curve shape to tell learning-rate, data, and generalization problems apart.</p></div>
+  <div class="deep">
+    <h4>健全性检查（Karpathy 式 recipe）</h4>
+    <ol>
+      <li><b>初始 loss：</b>\(C\) 类分类、输出接近均匀时，CE ≈ \(\log C\)（LLM 词表 50k ⇒ ≈ 10.8）。远大于它说明初始化让 logits 太大（输出层可以用更小 std 或零初始化）。</li>
+      <li><b>过拟合一个小 batch：</b>几十个样本应能训练到 loss≈0。做不到 ⇒ 模型/损失/数据管线有 bug（标签错位、mask 错、忘记 <code>zero_grad</code>、softmax 后再 CE…）。</li>
+      <li><b>检查输入：</b>在送进模型前把 batch 解码打印出来；检查 padding/attention mask、shift-by-one（LLM 的 label 是 input 右移一位）。</li>
+      <li><b>简单 baseline：</b>与线性模型/小模型对比。</li>
+    </ol>
+    <h4>曲线形状 → 诊断</h4>
+    <table>
+      <tr><th>现象</th><th>可能原因</th><th>处理</th></tr>
+      <tr><td>loss 一开始就不降/很慢</td><td>lr 太小；梯度没流（detach、requires_grad=False、dead ReLU）；bug</td><td>LR range test；检查梯度范数</td></tr>
+      <tr><td>剧烈震荡或发散</td><td>lr 太大；无 warmup；batch 太小</td><td>降 lr、加 warmup、裁剪</td></tr>
+      <tr><td>NaN/Inf</td><td>数值溢出（fp16、log(0)、除 0）、lr 太大</td><td>LSE、logits 版 loss、bf16、检查数据中的异常值</td></tr>
+      <tr><td>train ↓ val ↑</td><td>过拟合</td><td>更多数据/增强、正则、early stopping</td></tr>
+      <tr><td>train ≈ val 且都高</td><td>欠拟合/容量不足/lr 调度不当</td><td>更大模型、更久训练、调 lr</td></tr>
+      <tr><td>突然 spike 后恢复或不恢复</td><td>大规模训练不稳定性（注意力 logit 增长、坏数据批次、Adam 的 \(\epsilon\)/β2）</td><td>见 <a href="m05-pretraining.html">05</a>：QK-norm、z-loss、跳过坏 batch、回滚</td></tr>
+      <tr><td>lr 衰减时 loss 明显下降一截</td><td>正常：高 lr 时在"山谷"间震荡，降 lr 后下降到谷底</td><td>WSD/cosine 调度的退火阶段</td></tr>
+    </table>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Before reading curves I sanity-check the pipeline: the initial loss should be about log of the number of classes, and the model should be able to overfit a handful of examples to near-zero loss — if it can't, it's a bug, not a hyperparameter. Then the shape tells me a lot: a flat curve means the learning rate is too small or gradients aren't flowing; oscillation or divergence means it's too large or I need warmup; NaNs point to numerics; a growing train–val gap is overfitting; and both high and flat is underfitting. For large-scale runs, I'd also watch the gradient norm, since spikes there usually precede loss spikes.</p></div>
+</section>
+
+<section class="concept" id="c-lr-batch">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>LR range test、batch size 效应、edge of stability</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>学习率是最重要的超参；LR range test 指数扫描 lr 找到 loss 下降最快区间。batch 增大 → 梯度噪声变小，在"临界 batch size"以下可以近似线性放大 lr，以上收益递减。全批量 GD 的 sharpness 会上升到 \(2/\eta\) 并停在那里（edge of stability）。</p><p class="en">Sweep the learning rate exponentially to find where loss falls fastest; below the critical batch size you can scale lr with batch size; and GD drives sharpness up to about 2 over eta.</p></div>
+  <div class="deep">
+    <p><b>LR range test</b>（Smith，<a href="https://arxiv.org/abs/1506.01186" target="_blank" rel="noreferrer">Cyclical Learning Rates</a>）：从很小的 lr 开始，每步指数增大，记录 loss；选 loss 下降最陡处或最低点之前约 1/10 的值。大模型上更常见的做法是小规模 sweep + 外推（或 μP 迁移，见 <a href="m05-pretraining.html">05</a>）。</p>
+    <p><b>Batch size：</b></p>
+    <ul>
+      <li>SGD 梯度噪声方差 \(\propto 1/B\)。<b>线性缩放规则</b>（Goyal et al. 2017，<a href="https://arxiv.org/abs/1706.02677" target="_blank" rel="noreferrer">Accurate, Large Minibatch SGD</a>）：batch ×k，lr ×k，配合 warmup。Adam 下经验上更接近平方根缩放。</li>
+      <li><b>临界 batch size</b>（McCandlish et al.，<a href="https://arxiv.org/abs/1812.06162" target="_blank" rel="noreferrer">An Empirical Model of Large-Batch Training</a>）：用梯度噪声尺度 \(B_{\text{noise}}\approx \mathrm{tr}(\Sigma)/\|G\|^2\) 估计；\(B\ll B_{\text{crit}}\) 时加倍 batch 几乎减半步数（完美扩展），\(B\gg B_{\text{crit}}\) 时只浪费计算。训练过程中 loss 越低，梯度噪声相对越大，临界 batch 越大——这是 LLM 训练中逐步增大 batch（batch ramp）的依据之一。</li>
+      <li>小 batch 的噪声被认为有助于找到"平坦"极小值、泛化更好（Keskar et al. 2017 的 sharp vs flat minima 讨论），但这一结论在调好 lr 后有争议。</li>
+    </ul>
+    <p><b>Edge of stability</b>（Cohen et al.，<a href="https://arxiv.org/abs/2103.00065" target="_blank" rel="noreferrer">arXiv 2103.00065</a>）：经典分析说二次函数上 GD 稳定需要 \(\eta \lt  2/\lambda_{\max}\)。实际训练神经网络时，全批量 GD 的 sharpness \(\lambda_{\max}\) 会先上升（progressive sharpening）直到约 \(2/\eta\)，然后停在附近；loss 在短期内非单调，但长期仍下降。意义：学习率隐式地控制了解所在区域的曲率；Adam 有类似的"adaptive edge of stability"现象。这解释了为什么 lr 衰减后 loss 会突然下降（可以进入更尖锐的区域）。</p>
+    <p><b>Warmup 为什么需要：</b>训练初期参数随机、Adam 的二阶矩估计不准、曲率大（sharpness 高）；直接用大 lr 会发散。warmup 让模型先进入低曲率区域。（Adam 细节与调度见 <a href="m02-math-ml.html">02</a>。）</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Learning rate is the hyperparameter I'd tune first; a quick range test sweeps it exponentially and picks a value a bit below where the loss starts to blow up. For batch size, gradient noise scales like one over B, so below the critical batch size — which McCandlish and colleagues relate to the gradient noise scale — you can increase batch and learning rate together and cut the number of steps almost proportionally; above it you mostly waste compute. And there's the edge-of-stability phenomenon: with full-batch gradient descent the top Hessian eigenvalue rises until it hovers around two over the learning rate, and training keeps making progress non-monotonically. That's one reason decaying the learning rate often produces a sudden drop in loss.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does the stability threshold equal 2/η for a quadratic?</b><details><summary>思路</summary><div class="inner">\(f = \tfrac\lambda2 x^2\)，GD：\(x_{t+1} = x_t - \eta\lambda x_t = (1-\eta\lambda)x_t\)。收敛当且仅当 \(|1-\eta\lambda|\lt 1\)，即 \(0\lt \eta\lambda\lt 2\)。沿 Hessian 每个特征方向独立成立，所以要求 \(\eta \lt  2/\lambda_{\max}\)。</div></details></li>
+    <li><b>You double the batch size. What do you do with the learning rate?</b><details><summary>思路</summary><div class="inner">先判断当前是否远低于临界 batch：若是，SGD 可近似线性放大（×2），Adam 常用 ×√2 作为起点，并保持/加长 warmup；若已接近临界 batch，放大 lr 收益有限，应考虑步数（总 token 数不变时步数减半）。最终用小规模 sweep 验证。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §10 -->
+<h2 class="sec" id="s-ex"><span class="num">§10 · EXERCISES</span>练习</h2>
+<p class="sec-intro">所有代码题都已在 numpy 下运行通过（float64 有限差分梯度检查，相对误差 &lt; 1e-5）。建议从空白文件开始写，限时 15–25 分钟，写完再对照。标 ★★★ 的题是面试现场最可能出现的"手写反向传播"类题目。下面代码默认已有 <code>import numpy as np</code>、<code>rng = np.random.default_rng(0)</code>，以及 §1 中的 <code>num_grad</code> / <code>rel_err</code>。</p>
+
+<div class="exercise deep" id="ex-1"><div class="ex-head"><b>练习 10.1</b> · 难度 ★★★ · softmax + CE 前向/反向</div>
+<p>实现数值稳定的 <code>log_softmax(z)</code>、<code>ce_loss(z, y)</code>（batch 平均）和 <code>ce_grad(z, y)</code>（返回 \(\partial L/\partial z\)），并用有限差分验证。要求对 logits = [1000, 1001, 1002] 也能输出有限值。</p>
+<details><summary>提示</summary><div class="inner">减去每行最大值（<code>keepdims=True</code>）；梯度是 \((P - Y)/B\)，用 fancy indexing <code>g[np.arange(B), y] -= 1</code> 代替构造 one-hot。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">def log_softmax(z):
+    z = z - z.max(axis=-1, keepdims=True)
+    return z - np.log(np.exp(z).sum(axis=-1, keepdims=True))
+
+def softmax(z):
+    return np.exp(log_softmax(z))
+
+def ce_loss(z, y):                 # z: (B,C) logits, y: (B,) int labels
+    B = z.shape[0]
+    return -log_softmax(z)[np.arange(B), y].mean()
+
+def ce_grad(z, y):                 # dL/dz = (p - onehot)/B
+    B = z.shape[0]
+    g = softmax(z)
+    g[np.arange(B), y] -= 1
+    return g / B
+
+z = rng.normal(size=(4, 5)); yy = rng.integers(0, 5, 4)
+assert rel_err(ce_grad(z, yy), num_grad(lambda: ce_loss(z, yy), z)) &lt; 1e-6
+assert np.all(np.isfinite(softmax(np.array([[1000., 1001., 1002.]]))))</code></pre>
+<p>易错点：<code>z.max(axis=-1)</code> 不加 keepdims 会让 \((B,)\) 与 \((B,C)\) 广播错误（\(B=C\) 时甚至不报错！）；梯度忘记除以 \(B\)。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-2"><div class="ex-head"><b>练习 10.2</b> · 难度 ★★★ · 不用 autograd 从零训练 2 层 MLP</div>
+<p>在 3 类螺旋数据（300 个点，2 维）上，用 numpy 实现 2 层 ReLU MLP（隐藏 100）的前向、反向、SGD 更新（含 L2），训练到训练准确率 &gt; 95%。</p>
+<details><summary>提示</summary><div class="inner">复用 §1 的 <code>mlp_backward</code>。第一层用 Kaiming（\(\sqrt{2/\text{fan\_in}}\)），学习率 1.0 左右（loss 是 mean，梯度较小），训练 3000 步全批量。L2 的梯度是 \(\lambda W\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">def spiral(n=100, K=3):
+    X = np.zeros((n * K, 2)); y = np.zeros(n * K, dtype=int)
+    for k in range(K):
+        r = np.linspace(0, 1, n); t = np.linspace(k * 4, (k + 1) * 4, n) + rng.normal(size=n) * 0.2
+        X[k*n:(k+1)*n] = np.c_[r * np.sin(t), r * np.cos(t)]; y[k*n:(k+1)*n] = k
+    return X, y
+Xs, ys = spiral()
+h = 100
+W1 = rng.normal(size=(2, h)) * np.sqrt(2 / 2); b1 = np.zeros(h)
+W2 = rng.normal(size=(h, 3)) * np.sqrt(1 / h); b2 = np.zeros(3)
+lr = 1.0
+for step in range(3000):
+    loss, (dW1, db1, dW2, db2) = mlp_backward(Xs, ys, W1, b1, W2, b2)
+    dW1 += 1e-3 * W1; dW2 += 1e-3 * W2          # L2 / weight decay
+    W1 -= lr * dW1; b1 -= lr * db1; W2 -= lr * dW2; b2 -= lr * db2
+acc = (mlp_forward(Xs, W1, b1, W2, b2)[2].argmax(1) == ys).mean()
+print("spiral loss %.3f acc %.3f" % (loss, acc)); assert acc &gt; 0.95</code></pre>
+<p>运行结果：loss ≈ 0.11，准确率 ≈ 98.7%。如果用线性模型（无隐藏层），螺旋数据准确率只有约 50%——这正是非线性的作用。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-3"><div class="ex-head"><b>练习 10.3</b> · 难度 ★★★ · LayerNorm 前向与反向</div>
+<p>实现 <code>ln_forward(x, g, b)</code>（在最后一维上归一化）和 <code>ln_backward(dy, g, cache)</code>，返回 \(\bar x, \bar\gamma, \bar\beta\)。用 \(L = \sum (y\odot dy)\) 做梯度检查。</p>
+<details><summary>提示</summary><div class="inner">缓存 \(\hat x\) 与 \(r = 1/\sqrt{\sigma^2+\epsilon}\)。公式：\(\bar x = r\,(g - \mathrm{mean}(g) - \hat x\cdot\mathrm{mean}(g\odot\hat x))\)，\(g = dy\odot\gamma\)。推导见 <a href="#c-ln">§5</a>。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">def ln_forward(x, g, b, eps=1e-5):
+    mu = x.mean(-1, keepdims=True)
+    var = x.var(-1, keepdims=True)
+    rstd = 1 / np.sqrt(var + eps)
+    xhat = (x - mu) * rstd
+    return xhat * g + b, (xhat, rstd)
+
+def ln_backward(dy, g, cache):
+    xhat, rstd = cache
+    D = xhat.shape[-1]
+    dg = (dy * xhat).reshape(-1, D).sum(0)
+    db = dy.reshape(-1, D).sum(0)
+    dxhat = dy * g
+    dx = rstd * (dxhat - dxhat.mean(-1, keepdims=True)
+                 - xhat * (dxhat * xhat).mean(-1, keepdims=True))
+    return dx, dg, db
+
+x = rng.normal(size=(3, 8)); gm = rng.normal(size=8); bt = rng.normal(size=8)
+dy = rng.normal(size=(3, 8))
+yv, cache = ln_forward(x, gm, bt)
+dx, dg, db = ln_backward(dy, gm, cache)
+f = lambda: (ln_forward(x, gm, bt)[0] * dy).sum()
+for a, p, n in ((dx, x, "x"), (dg, gm, "g"), (db, bt, "b")):
+    e = rel_err(a, num_grad(f, p)); print("ln", n, e); assert e &lt; 1e-5
+
+def rmsnorm(x, g, eps=1e-6):
+    return x / np.sqrt((x * x).mean(-1, keepdims=True) + eps) * g
+r = rmsnorm(x, np.ones(8))
+assert np.allclose((r ** 2).mean(-1), 1, atol=1e-4)</code></pre>
+</div></details></div>
+
+<div class="exercise deep" id="ex-4"><div class="ex-head"><b>练习 10.4</b> · 难度 ★★ · RMSNorm 反向 + softmax 的 VJP</div>
+<p>(a) 推导并实现 RMSNorm 的反向。(b) 实现 softmax 的 VJP：给定 \(\bar p\) 和 \(p\)，<b>不构造</b> \(C\times C\) 雅可比，返回 \(\bar z\)。</p>
+<details><summary>提示</summary><div class="inner">(a) 同 LN 但没有均值项：\(\hat x = x r\)，\(\partial r/\partial x_j = -\tfrac{r^3}{d}x_j\)。(b) \(\bar z = J^\top\bar p = (\mathrm{diag}(p) - pp^\top)\bar p = p\odot(\bar p - \langle \bar p, p\rangle)\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">def rms_forward(x, g, eps=1e-6):
+    r = 1 / np.sqrt((x * x).mean(-1, keepdims=True) + eps)
+    xhat = x * r
+    return xhat * g, (xhat, r)
+
+def rms_backward(dy, g, cache):
+    xhat, r = cache
+    D = xhat.shape[-1]
+    dg = (dy * xhat).reshape(-1, D).sum(0)
+    dxhat = dy * g
+    dx = r * (dxhat - xhat * (dxhat * xhat).mean(-1, keepdims=True))
+    return dx, dg
+
+def softmax_backward(dp, p):          # VJP of softmax along last axis
+    return p * (dp - (dp * p).sum(-1, keepdims=True))
+
+x = rng.normal(size=(3, 8)); gm = rng.normal(size=8); dy = rng.normal(size=(3, 8))
+_, cache = rms_forward(x, gm)
+dx, dg = rms_backward(dy, gm, cache)
+f = lambda: (rms_forward(x, gm)[0] * dy).sum()
+assert rel_err(dx, num_grad(f, x)) &lt; 1e-5 and rel_err(dg, num_grad(f, gm)) &lt; 1e-5
+z = rng.normal(size=(2, 5)); dp = rng.normal(size=(2, 5))
+assert rel_err(softmax_backward(dp, softmax(z)), num_grad(lambda: (softmax(z) * dp).sum(), z)) &lt; 1e-6
+print("rmsnorm bwd + softmax vjp ok")
+print("ALL OK")</code></pre>
+<p>(b) 的形式在注意力反向中直接出现：\(\bar S = P\odot(\bar P - \mathrm{rowsum}(\bar P\odot P))\)。FlashAttention 反向中的 \(D_i = \mathrm{rowsum}(dO\odot O)\) 就是这里的 \(\langle\bar p, p\rangle\)（因为 \(\langle \bar P_i, P_i\rangle = \langle dO_i, O_i\rangle\)）。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-5"><div class="ex-head"><b>练习 10.5</b> · 难度 ★★ · Inverted dropout</div>
+<p>实现 <code>dropout(x, p, training)</code>。证明 \(\mathbb E[y]=x\)，并计算 \(\mathrm{Var}(y_i)\)（给定 \(x_i\)）。说明 eval 时为什么什么都不做。</p>
+<details><summary>提示</summary><div class="inner">\(y = x m/(1-p)\)，\(m\sim\mathrm{Bern}(1-p)\)，\(\mathbb E[m]=1-p\)，\(\mathbb E[m^2]=1-p\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(\mathbb E[y] = x\,\mathbb E[m]/(1-p) = x\)。\(\mathbb E[y^2] = x^2(1-p)/(1-p)^2 = x^2/(1-p)\)，所以 \(\mathrm{Var}(y) = x^2\big(\tfrac1{1-p} - 1\big) = x^2\tfrac{p}{1-p}\)。训练时已经把期望校正到 \(x\)，eval 直接用 \(x\) 即期望值，无需缩放。注意方差在 eval 时变为 0，这就是 train/eval 的 "variance shift"。</p>
+<pre><code class="language-python">def dropout(x, p, training, rng):
+    if not training or p == 0: return x
+    mask = (rng.random(x.shape) &gt;= p) / (1 - p)
+    return x * mask
+xx = np.ones((2000, 500))
+out = dropout(xx, 0.3, True, rng)
+assert abs(out.mean() - 1) &lt; 0.01 and abs((out == 0).mean() - 0.3) &lt; 0.01
+assert np.array_equal(dropout(xx, 0.3, False, rng), xx); print("dropout ok")</code></pre>
+</div></details></div>
+
+<div class="exercise deep" id="ex-6"><div class="ex-head"><b>练习 10.6</b> · 难度 ★★ · 推导 Kaiming 因子（含 LeakyReLU）</div>
+<p>对 \(h^{(\ell+1)} = W\,\phi(h^{(\ell)})\)，\(W\) 为 \(n\times n\) iid 零均值。(a) 推导 ReLU 下保持 \(\mathrm{Var}(h)\) 的 \(\mathrm{Var}(W)\)。(b) 对 LeakyReLU（负斜率 \(a\)）呢？(c) 如果误用 \(\mathrm{Var}(W)=1/n\)，50 层后方差缩小多少倍？</p>
+<details><summary>提示</summary><div class="inner">关键量 \(\mathbb E[\phi(h)^2]\)，\(h\) 关于 0 对称。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>(a) \(\mathrm{Var}(h^{(\ell+1)}) = n\,\mathrm{Var}(W)\,\mathbb E[\mathrm{ReLU}(h)^2] = n\,\mathrm{Var}(W)\cdot\tfrac12\mathrm{Var}(h^{(\ell)})\) ⇒ \(\mathrm{Var}(W) = 2/n\)。</p>
+<p>(b) \(\mathbb E[\phi(h)^2] = \tfrac12\mathbb E[h^2] + \tfrac12 a^2\mathbb E[h^2] = \tfrac{1+a^2}{2}\mathrm{Var}(h)\) ⇒ \(\mathrm{Var}(W) = \dfrac{2}{(1+a^2)n}\)。这就是 PyTorch <code>calculate_gain('leaky_relu', a)</code> \(=\sqrt{2/(1+a^2)}\) 的来源（\(a=0\) 退化为 ReLU 的 \(\sqrt2\)，\(a=1\) 退化为线性的 1）。</p>
+<p>(c) 每层方差乘 \(1/2\)，50 层后 \(2^{-50}\approx 8.9\times10^{-16}\)，std 缩小 \(2^{-25}\approx3\times10^{-8}\)——与本页数值实验（std 1.7e-8，起始 std 1，且 ReLU 输出的 std 与二阶矩略有差异）吻合。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-7"><div class="ex-head"><b>练习 10.7</b> · 难度 ★★ · SwiGLU 参数量与 LLaMA-7B 估算</div>
+<p>(a) 证明 SwiGLU 隐藏维度取 \(\tfrac83 d\) 时参数量与 \(4d\) 的 ReLU-FFN 相同。(b) LLaMA-7B：\(d=4096\)，32 层，FFN 隐藏 11008，词表 32000，不共享 embedding，MHA。估算总参数量。</p>
+<details><summary>提示</summary><div class="inner">每层：注意力 \(4d^2\)，FFN \(3dh\)，两个 RMSNorm 各 \(d\)。embedding 和 lm_head 各 \(Vd\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>(a) \(3d\cdot\tfrac83 d = 8d^2 = 2\cdot d\cdot 4d\)。✓</p>
+<p>(b) 注意力：\(4\times4096^2 = 67.1\)M；FFN：\(3\times4096\times11008 = 135.3\)M；每层 ≈ 202.4M（norm 可忽略），×32 = 6.48B。embedding + lm_head：\(2\times32000\times4096 = 262\)M。合计 ≈ <b>6.74B</b>，与公开的 "7B"（约 6.7B）一致。</p>
+<pre><code class="language-python">d, L, h, V = 4096, 32, 11008, 32000
+per_layer = 4 * d * d + 3 * d * h + 2 * d
+total = L * per_layer + 2 * V * d + d      # + final norm
+print(total / 1e9)                          # 6.738...</code></pre>
+</div></details></div>
+
+<div class="exercise deep" id="ex-8"><div class="ex-head"><b>练习 10.8</b> · 难度 ★★ · 梯度消失演示：深层 sigmoid vs ReLU + 残差</div>
+<p>构造 30 层、宽 64 的两种网络：(A) sigmoid MLP（\(\mathrm{Var}(W)=1/n\)）；(B) ReLU 残差网络 \(h \leftarrow h + \mathrm{ReLU}(hW)\)（\(\mathrm{std}(W) = \sqrt{2/n}/\sqrt{L}\)）。手写反向，比较第一层与最后一层权重梯度的范数比。</p>
+<details><summary>提示</summary><div class="inner">残差块反向：\(\bar h_{\ell-1} = \bar h_\ell + (\bar h_\ell\odot\mathbb 1[a\gt 0])W^\top\)——注意恒等路径的"+"。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">def grad_norm_first_layer(kind, L=30, n=64):
+    x = rng.normal(size=(32, n))
+    Ws, hs, pre = [], [x], []
+    for _ in range(L):
+        if kind == "sigmoid": W = rng.normal(size=(n, n)) * np.sqrt(1 / n)
+        else: W = rng.normal(size=(n, n)) * np.sqrt(2 / n) / np.sqrt(L)   # scaled residual branch
+        a = hs[-1] @ W; pre.append(a); Ws.append(W)
+        if kind == "sigmoid": hs.append(1 / (1 + np.exp(-a)))
+        else: hs.append(hs[-1] + np.maximum(a, 0))
+    g = np.ones_like(hs[-1]) / hs[-1].size        # dL/dh_L for L = mean(h_L)
+    norms = []
+    for l in reversed(range(L)):
+        a, W = pre[l], Ws[l]
+        if kind == "sigmoid":
+            s = 1 / (1 + np.exp(-a)); da = g * s * (1 - s)
+            norms.append(np.linalg.norm(hs[l].T @ da)); g = da @ W.T
+        else:
+            da = g * (a &gt; 0)
+            norms.append(np.linalg.norm(hs[l].T @ da)); g = g + da @ W.T
+    return norms[::-1]   # index 0 = first layer
+ns, nr = grad_norm_first_layer("sigmoid"), grad_norm_first_layer("resrelu")
+print("sigmoid ||dW1||/||dWL|| = %.2e ; residual relu = %.2f" % (ns[0] / ns[-1], nr[0] / nr[-1]))
+assert ns[0] / ns[-1] &lt; 1e-6 and 0.1 &lt; nr[0] / nr[-1] &lt; 10</code></pre>
+<p>结果：sigmoid 网络 \(\|\bar W_1\|/\|\bar W_{30}\| \approx 10^{-19}\)；残差网络 ≈ 0.3，同一数量级。sigmoid 的每层因子 ≈ \(\sigma'\cdot\|W\|\lesssim 0.25\)，30 层后 \(\lesssim 10^{-18}\)。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-9"><div class="ex-head"><b>练习 10.9</b> · 难度 ★★ · Sigmoid + BCE 的梯度与稳定实现</div>
+<p>推导 \(\partial\ell/\partial z\) 并实现数值稳定的 <code>bce_with_logits(z, y)</code>，在 \(z=\pm800\) 时输出有限值。再说明 DPO loss 应该怎么写。</p>
+<details><summary>提示</summary><div class="inner">化简到 \((1-y)z + \log(1+e^{-z})\)；再用 \(\log(1+e^{-z}) = \max(-z,0)+\log(1+e^{-|z|})\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>梯度 \(\sigma(z)-y\)，推导见 <a href="#c-bce">§2</a>。</p>
+<pre><code class="language-python">def bce_with_logits(z, y):
+    # log(1+e^{-|z|}) + max(z,0) - z*y
+    return (np.maximum(z, 0) - z * y + np.log1p(np.exp(-np.abs(z)))).mean()
+def sigmoid(z):
+    return np.where(z &gt;= 0, 1 / (1 + np.exp(-np.abs(z))), np.exp(-np.abs(z)) / (1 + np.exp(-np.abs(z))))
+z = rng.normal(size=7) * 3; yb = rng.integers(0, 2, 7).astype(float)
+naive = -(yb * np.log(sigmoid(z)) + (1 - yb) * np.log(1 - sigmoid(z))).mean()
+assert abs(naive - bce_with_logits(z, yb)) &lt; 1e-10
+g = (sigmoid(z) - yb) / z.size
+assert rel_err(g, num_grad(lambda: bce_with_logits(z, yb), z)) &lt; 1e-6
+assert np.isfinite(bce_with_logits(np.array([800., -800.]), np.array([0., 1.])))
+print("bce ok", bce_with_logits(np.array([800., -800.]), np.array([0., 1.])))</code></pre>
+<p>DPO：<code>loss = -F.logsigmoid(beta * (pi_logratio_w - pi_logratio_l)).mean()</code>，而不是 <code>-torch.log(torch.sigmoid(...))</code>。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-10"><div class="ex-head"><b>练习 10.10</b> · 难度 ★★ · BatchNorm train/eval</div>
+<p>实现一个带 running stats 的 <code>BatchNorm1d</code>，支持 <code>training</code> 标志。验证：在 \(\mathcal N(3, 2^2)\) 数据上训练若干 batch 后，running_mean≈3、running_var≈4，eval 模式下输出近似标准化。</p>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">class BatchNorm1d:
+    def __init__(self, D, momentum=0.1, eps=1e-5):
+        self.g, self.b = np.ones(D), np.zeros(D)
+        self.rm, self.rv = np.zeros(D), np.ones(D)
+        self.m, self.eps, self.training = momentum, eps, True
+    def __call__(self, x):                         # x: (B, D)
+        if self.training:
+            mu, var = x.mean(0), x.var(0)          # biased var for normalizing
+            n = x.shape[0]
+            self.rm = (1 - self.m) * self.rm + self.m * mu
+            self.rv = (1 - self.m) * self.rv + self.m * var * n / (n - 1)  # unbiased for running
+        else:
+            mu, var = self.rm, self.rv
+        return self.g * (x - mu) / np.sqrt(var + self.eps) + self.b
+bn = BatchNorm1d(4)
+for _ in range(200): bn(rng.normal(loc=3, scale=2, size=(64, 4)))
+assert np.allclose(bn.rm, 3, atol=0.3) and np.allclose(bn.rv, 4, atol=0.8)
+bn.training = False
+out = bn(rng.normal(loc=3, scale=2, size=(1000, 4)))
+assert abs(out.mean()) &lt; 0.2 and abs(out.std() - 1) &lt; 0.15; print("bn ok")</code></pre>
+<p>细节：归一化用有偏方差，running_var 用无偏方差（与 PyTorch 一致）。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-11"><div class="ex-head"><b>练习 10.11</b> · 难度 ★ · 初始 loss 健全性检查</div>
+<p>(a) 词表 32000 的语言模型，初始化后输出近似均匀，初始 CE loss 是多少？对应 perplexity？(b) 你观察到初始 loss = 45，可能是什么原因？</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>(a) \(\ln 32000 \approx 10.37\)（nats），perplexity \(=e^{10.37}=32000\)，即"在 32000 个词里均匀猜"。GPT-2 词表 50257 时 ≈ 10.82。</p>
+<p>(b) logits 初始太大（输出层 / unembedding 初始化 std 过大、tied embedding 尺度不对、缺少 final norm），softmax 一开始就很尖且常常错，loss 远高于 \(\log V\)。修正：缩小输出层初始化或零初始化、检查 final norm。也可能是 label 错位导致的计算错误（但那通常不会让 loss 这么高）。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-12"><div class="ex-head"><b>练习 10.12</b> · 难度 ★★ · "softmax 两次"bug 的梯度分析</div>
+<p>有人在模型输出后加了 softmax，再把概率 \(p\) 当 logits 传给 <code>cross_entropy</code>。(a) 新的 loss 是什么？(b) 当模型预测完全正确（\(p_y\to1\)）时，loss 最小能到多少（\(C=10\)）？(c) 为什么训练会变慢？</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>(a) \(L = -\log\mathrm{softmax}(p)_y = -p_y + \log\sum_c e^{p_c}\)。</p>
+<p>(b) \(p=e_y\) 时 \(L = -1 + \log(e + 9) \approx -1 + 2.46 = 1.46\)，远大于 0——loss 有一个很高的下界，模型永远无法"满意"。</p>
+<p>(c) 由于 \(p\in[0,1]\)，第二次 softmax 的输入范围很窄，输出接近均匀，梯度 \(\partial L/\partial p = \mathrm{softmax}(p) - y\) 再乘上第一层 softmax 的雅可比 \(\mathrm{diag}(p)-pp^\top\)（当 \(p\) 变尖时趋于 0），梯度被严重压扁。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-13"><div class="ex-head"><b>练习 10.13</b> · 难度 ★ · 感受野计算</div>
+<p>三层 3×3 卷积，第一层 stride 2，后两层 stride 1，无 dilation。最后一层一个输出像素的感受野是多大？若三层都 stride 1 呢？</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>递推 \(r_\ell = r_{\ell-1} + (k-1)\prod_{i\lt \ell}s_i\)，\(r_0=1\)：第 1 层 \(1+2=3\)；第 2 层 \(3+2\cdot2=7\)；第 3 层 \(7+2\cdot2\cdot1=11\)。全 stride 1：\(3,5,7\)，即 \(2L+1=7\)。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-14"><div class="ex-head"><b>练习 10.14</b> · 难度 ★★ · 残差流方差与 GPT-2 缩放</div>
+<p>Pre-LN Transformer 有 \(N=48\) 个 block。假设 embedding 输出每维方差 \(0.02^2\)，每个分支（attn 或 MLP）输出投影前的激活每维二阶矩为 1，投影矩阵 \(d\times d\)、\(d=1600\)、std 为 \(\sigma\)。(a) 每个分支输出的每维方差？(b) 若 \(\sigma=0.02\)，最终残差流方差约多少？(c) 使用 \(\sigma = 0.02/\sqrt{2N}\) 呢？</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>(a) \(d\sigma^2\cdot1 = 1600\sigma^2\)。</p>
+<p>(b) \(\sigma=0.02\)：每分支 \(1600\times4\times10^{-4}=0.64\)，共 \(2N=96\) 个分支，总方差 \(\approx 4\times10^{-4} + 96\times0.64\approx 61\)——随深度线性增长。</p>
+<p>(c) \(\sigma^2 = 4\times10^{-4}/96\)，每分支 \(0.64/96\)，总和 \(0.64 + 0.0004 \approx 0.64\)，与深度无关。</p>
+</div></details></div>
+
+<div class="exercise deep" id="ex-15"><div class="ex-head"><b>练习 10.15</b> · 难度 ★ · Temperature 的极限</div>
+<p>logits \(z = (2, 1, 0)\)。计算 \(T = 1, 0.5, 2\) 时的 softmax，并说明 \(T\to0\)、\(T\to\infty\) 的极限，以及温度对熵的影响。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(T=1\)：\((0.665, 0.245, 0.090)\)；\(T=0.5\)（logits 变 4,2,0）：\((0.867, 0.117, 0.016)\)；\(T=2\)（logits 1, 0.5, 0）：\((0.506, 0.307, 0.186)\)。\(T\to0\) 趋于 one-hot argmax（熵→0），\(T\to\infty\) 趋于均匀（熵→\(\log 3\)）。熵关于 \(T\) 单调递增（logits 不全相等时）。</p>
+</div></details></div>
+
+<!-- ============================================================ CHEAT -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚过一遍。每一行都应该能在 30 秒内用英文讲出来。</p>
+
+<table>
+  <tr><th>主题</th><th>必背</th></tr>
+  <tr><td>线性层反向</td><td>\(Y=XW+b\)：\(\bar W = X^\top\bar Y\)，\(\bar X = \bar Y W^\top\)，\(\bar b = \sum_{\text{batch}}\bar Y\)</td></tr>
+  <tr><td>ReLU / sigmoid / tanh 反向</td><td>\(\bar y\odot\mathbb 1[x\gt 0]\)；\(\bar y\odot y(1-y)\)；\(\bar y\odot(1-y^2)\)</td></tr>
+  <tr><td>Reverse vs forward mode</td><td>VJP vs JVP；标量 loss + 海量参数 ⇒ reverse；代价：存激活；backward ≈ 2× forward FLOPs</td></tr>
+  <tr><td>Softmax 雅可比</td><td>\(\mathrm{diag}(p)-pp^\top\)；VJP：\(p\odot(\bar p - \langle\bar p,p\rangle)\)</td></tr>
+  <tr><td>CE∘softmax 梯度</td><td>\(p - y\)（batch mean 再 /B）；BCE∘sigmoid：\(\sigma(z)-y\)</td></tr>
+  <tr><td>LSE</td><td>\(\log\sum e^{z} = m + \log\sum e^{z-m}\)；传 logits 给 loss；用 log_softmax / logsigmoid</td></tr>
+  <tr><td>稳定 BCE</td><td>\(\max(z,0) - zy + \log(1+e^{-|z|})\)</td></tr>
+  <tr><td>Label smoothing</td><td>\(q = (1-\epsilon)y + \epsilon/C\)，梯度 \(p-q\)</td></tr>
+  <tr><td>GELU / SiLU</td><td>\(x\Phi(x)\)，tanh 近似 \(0.5x(1+\tanh(\sqrt{2/\pi}(x+0.044715x^3)))\)；\(x\sigma(x)\)</td></tr>
+  <tr><td>SwiGLU</td><td>\((\mathrm{SiLU}(xW_g)\odot xW_u)W_d\)；3 矩阵；\(h=\tfrac83d\) 参数匹配；LLaMA-7B: 11008</td></tr>
+  <tr><td>方差传播</td><td>\(\mathrm{Var}(y) = n_{\text{in}}\mathrm{Var}(W)\mathbb E[x^2]\)</td></tr>
+  <tr><td>Xavier / Kaiming</td><td>\(2/(n_{\text{in}}+n_{\text{out}})\)；\(2/n_{\text{in}}\)（ReLU 砍一半）；LeakyReLU \(2/((1+a^2)n)\)</td></tr>
+  <tr><td>GPT-2 init</td><td>\(\mathcal N(0,0.02^2)\)；残差输出投影 \(\times 1/\sqrt{2N}\)；Pre-LN + final LN</td></tr>
+  <tr><td>BN vs LN vs RMSNorm</td><td>batch 维 / 特征维 / 特征维只除 RMS；BN train≠eval；RMSNorm 省中心化与 bias</td></tr>
+  <tr><td>LN 反向</td><td>\(\bar x = r(g - \bar g - \hat x\,\overline{g\hat x})\)，\(g=\bar y\odot\gamma\)</td></tr>
+  <tr><td>梯度消失/爆炸</td><td>雅可比连乘；残差 \(\prod(I+J_f)\) 含恒等项</td></tr>
+  <tr><td>Clipping</td><td>全局范数 1.0；保持方向；记录裁剪前范数</td></tr>
+  <tr><td>Dropout</td><td>train: \(x\cdot m/(1-p)\)；eval: 恒等；LLM 预训练通常 0</td></tr>
+  <tr><td>AdamW</td><td>解耦 weight decay（≈0.1，不 decay bias/norm）</td></tr>
+  <tr><td>初始 loss</td><td>\(\ln C\)；V=32000 ⇒ 10.37；V=50257 ⇒ 10.82</td></tr>
+  <tr><td>GD 稳定性</td><td>二次型需 \(\eta\lt 2/\lambda_{\max}\)；EoS：sharpness 升到 ≈\(2/\eta\)</td></tr>
+  <tr><td>Batch size</td><td>临界 batch 以下 lr 近似线性放大（SGD），Adam 常 √ 缩放；配 warmup</td></tr>
+  <tr><td>Transformer vs RNN</td><td>并行训练、O(1) 路径长度；代价 O(T²) 注意力与增长的 KV cache</td></tr>
+</table>
+
+<h4>高频面试题清单</h4>
+<ol>
+  <li>Derive the gradients of a two-layer MLP with cross-entropy loss. → <a href="#c-mlp-grad">手推 MLP</a>、<a href="#c-softmax-jac">p − y</a></li>
+  <li>Why does backprop use reverse-mode differentiation? → <a href="#c-modes">前向 vs 反向模式</a></li>
+  <li>Derive the gradient of softmax cross-entropy w.r.t. the logits. → <a href="#c-softmax-jac">Softmax 雅可比</a></li>
+  <li>How do you implement a numerically stable softmax / log-softmax / BCE? → <a href="#c-lse">LSE</a>、<a href="#c-bce">BCE</a></li>
+  <li>Why does sigmoid cause vanishing gradients? What's a dead ReLU? → <a href="#c-sat">饱和与 ReLU</a></li>
+  <li>What is SwiGLU and why is the hidden size 8/3·d? → <a href="#c-swiglu">SwiGLU</a></li>
+  <li>Derive Xavier / Kaiming initialization. → <a href="#c-varprop">方差传播</a></li>
+  <li>Why does GPT-2 scale residual projections by 1/√N? → <a href="#c-gpt2init">残差缩放</a></li>
+  <li>BatchNorm vs LayerNorm — why do transformers use LayerNorm? → <a href="#c-bn">BN</a>、<a href="#c-ln">LN</a></li>
+  <li>What's the difference between LayerNorm and RMSNorm? → <a href="#c-ln">LN/RMSNorm</a></li>
+  <li>Explain vanishing/exploding gradients and why residual connections help. → <a href="#c-vanish">雅可比连乘</a>、<a href="#c-resid">残差</a></li>
+  <li>Clip by norm vs by value? → <a href="#c-clip">梯度裁剪</a></li>
+  <li>How does dropout behave at train vs test time? Why no dropout in LLM pretraining? → <a href="#c-dropout">Dropout</a>、<a href="#c-nodropout">LLM 无 dropout</a></li>
+  <li>Your loss is NaN / not decreasing. How do you debug? → <a href="#c-loss-curves">调试清单</a></li>
+  <li>How should learning rate change with batch size? What is the edge of stability? → <a href="#c-lr-batch">LR 与 batch</a></li>
+  <li>Why did transformers replace RNNs? → <a href="#c-rnn">RNN vs Transformer</a></li>
+</ol>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m03" data-title="模块 03 自测卡片"></div>
+<div class="footer-nav"><a href="m02-math-ml.html">← 02 数学与经典机器学习</a><a href="m04-transformer.html">04 Transformer 架构 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m03.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
