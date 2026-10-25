@@ -1,0 +1,1229 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>18 · Behavioral 与面试策略 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m18">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 18 · Phase 4</div>
+<h1 class="title">Behavioral 与<em>面试策略</em></h1>
+<p class="lede">技术题决定你"能不能做"，behavioral 和沟通决定面试官"想不想和你一起做"。这一章把 Research Scientist 实习面试里所有"非技术"的部分拆成可以照着练的框架、模板和英文句式库：自我介绍、Why us、STAR 故事、RS 特有问题、现场卡壳时怎么说、反问、申请与沟通、面试前清单。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完你应该能：(1) 用英文流利地给出 30 秒 / 1 分钟 / 3 分钟三个版本的自我介绍；(2) 针对任何一个目标组，在 20 分钟内准备出有具体细节的 "Why this team"；(3) 手里有 6–8 个 STAR 故事，能覆盖 20+ 个常见 behavioral 问题；(4) 面对 "What's the biggest limitation of your paper?"、"Do you use AI coding tools?" 这类 RS 特有问题有诚实且有说服力的回答；(5) 在技术轮卡住时，能用自然的英文争取时间、澄清问题、承认不确定、接住提示；(6) 每一轮结束都能问出好问题。<br><br>
+<b>建议学习顺序：</b>先看 <a href="#s-pitch">§2 自我介绍</a> 和 <a href="#s-live">§6 现场表达</a>（这两个每一轮都会用到），再用 <a href="#s-star">§4</a> 的"故事矩阵"把你自己的经历填进去，然后过 <a href="#s-rs">§5</a>。<a href="#s-apply">§8</a> 和 <a href="#s-check">§9</a> 是申请季和面试前一周用的。<br><br>
+<b>重要说明：</b>这是公开页面，所有例子都来自一个<b>虚构候选人 "Alex"</b>（某美国大学二年级 CS PhD，研究 LLM reasoning 和 RL post-training）。请把模板里的 <code>[方括号]</code> 换成你自己的真实经历，个人故事写在你自己的私密笔记里，不要放到公开网页。和其他模块的关系：<a href="m16-research.html">16 研究讨论轮</a> 负责"讲论文、批判论文、提 idea"的技术内容，本章负责"怎么说"和"说什么故事"。</div>
+
+<!-- ============================== §1 ============================== -->
+<h2 class="sec" id="s-process"><span class="num">§1 · THE PIPELINE</span>面试全流程</h2>
+<p class="sec-intro">先搞清楚"游戏规则"。不同公司差别很大，而且每年在变，所以本节只讲<b>通用结构</b>，具体格式一定要问 recruiter。</p>
+
+<section class="concept" id="c-pipeline">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>RS 实习面试的典型流程</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>大多数流程是：申请/内推 → recruiter 电话 → 1–2 轮技术筛选（coding 和/或 ML 知识）→ 若干轮 research 面（讲你的研究 + 讨论）→ （部分公司）host / team matching → offer。</p><p class="en">Typically: application or referral, a recruiter screen, one or two technical screens, research-focused rounds, and at some companies a separate host-matching step before the offer.</p></div>
+  <div class="deep">
+    <p>RS 实习面试和 SWE 实习面试最大的区别：<b>研究本身是被考察的主体</b>。SWE 实习主要看算法题；RS 实习通常还会花很大比重看"你做过什么研究、你怎么思考研究、你能不能和这个组的方向对上"。下面是常见环节（不是每家都有全部环节，顺序也会变）：</p>
+    <div class="table-wrap"><table>
+      <tr><th>环节</th><th>通常形式</th><th>考察什么</th><th>怎么准备</th></tr>
+      <tr><td>Recruiter screen</td><td>15–30 分钟电话/视频</td><td>基本匹配度、时间（实习可开始/结束日期）、签证/工作许可、兴趣方向、沟通</td><td>30 秒 + 1 分钟自我介绍；准备好可实习时间段；<b>问清楚后面每一轮的格式</b></td></tr>
+      <tr><td>Coding screen</td><td>45–60 分钟，共享编辑器，LeetCode 风格或 ML coding</td><td>能否把想法写成正确代码、沟通、测试</td><td><a href="m15-algorithms.html">m15</a> 算法、<a href="m14-ml-coding.html">m14</a> ML 手写题、§6 的 thinking-aloud 句式</td></tr>
+      <tr><td>ML knowledge / breadth</td><td>口头问答，可能夹杂推导</td><td>基础是否扎实：attention、优化、RL、评估……</td><td>m02–m13 各模块的 "Say it" 块</td></tr>
+      <tr><td>Research talk / deep dive</td><td>你讲 20–45 分钟研究（可能有 slides），然后被追问</td><td>贡献是否清楚、深度、是否理解局限、品味</td><td><a href="m16-research.html">m16</a>；本章 <a href="#c-limitations">§5 局限性</a></td></tr>
+      <tr><td>Research discussion</td><td>和组员讨论开放问题、读某篇论文、现场提 idea</td><td>思考方式、能否合作、提出可验证假设</td><td>m16 的 idea 生成框架；§6 的协作式表达</td></tr>
+      <tr><td>Behavioral</td><td>独立一轮或穿插在其他轮里</td><td>合作、处理冲突/失败、主动性、价值观契合</td><td>§4 STAR 故事矩阵</td></tr>
+      <tr><td>Host / team matching</td><td>和潜在 mentor 的 30–60 分钟聊天，可能多次</td><td>双向选择：方向对不对、能不能在 12 周内做出东西</td><td>§3 Why us、§7 反问、§8 host matching</td></tr>
+    </table></div>
+    <p><b>一些通用的结构性规律（不同公司差异很大，以 recruiter 说法为准）：</b></p>
+    <ul>
+      <li><b>大型公司研究部门</b>（如 Google/DeepMind、Meta、Microsoft Research、NVIDIA Research、Apple 等）的实习常见做法是：先过一个统一的技术面，然后进入 <b>host matching</b>——你和若干个潜在 mentor 聊，双方都愿意才发 offer。所以"过了技术面但没匹配上 host"是常见情况，不代表你技术不行。</li>
+      <li><b>前沿 AI 实验室</b>（如 OpenAI、Anthropic）的流程往往更像正式员工招聘的简化版：可能有 take-home、编程面、研究面、价值观/文化相关的面。有的公司对面试中能否使用 AI 工具有明确规定，例如 Anthropic 公开了一份<a href="https://www.anthropic.com/candidate-ai-guidance" target="_blank" rel="noreferrer">候选人使用 AI 的指南</a>——<b>每家公司规定不同，一定要提前查清楚并严格遵守</b>。</li>
+      <li><b>时间线</b>：北美暑期实习通常在前一年秋季开始开放申请，很多岗位滚动录取，越早投越好（名额先到先得）。具体开放月份每年都在变，以各公司 careers 页面为准。</li>
+      <li><b>导师/人脉驱动</b>：很多 RS 实习其实是通过论文作者、会议上认识的人、导师推荐直接联系到 host 的。正式申请渠道 + 主动联系 host（§8 cold email）两条线并行，成功率明显更高。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>以为"RS 实习只看论文"——很多公司的 RS 实习依然有标准 coding 轮，而且是硬门槛。</li>
+      <li>以为"host matching 只是走过场"——它本质上是一轮面试，对方在判断"我愿不愿意带这个人 12 周"。</li>
+      <li>不敢问 recruiter 面试格式。问格式是完全正常且专业的行为，recruiter 的工作就是帮你准备好。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(Asking a recruiter about the process) "Thanks so much for setting this up. Could you walk me through what the rest of the process looks like? In particular, I'd love to know how many rounds there are, whether they're coding, ML fundamentals, or research-focused, and roughly how long each one is. Also, is there a host-matching stage, and is there anything specific you'd recommend I prepare? Finally, what's the expected timeline for a decision, just so I can plan around other deadlines?"</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>When would you be available to start, and for how long?</b><details><summary>思路</summary><div class="inner">提前查好学校的学期日历和你所需的工作许可（例如学生签证下实习通常需要学校批准的工作授权文件），给出具体日期范围："I'm available from [late May] to [mid/late August], so about [12] weeks. I'm also flexible to shift by a couple of weeks if that works better for the team." 如果需要学校审批，主动说明大概需要多长时间。</div></details></li>
+    <li><b>Are you interviewing with other companies?</b><details><summary>思路</summary><div class="inner">诚实但不需要报具体公司名："Yes, I'm in conversations with a few other places, and some of them have timelines in [month]. That said, [company] is one of my top choices because [one concrete reason]." 这样既给对方时间信号，又表达了兴趣。</div></details></li>
+    <li><b>What area or team are you most interested in?</b><details><summary>思路</summary><div class="inner">给一个主方向 + 一个相邻方向，不要说"都可以"："My core interest is [post-training and RL for reasoning], and I'd also be excited about [evaluation of long-horizon agents], since that's closely connected." 太宽会让 recruiter 难以给你匹配 host。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-stage-prep">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>每一阶段的准备重点与"问清格式"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>面试前先拿到"格式信息"，再按格式分配准备时间；不知道格式就盲目准备，是最常见的时间浪费。</p><p class="en">Get the format first, then allocate prep time to match it; preparing blindly is the most common waste of time.</p></div>
+  <div class="deep">
+    <p><b>拿到面试邀请后，向 recruiter 问这几件事（邮件即可）：</b></p>
+    <ol>
+      <li>每一轮的类型（coding / ML breadth / research talk / behavioral / host chat）和时长。</li>
+      <li>Coding 轮：用什么平台？可以选语言吗（Python 通常可以）？能不能跑代码？是算法题还是 ML 实现题（例如手写 attention、手写训练循环）？</li>
+      <li>Research talk：时长、是否需要 slides、听众是谁（整个组还是 1–2 个人）、问答时间多长。</li>
+      <li>是否允许使用 AI 工具 / 查文档（务必问清楚，按规定执行）。</li>
+      <li>面试官是谁（有时会告诉你名字，这样你可以提前读他们的论文）。</li>
+    </ol>
+    <div class="table-wrap"><table>
+      <tr><th>阶段</th><th>准备时间分配建议</th><th>最低要求</th></tr>
+      <tr><td>Recruiter</td><td>1–2 小时</td><td>30s/1min 自我介绍；可实习时间；3 个对流程的问题</td></tr>
+      <tr><td>Coding</td><td>持续数周（每天）</td><td>常见题型模板熟练；能边写边讲；会自己写测试用例</td></tr>
+      <tr><td>ML breadth</td><td>1–2 周集中复习</td><td>每个核心概念有 30 秒英文解释 + 能推一步公式</td></tr>
+      <tr><td>Research talk</td><td>3–5 天</td><td>slides + 两次完整计时彩排 + 预演 15 个追问</td></tr>
+      <tr><td>Behavioral</td><td>2–3 天</td><td>6–8 个 STAR 故事，每个能在 2 分钟内讲完</td></tr>
+      <tr><td>Host chat</td><td>每个 host 1–2 小时</td><td>读 host 近 2–3 篇论文；准备 1–2 个"如果来实习可能做什么"的初步想法</td></tr>
+    </table></div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(Email to recruiter) "Hi [Name], thank you for the update — I'm excited to move forward. To make sure I prepare well, could you share a bit more about each round? Specifically: the focus of each interview, whether the coding round is algorithmic or ML-implementation style, which languages and tools are allowed, and whether I should prepare slides for the research discussion. Thanks again for your help!"</p></div>
+</section>
+
+<!-- ============================== §2 ============================== -->
+<h2 class="sec" id="s-pitch"><span class="num">§2 · SELF-INTRODUCTION</span>自我介绍</h2>
+<p class="sec-intro">"Tell me about yourself" 几乎每一轮都会出现，而且是面试官对你的第一印象。它不是背简历，而是<b>一个有主线的故事</b>：我是谁 → 我在解决什么问题 → 我做出过什么 → 为什么今天坐在这里。</p>
+
+<section class="concept" id="c-pitch-structure">
+  <div class="concept-head"><span class="pri p1">★</span><h3>三个长度的结构：30 秒 / 1 分钟 / 3 分钟</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用"Present → Past → Future"骨架：现在的身份和研究主线 → 1–2 个最有代表性的成果（带数字）→ 为什么想来这里。长度变化只改变"成果"部分展开多少。</p><p class="en">Use present, past, future: who you are and your research thread, one or two concrete results, and why this role. Length only changes how much you expand the middle.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>版本</th><th>何时用</th><th>结构</th><th>英文词数（约）</th></tr>
+      <tr><td>30 秒 elevator</td><td>recruiter 开场、会议上偶遇、host chat 开头被说 "briefly introduce yourself"</td><td>身份 + 研究主线一句话 + 一个成果 + 一句兴趣</td><td>70–90</td></tr>
+      <tr><td>1 分钟</td><td>大多数技术轮开头的 "Tell me about yourself"</td><td>身份 → 主线问题和动机 → 1–2 个成果（有数字/具体方法）→ 为什么这个组</td><td>140–170</td></tr>
+      <tr><td>3 分钟</td><td>research 轮或 host chat 中 "Walk me through your research"</td><td>主线问题 → 2–3 个项目串成一条线（每个：问题、关键 idea、结果、学到什么）→ 下一步想做什么 → 和这个组的连接</td><td>400–480</td></tr>
+    </table></div>
+    <p><b>写好自我介绍的五条原则：</b></p>
+    <ol>
+      <li><b>有一条主线（research thread）。</b>不要说"我做过 A、B、C"，要说"我一直在研究 X 这个问题，A 和 B 是从两个角度攻它"。主线让人记住你。</li>
+      <li><b>具体胜过形容词。</b>"I'm passionate about AI" 没有信息量；"I trained a 1B model with RL on math problems and improved pass@1 from X to Y" 有。</li>
+      <li><b>明确你的贡献。</b>合作项目里用 "I designed / I implemented / I ran" 讲你做的部分，用 "we" 讲整体结果。</li>
+      <li><b>结尾指向对方。</b>最后一句把话题递给面试官："…which is why I'm excited about your team's work on Z." 这让对话自然转到你准备好的方向。</li>
+      <li><b>为听众调整技术深度。</b>recruiter 版不要有术语堆砌；research 版可以说具体方法名。</li>
+    </ol>
+    <div class="box why"><span class="lbl">直觉</span>面试官在前 60 秒里其实在回答一个问题："这个人的研究和我关心的东西有交集吗？我该从哪里开始追问？" 你的自我介绍就是在<b>主动设定后续追问的方向</b>——提到的每一个项目都可能被追问，所以只提你能讲 10 分钟的东西。</div>
+  </div>
+  <details class="deep"><summary>填空模板（1 分钟版）</summary><div class="inner">
+<pre><code class="language-plaintext">[Present] Hi, I'm [name], a [year]-year PhD student in [field] at [university],
+advised by [advisor(s)]. My research focuses on [one-line research thread],
+and specifically on [the sharper question you care about].
+
+[Past] Most recently, I worked on [project], where I [your key contribution:
+proposed / built / showed]. We found that [main result, with a number if possible].
+Before that, I [second project or relevant experience], which taught me [skill
+or insight that connects to the thread].
+
+[Future] Going forward, I'm interested in [next question]. That's why I'm
+excited about [team/company]: your work on [specific paper/product/direction]
+is very close to [how it connects to you].</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>按时间顺序背简历（"本科我学了……然后……然后……"）。面试官已经看过简历，要的是主线和亮点。</li>
+      <li>超时。1 分钟版讲了 3 分钟会让人觉得你抓不住重点。用手机计时练。</li>
+      <li>一字不差背诵，听起来像念稿。记住"骨架和关键词"，每次用稍不同的句子说。</li>
+      <li>过度谦虚（"I just did some small experiments"）或过度包装（把组里的工作全说成自己的）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(30-second version, fictional "Alex") "Hi, I'm Alex, a second-year CS PhD student working on reasoning in large language models. My research asks how we can get models to use extra test-time compute more efficiently, mostly through RL post-training. In my latest project, I showed that a simple length-aware reward cuts the number of reasoning tokens by about a third without hurting accuracy on math benchmarks. I'm really excited about this role because your team is working on exactly this efficiency-versus-capability trade-off."</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What's the one thing you're proudest of in your research so far?</b><details><summary>思路</summary><div class="inner">选一个能讲清楚"难点在哪 + 你怎么突破"的点，而不是"发了某会议"。结构：难点 → 你的关键判断或 insight → 结果 → 为什么骄傲（例如"别人都在调超参，我发现问题在数据分布"）。</div></details></li>
+    <li><b>Why did you choose this research direction?</b><details><summary>思路</summary><div class="inner">讲一个真实的"起点时刻"（读到某篇论文 / 实验里看到某个奇怪现象 / 课程项目），再讲为什么你认为它重要（对领域的影响）。避免只说"它很火"。</div></details></li>
+    <li><b>Can you go deeper on [project you mentioned]?</b><details><summary>思路</summary><div class="inner">这就是为什么"只提你能讲 10 分钟的东西"。准备一个 3 层深度的版本：30 秒（问题+结果）、2 分钟（方法+关键实验）、10 分钟（细节、消融、失败尝试、局限）。见 <a href="m16-research.html">m16</a> 的论文讲述模板。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-pitch-example">
+  <div class="concept-head"><span class="pri p1">★</span><h3>完整示例：虚构候选人 Alex 的 1 分钟与 3 分钟版本</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>看一个"好的"版本长什么样：主线清楚、贡献明确、有数字、结尾指向对方。</p><p class="en">A good intro has a clear thread, explicit contributions, concrete numbers, and ends by pointing at the team.</p></div>
+  <div class="deep">
+    <p><b>注意：</b>以下 Alex 及其项目、数字完全是虚构的，只用于展示结构。</p>
+    <p><b>1 分钟版（约 160 词）：</b></p>
+    <blockquote><p>"Hi, I'm Alex. I'm a second-year PhD student in computer science, and my research is about making language models reason more efficiently — in other words, getting the same accuracy with less test-time compute.</p>
+    <p>My most recent project looked at why RL-trained reasoning models tend to produce very long chains of thought. I found that much of the extra length comes from repeated self-verification that rarely changes the final answer. Based on that, I designed a length-aware reward that only penalizes tokens after the answer has stabilized. On several math benchmarks, it cut average output length by about thirty percent with no drop in accuracy.</p>
+    <p>Before my PhD, I spent a year as a research engineer, which is where I got comfortable with large training codebases and debugging distributed jobs.</p>
+    <p>Next, I want to understand how these ideas transfer to agentic, multi-step tasks, which is a big reason I'm excited about your team's work on long-horizon agents."</p></blockquote>
+    <p><b>3 分钟版的骨架（展开方式）：</b></p>
+    <ol>
+      <li><b>主线（20 秒）：</b>"Overall, my research is about the compute-efficiency of reasoning…" 并给出一句"为什么重要"：推理成本随着 test-time scaling 变得越来越主要。</li>
+      <li><b>项目 1（60 秒）：</b>问题（长 CoT 的冗余）→ 观察（自我验证重复）→ 方法（answer-stabilization 之后才惩罚长度）→ 结果（数字）→ 一个有意思的细节或失败尝试（例如"最开始直接惩罚总长度，模型学会了跳过推理，准确率掉很多"）。</li>
+      <li><b>项目 2（50 秒）：</b>用一句话把它和主线连起来："That made me wonder whether we can predict, before generation, how much compute a problem needs." 然后同样结构讲。</li>
+      <li><b>方法论/技能（20 秒）：</b>工程背景、大规模实验能力、评估严谨性。</li>
+      <li><b>未来 + 连接（30 秒）：</b>开放问题 → 和这个组的哪篇论文/方向自然衔接 → 实习中可能想探索什么（说得开放一点，表示愿意听 host 的想法）。</li>
+    </ol>
+    <div class="box why"><span class="lbl">直觉</span>注意示例里的"失败尝试"——它几乎总能引出好的追问，并且展示了你的科研过程是真实的、有判断的。面试官往往更喜欢听"我先试了 A，失败了，因为……所以改成 B"，而不是一个完美的直线故事。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(Transition at the end of a 3-minute version) "So that's the overall arc: first understanding where the extra reasoning compute goes, and then trying to allocate it more adaptively. I'm happy to go deeper into any of these — maybe the reward design, since that's where most of the interesting failures happened. And I'd also love to hear how this connects to what your team is working on."</p></div>
+</section>
+
+<section class="concept" id="c-delivery">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>表达技巧：非母语者怎么讲得自然</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>清晰 &gt; 流利 &gt; 地道。慢一点、短句、关键词重读、结构词（first / the key idea is / so）开路，比追求复杂词汇有效得多。</p><p class="en">Clarity beats fluency, and fluency beats idioms: speak slightly slower, use short sentences, stress keywords, and signpost your structure.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>短句。</b>中文思维容易产生长句套长句；英文口语里，一句话只放一个想法。"We found X. This matters because Y." 比 "We found X which matters because of Y which is related to Z" 好懂得多。</li>
+      <li><b>先结论后细节（BLUF, bottom line up front）。</b>这和中文"先铺垫后结论"的习惯相反，需要刻意练。</li>
+      <li><b>结构信号词。</b>"There are two parts to this." / "The key idea is…" / "So, to summarize…"，让听者知道你在哪。</li>
+      <li><b>数字说清楚。</b>"thirty percent"、"one point five billion parameters"、"from forty-two to fifty-one"——提前把你常用的数字大声练几遍。</li>
+      <li><b>专业术语发音。</b>提前确认你常用的词怎么读：Adam、Llama、Gemini、Kullback–Leibler、Jacobian、Hessian、softmax、heuristic、hierarchy、arXiv（读 "archive"）。</li>
+      <li><b>视频面试技术细节。</b>摄像头与眼睛平齐、光源在前方、外接麦克风或耳机、背景干净；看摄像头而不是看屏幕上的自己（至少在讲重点时）。</li>
+      <li><b>停顿是可以的。</b>2–3 秒的停顿 + "Let me think about that for a second" 完全专业，比 "um… um…" 好。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为口音是问题。在研究界，几乎所有团队都有大量非母语研究员；真正影响理解的是<b>语速太快、句子太长、结构不清</b>，这些都是可以练的。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Let me give you the short version first, and then I can go into details. The short version is: we found that most of the extra length came from repeated self-checking. The details are in how we measured that, and there are two parts to it."</p></div>
+</section>
+
+<!-- ============================== §3 ============================== -->
+<h2 class="sec" id="s-whyus"><span class="num">§3 · WHY US</span>为什么选我们 / 这个组</h2>
+<p class="sec-intro">"Why do you want to work here?" "Why this team?" 考察的是：你是否真的了解我们，你的兴趣和我们是否匹配，你来了以后能不能快速产出。泛泛的赞美（"you're a leading AI company"）几乎等于零分。</p>
+
+<section class="concept" id="c-research-team">
+  <div class="concept-head"><span class="pri p1">★</span><h3>怎么在 1 小时内"研究"一个团队</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>找到 2–3 篇这个组/这个 host 最近的论文或博客，每篇提炼"它解决什么问题 + 我觉得哪里有意思 + 我能接着做什么"，这就是 Why us 的原材料。</p><p class="en">Read two or three recent papers or posts from the team, and for each note the problem, what you find interesting, and how you might extend it.</p></div>
+  <div class="deep">
+    <p><b>信息来源（按价值排序）：</b></p>
+    <ol>
+      <li><b>面试官 / host 本人的近期论文</b>（Google Scholar、个人主页、arXiv 按作者搜）。如果 recruiter 告诉了你面试官名字，这是最高价值的信息。</li>
+      <li><b>团队官方博客 / research 页面</b>：通常会写这个组最近关心什么（例如公司的 research blog、技术报告、system card）。</li>
+      <li><b>公开演讲 / 播客 / 采访</b>：了解团队负责人怎么描述他们的方向和价值观。</li>
+      <li><b>开源代码仓库</b>：看他们用什么技术栈、代码风格，也能帮你在面试中说出具体细节。</li>
+      <li><b>招聘页面的 JD 原文</b>：JD 里的关键词往往就是面试官会关心的点。</li>
+    </ol>
+    <p><b>每篇论文做一个三行笔记：</b></p>
+    <pre><code class="language-plaintext">Paper: [title, year]
+1. Problem + key idea (one sentence, my own words):
+2. What I find genuinely interesting / a question I have:
+3. Connection to my work / a possible extension:</code></pre>
+    <p>第 2 行最重要：一个<b>真实的问题</b>（"I was curious whether the result holds when …"）在面试中既是 Why us 的证据，也是反问的好素材。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>只看公司名气，不看具体组。大公司里不同组差别巨大。</li>
+      <li>假装读过但其实只看了摘要——面试官很容易一问就露馅。读不完就诚实说 "I've read the abstract and skimmed the experiments"。</li>
+      <li>对团队作品只说好话。带一个有思考的问题或可能的扩展，比纯赞美更能展示研究能力。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Before this conversation, I read your recent paper on [topic]. What I found most interesting was [specific finding], because it suggests [implication]. It actually made me wonder whether [question] — I'd be curious to hear whether you've looked at that."</p></div>
+</section>
+
+<section class="concept" id="c-whyus-template">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Why us 的回答模板："三层匹配"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>三层：研究方向匹配（你们做的问题正是我关心的）→ 能力/方式匹配（你们的做法能让我学到/发挥什么）→ 具体连接点（某篇论文 / 某个能力 / 规模条件）。</p><p class="en">Three layers: the problem matches what I care about, the way you work matches how I want to grow, and here's a specific connection point.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>层次</th><th>回答什么</th><th>示例句式</th></tr>
+      <tr><td>1. Problem fit</td><td>你们在做的问题 = 我研究的主线</td><td>"The problem your team focuses on, [X], is the central question of my PhD."</td></tr>
+      <tr><td>2. Approach / environment fit</td><td>你们的方式、规模、文化让我能做在学校做不到的事</td><td>"In academia I can study this at small scale, but [scale / infrastructure / real users] would let me test whether these ideas actually hold."</td></tr>
+      <tr><td>3. Specific hook</td><td>一篇论文、一个开放问题、一个具体可能的项目</td><td>"For example, your paper on [Y] left open [Z], and I'd love to explore that."</td></tr>
+      <tr><td>（可选）4. Mission / values</td><td>对公司使命的真实认同（用你自己的话，有具体理由）</td><td>"I also care about [safety / openness / impact on X], and I like that your team publishes / thinks about [concrete practice]."</td></tr>
+    </table></div>
+    <p><b>"Why research scientist intern (vs. staying in academia over summer)?"</b> 也属于这一类。好答案的要素：规模（算力、数据、模型）、真实问题和反馈、和顶尖研究员合作、看到研究如何变成产品或基础设施、把学校里的想法在更大尺度上验证。</p>
+    <p><b>"Why this company vs. [competitor]?"</b> 不要贬低别家，只讲这一家独特的点："Both do great work; what draws me here specifically is…"</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>只讲"我能得到什么"（学习、简历、薪水），不讲"我能贡献什么"。两者都要讲，比例大约 1:1。</li>
+      <li>把一个模板用到所有公司，只换公司名。面试官一听就知道。第 3 层必须是针对这家的具体内容。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(Fictional Alex) "There are three reasons. First, the problem: your team works on making reasoning models more efficient, and that's literally the core question of my PhD. Second, scale: in my lab I can only test ideas on models up to a few billion parameters, and I really want to know whether the effects I see hold at frontier scale. And third, something specific — your recent work on adaptive compute left open how to decide the budget before generation, and that's exactly what I've been thinking about. So I think I could contribute from day one, and I'd learn a lot about doing research at scale."</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What would you want to work on if you joined?</b><details><summary>思路</summary><div class="inner">给一个具体但开放的方向：一个和组的工作相关的问题 + 一个初步实验设想 + 表示愿意调整。"One idea I'd be excited about is [X]. A first experiment could be [Y]. That said, I'd want to align with what's most useful for the team, so I'm very open to adjusting." 不要给出过于宏大或需要 6 个月的项目。见 <a href="#c-internship-goals">§5 实习目标</a>。</div></details></li>
+    <li><b>Which of our recent papers did you find most interesting, and why?</b><details><summary>思路</summary><div class="inner">这就是三行笔记的用武之地。讲：问题与核心 idea → 你认为最有洞察的点 → 一个真实的疑问或可能的扩展。体现你"读懂了"且"有自己的看法"。</div></details></li>
+    <li><b>Where else are you applying?</b><details><summary>思路</summary><div class="inner">诚实、简短、不贬低："A few other industry research labs working on similar problems. But the overlap with this team's work on [X] is the strongest for me."</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-mapping">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>把你的兴趣映射到不同类型的团队</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>同一个研究主线，对不同团队要强调不同侧面：基础研究组强调问题和洞察，应用研究组强调可落地和规模，产品相关组强调用户影响和工程能力。</p><p class="en">Emphasize insight for fundamental research teams, scalability for applied research teams, and user impact plus engineering for product-facing teams.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>团队类型</th><th>他们最关心</th><th>你应该强调</th></tr>
+      <tr><td>基础研究（publish-oriented）</td><td>新问题、新洞察、论文质量</td><td>研究品味、提出问题的能力、实验严谨性、你的论文</td></tr>
+      <tr><td>前沿模型训练（pretraining / post-training）</td><td>能否在大规模训练中带来真实提升</td><td>scaling 意识、工程能力、大代码库经验、调试能力、对评估的严谨</td></tr>
+      <tr><td>Safety / alignment / interpretability</td><td>方法是否可靠、能否推广到更强模型</td><td>对风险的认真思考、方法论严谨、能把抽象问题变成可测实验</td></tr>
+      <tr><td>Applied / product research</td><td>能否解决真实用户问题、上线</td><td>端到端交付、评估真实指标、和工程师协作</td></tr>
+      <tr><td>Systems / efficiency</td><td>吞吐、延迟、显存、成本</td><td>性能分析、对硬件的理解、具体数字</td></tr>
+    </table></div>
+    <p>以 Alex（研究 reasoning 效率）为例：对基础研究组讲"为什么长 CoT 会冗余"这个现象本身；对 post-training 组讲"reward 设计如何在大规模 RL 中稳定"；对 systems 组讲"推理 token 减少 30% 对 serving 成本意味着什么"。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"My work sits at the intersection of RL post-training and inference efficiency. For a team like yours that trains frontier models, I think the most relevant part is the reward design — specifically how to shape length incentives without the model learning shortcuts, which becomes much harder at scale."</p></div>
+</section>
+
+<!-- ============================== §4 ============================== -->
+<h2 class="sec" id="s-star"><span class="num">§4 · STAR &amp; COMMON QUESTIONS</span>STAR 框架与常见行为面试题</h2>
+<p class="sec-intro">Behavioral 问题（"Tell me about a time when…"）背后的假设是：<b>过去的行为是未来行为最好的预测</b>。面试官要的是一个具体的真实事件，而不是"我一般会怎么做"。STAR 让你的故事有结构、有重点、有结果。</p>
+
+<section class="concept" id="c-star">
+  <div class="concept-head"><span class="pri p1">★</span><h3>STAR 与 CARL：结构、时间分配与常见变形</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>STAR = Situation（背景，简短）→ Task（你的责任/目标）→ Action（你具体做了什么，占一半以上时间）→ Result（结果，最好量化 + 学到什么）。CARL = Context → Action → Result → Learning，更强调反思。</p><p class="en">STAR is Situation, Task, Action, Result; spend most of the time on your own actions, and close with a measurable result and what you learned.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>部分</th><th>时间占比（2 分钟故事）</th><th>要点</th><th>英文开头句式</th></tr>
+      <tr><td>S – Situation</td><td>~15%（15–20 秒）</td><td>只给理解故事所必需的背景：什么项目、几个人、什么阶段</td><td>"In my first year, I was working on a project with two other students…"</td></tr>
+      <tr><td>T – Task</td><td>~10%</td><td>你的角色和面临的挑战/目标；冲突、难点在这里出现</td><td>"My responsibility was… The challenge was that…"</td></tr>
+      <tr><td>A – Action</td><td>~50–60%</td><td><b>"I"</b> 而不是 "we"；具体步骤；为什么这样做（你的判断）</td><td>"The first thing I did was… Then I… The reason I chose this was…"</td></tr>
+      <tr><td>R – Result</td><td>~15–20%</td><td>结果（数字/产出/关系变化）+ 反思（学到什么、下次怎么做）</td><td>"As a result, … Looking back, what I learned was…"</td></tr>
+    </table></div>
+    <p><b>CARL</b>（Context, Action, Result, Learning）本质相同，只是把 S 和 T 合并为 Context，并把"Learning"作为必需部分——对于失败/冲突类问题，Learning 往往是面试官最想听的。</p>
+    <p><b>让故事更好的四个技巧：</b></p>
+    <ol>
+      <li><b>有张力。</b>好故事有"难点"：时间紧、意见分歧、实验失败、信息不全。没有难点的故事说明不了任何能力。</li>
+      <li><b>展示判断（why）。</b>不只是"我做了 X"，而是"我考虑过 A 和 B，选了 B，因为……"。研究岗尤其看重判断力。</li>
+      <li><b>量化结果。</b>"把训练时间从 3 天缩到 1 天"、"错误率降低 X%"、"论文被接收"、"这套脚本后来被组里 5 个人使用"。</li>
+      <li><b>诚实的反思。</b>"如果重来我会更早……" 显示成熟度。</li>
+    </ol>
+    <div class="box why"><span class="lbl">直觉</span>面试官在听故事时脑子里有一张"能力评分表"（collaboration、ownership、dealing with ambiguity、communication、resilience……）。STAR 的作用是让他能轻松地把你说的每一句话"打勾"。Action 部分是证据，所以占比最大。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li><b>Situation 讲太长</b>：花一分钟介绍项目背景，Action 只剩 20 秒。</li>
+      <li><b>全程 "we"</b>：面试官无法判断你个人的贡献。</li>
+      <li><b>讲假设性回答</b>："I would usually…" ——问的是 "Tell me about a time"，必须给具体事件。</li>
+      <li><b>没有结果</b>：故事戛然而止。即使结果不好，也要说结果和学到的东西。</li>
+      <li><b>编造故事</b>：追问 2–3 层就会露馅，而且不诚实。可以选择和组织，不能编。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Sure — let me tell you about a time in my first year. The situation was that our team had a paper deadline in three weeks, and our main baseline wasn't reproducing. My task was to figure out why. What I did first was … Then … As a result, we found the bug in two days and made the deadline. What I took away from this is that I now always check data preprocessing first before touching the model."</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What would you do differently if you faced that situation again?</b><details><summary>思路</summary><div class="inner">这是几乎所有 STAR 故事都会被追问的问题。提前为每个故事准备一个具体的"下次会怎么做"，要具体（"I'd set up a weekly sync from the start"），而不是空泛（"communicate better"）。</div></details></li>
+    <li><b>What was your specific contribution versus your teammates'?</b><details><summary>思路</summary><div class="inner">准确划分：我负责 X 和 Y，同学 A 负责 Z。主动承认别人的贡献会增加可信度。</div></details></li>
+    <li><b>How did the other person react?</b><details><summary>思路</summary><div class="inner">冲突类故事常被追问。讲对方真实的反应和你如何调整，展示同理心。最后讲关系的结果（例如后来继续合作）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-story-bank">
+  <div class="concept-head"><span class="pri p1">★</span><h3>故事库（Story bank）：用 6–8 个故事覆盖 20+ 个问题</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>不要为每个问题准备一个故事；准备 6–8 个"多面"的故事，每个能从不同角度回答多个问题，用一张矩阵表管理。</p><p class="en">Prepare six to eight versatile stories and map each to multiple question types with a matrix; one good story can answer several questions from different angles.</p></div>
+  <div class="deep">
+    <p><b>Step 1：挖故事。</b>回顾这些来源，每个写一行：研究项目（成功的和失败的）、论文投稿/rebuttal 过程、合作项目、助教（TA）经历、实习、课程项目、开源贡献、组织活动、帮助别人的经历、学习新领域的经历。</p>
+    <p><b>Step 2：挑 6–8 个最有张力的故事</b>，覆盖下面这些"能力维度"。</p>
+    <p><b>Step 3：填矩阵。</b>（下表是 Alex 的虚构示例，✓ 表示这个故事可以回答这一类问题）</p>
+    <div class="table-wrap"><table>
+      <tr><th>故事</th><th>冲突/分歧</th><th>失败</th><th>主动性/领导</th><th>模糊/压力</th><th>快速学习</th><th>帮助他人</th><th>成就</th></tr>
+      <tr><td>A. 复现失败的 baseline，找到数据 bug</td><td></td><td></td><td>✓</td><td>✓</td><td></td><td></td><td>✓</td></tr>
+      <tr><td>B. 和合作者对实验设计意见不同</td><td>✓</td><td></td><td></td><td>✓</td><td></td><td></td><td></td></tr>
+      <tr><td>C. 第一篇论文被拒，rebuttal 后重投</td><td></td><td>✓</td><td></td><td>✓</td><td>✓</td><td></td><td></td></tr>
+      <tr><td>D. 两周内学会分布式训练框架</td><td></td><td></td><td></td><td>✓</td><td>✓</td><td></td><td>✓</td></tr>
+      <tr><td>E. 搭建组内共享评估脚本</td><td></td><td></td><td>✓</td><td></td><td></td><td>✓</td><td>✓</td></tr>
+      <tr><td>F. 一个想法做了 2 个月后放弃</td><td></td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
+      <tr><td>G. 做 TA 时帮助一个落后的学生</td><td></td><td></td><td></td><td></td><td></td><td>✓</td><td></td></tr>
+    </table></div>
+    <p><b>Step 4：每个故事写成要点卡（不要写成逐字稿）：</b></p>
+    <pre><code class="language-plaintext">Story: [short name]
+S: [1 sentence: project, team, stage]
+T: [1 sentence: my role + the challenge]
+A: [3-4 bullets: what I did, why]
+R: [number / outcome] + [what I learned / would do differently]
+Angles: conflict? failure? initiative? ambiguity? learning?
+Likely follow-ups: [2-3 questions + short answers]</code></pre>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>同一场面试连续用同一个故事回答多个问题。一场面试里尽量每个问题换一个故事，所以需要 6–8 个而不是 2–3 个。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"That's a good question. I think the best example is from a project last year — it's actually a story about a disagreement, but I think it also shows how I deal with uncertainty. Let me start with the context…"</p></div>
+</section>
+
+<section class="concept" id="c-q-collab">
+  <div class="concept-head"><span class="pri p1">★</span><h3>问题组 A：合作、冲突与沟通（Q1–Q6）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>这一组考察你能不能和别人一起工作：意见不同时尊重对方、用数据而不是情绪解决分歧、主动沟通、给予和接受反馈。</p><p class="en">These questions test whether you can disagree respectfully, resolve conflicts with evidence rather than ego, and communicate proactively.</p></div>
+  <div class="deep">
+    <p>每题格式：<b>考察</b> → <b>模板</b> → <b>虚构示例（英文）</b> → <b>误区</b>。</p>
+
+    <details><summary><b>Q1. Tell me about a time you disagreed with a collaborator or advisor.</b></summary><div class="inner">
+      <p><b>考察：</b>能否尊重地表达不同意见；是否用证据（实验、数据）而不是地位解决分歧；能否在决定之后全力执行（disagree and commit）。</p>
+      <p><b>模板：</b>分歧是什么（技术性的最好）→ 我理解对方的理由 → 我提议用一个小实验/数据来判断 → 结果 → 无论谁对，关系如何、学到什么。</p>
+      <p><b>示例：</b>"In a project on reward modeling, my collaborator wanted to scale up data collection right away, while I thought our labeling guidelines were too noisy. Instead of arguing in the abstract, I suggested we spend two days measuring inter-annotator agreement on a small batch. It turned out agreement was only around sixty percent, so we revised the guidelines first. Interestingly, my collaborator's point about scale also turned out to be right later, so we ended up doing both in sequence. What I learned is that a cheap experiment usually resolves a disagreement faster than a long discussion."</p>
+      <p><b>误区：</b>把对方描述成"错的、固执的"；讲一个你完全对、对方完全错的故事；讲人际矛盾而不是技术分歧（技术分歧更安全，也更相关）。</p>
+    </div></details>
+
+    <details><summary><b>Q2. Tell me about a time you worked with someone difficult.</b></summary><div class="inner">
+      <p><b>考察：</b>同理心、不抱怨、能否找到问题的根源（往往是期望不一致、沟通方式不同），能否在不理想的环境中推进工作。</p>
+      <p><b>模板：</b>描述"困难"时保持客观、只讲行为 → 我试图理解原因 → 我采取的具体调整（例如改变沟通频率/方式、明确分工）→ 结果。</p>
+      <p><b>示例：</b>"In a course project, one teammate rarely responded to messages, and it was starting to delay everyone. Instead of assuming he didn't care, I asked him for a quick one-on-one call. It turned out he was overwhelmed by a paper deadline and felt unclear about what exactly was expected of him. We broke his part into smaller, clearly defined tasks with dates, and set a short check-in twice a week. After that, he delivered his parts on time, and we finished the project a few days early."</p>
+      <p><b>误区：</b>抱怨、人身评价；故事以"后来我就自己全做了"结尾（显示不会协作）。</p>
+    </div></details>
+
+    <details><summary><b>Q3. Describe a time you had to explain a complex technical idea to a non-expert.</b></summary><div class="inner">
+      <p><b>考察：</b>沟通能力、能否抓住本质、能否根据听众调整。</p>
+      <p><b>模板：</b>听众是谁、为什么需要理解 → 我用的类比/简化 → 我如何检查对方理解了 → 结果（对方做出了决定 / 获得资源 / 学会了）。</p>
+      <p><b>示例：</b>"As a TA for an intro ML course, I had to explain overfitting to students without much math background. I used the analogy of a student who memorizes past exam answers versus one who understands the concepts — the first does perfectly on old exams but fails new ones. Then I showed a plot of training versus validation loss and asked them to point out where 'memorization' starts. On the next quiz, most students got the overfitting question right, and a few told me the analogy was what made it click."</p>
+      <p><b>误区：</b>讲成"我讲得很清楚"而没有证据；类比不准确。</p>
+    </div></details>
+
+    <details><summary><b>Q4. Tell me about a time you received critical feedback.</b></summary><div class="inner">
+      <p><b>考察：</b>成长型心态（growth mindset）、不防御、能否把反馈变成行动。</p>
+      <p><b>模板：</b>具体的反馈（谁、什么内容）→ 我的第一反应（可以诚实承认有点难受）→ 我如何理解并验证它 → 我做出的具体改变 → 改变带来的结果。</p>
+      <p><b>示例：</b>"After my first group meeting presentation, my advisor told me that my slides had too many results and no clear message. Honestly, my first reaction was a bit defensive, because I'd worked hard on those experiments. But when I rewatched the recording, I realized I never stated the main takeaway. Since then, I start every talk with a one-sentence claim and only show the experiments that support it. My next conference talk got much more focused questions, and my advisor specifically noted the improvement."</p>
+      <p><b>误区：</b>选一个"伪批评"（"有人说我太努力了"）；只说"我接受了"，没有具体行动。</p>
+    </div></details>
+
+    <details><summary><b>Q5. Tell me about a time you gave difficult feedback to someone.</b></summary><div class="inner">
+      <p><b>考察：</b>坦诚 + 善意；能否就事论事；能否帮助别人改进。</p>
+      <p><b>模板：</b>情况 → 我为什么决定要说（不说的代价）→ 我怎么说（私下、具体、针对行为、提出建议）→ 对方反应和结果。</p>
+      <p><b>示例：</b>"A junior student I was mentoring had written an evaluation script that I suspected leaked test data into training. I knew that if I didn't raise it, our results would be invalid. I asked to chat privately, started by acknowledging how much work the pipeline was, then walked through the specific lines where the overlap happened and showed him a quick check that confirmed it. He fixed it the same day, and afterwards we added an automatic deduplication check to the pipeline so it couldn't happen again."</p>
+      <p><b>误区：</b>当众批评；只讲"我指出了问题"，不讲如何帮助对方解决。</p>
+    </div></details>
+
+    <details><summary><b>Q6. Tell me about a time you helped a teammate or contributed to team success beyond your own task.</b></summary><div class="inner">
+      <p><b>考察：</b>团队意识、ownership 不限于自己的格子、乐于分享。</p>
+      <p><b>模板：</b>我注意到一个团队层面的问题 → 我主动做了什么（不是被要求的）→ 受益者和影响（量化）。</p>
+      <p><b>示例：</b>"In my lab, everyone was writing their own evaluation code for the same benchmarks, and our numbers were often inconsistent. Nobody owned this, so I spent a weekend writing a shared evaluation harness with tests, and documented how to add new benchmarks. Within a couple of months, most of the lab was using it, and it caught two bugs in earlier results before they went into papers."</p>
+      <p><b>误区：</b>听起来像"我比队友强"。语气上强调"让团队更好"。</p>
+    </div></details>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"When I disagree with someone, my default is to turn it into a small experiment. In one project, my collaborator and I disagreed about whether our labels were clean enough to scale up. Instead of debating, I proposed measuring annotator agreement on a small batch, which took two days and settled it. We both ended up being partly right, and we kept working together on the next project."</p></div>
+</section>
+
+<section class="concept" id="c-q-failure">
+  <div class="concept-head"><span class="pri p1">★</span><h3>问题组 B：失败、错误与压力（Q7–Q12）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>失败类问题考察诚实、责任感和从失败中学习的能力。选一个<b>真实的、有一定分量的</b>失败，承担你那部分的责任，重点讲你怎么应对和学到什么。</p><p class="en">Pick a real failure with real stakes, own your part of it, and spend most of the time on how you responded and what changed afterwards.</p></div>
+  <div class="deep">
+    <details><summary><b>Q7. Tell me about a time you failed.</b></summary><div class="inner">
+      <p><b>考察：</b>诚实、自我认知、resilience、学习能力。</p>
+      <p><b>模板：</b>失败是什么（具体、有后果）→ 我自己的责任是哪部分 → 我怎么处理后果 → 根本原因 → 具体的改变 + 后来的证据。</p>
+      <p><b>示例：</b>"In my first year, I submitted a paper that was rejected mainly because reviewers found our baselines weak — and they were right. I had tuned our method much more carefully than the baselines, partly because I was rushing for the deadline. I took that seriously: I re-ran all baselines with the same tuning budget, which actually shrank our improvement from about eight points to three. We reframed the paper around the analysis rather than the headline number, and it was accepted at the next venue. Since then, I fix the tuning budget for all methods before running anything."</p>
+      <p><b>误区：</b>选一个其实是成功的"伪失败"；推卸责任（审稿人不懂、队友不行）；没有具体的改变。</p>
+    </div></details>
+
+    <details><summary><b>Q8. Tell me about a mistake you made and how you handled it.</b></summary><div class="inner">
+      <p><b>考察：</b>透明度——发现错误后是否主动上报、是否快速修正、是否防止再次发生。</p>
+      <p><b>模板：</b>错误 → 我如何发现 → <b>我第一时间告诉了谁</b> → 修复 → 防止再犯的机制。</p>
+      <p><b>示例：</b>"While preparing a camera-ready version, I discovered that one of our ablation tables used a checkpoint from the wrong run. I immediately told my co-authors, re-ran the ablation that evening, and fortunately the conclusion held, though one number changed noticeably. We updated the paper and I added the run ID to every results file so tables can always be traced back to an exact checkpoint."</p>
+      <p><b>误区：</b>隐瞒/拖延上报的情节（这会是很大的减分项）；没有防止再犯的机制。</p>
+    </div></details>
+
+    <details><summary><b>Q9. Tell me about a time you had to work under a tight deadline / pressure.</b></summary><div class="inner">
+      <p><b>考察：</b>优先级判断、在压力下保持质量、沟通取舍。</p>
+      <p><b>模板：</b>截止日期和差距 → 我如何排序（什么必须做、什么可以砍）→ 我和谁沟通了取舍 → 结果 + 学到的计划方法。</p>
+      <p><b>示例：</b>"Two weeks before a deadline, a reviewer-style internal read showed we were missing a key comparison. Running everything would take three weeks of compute. I listed all experiments by how much they'd change the paper's main claim, proposed to my advisor that we drop two secondary ablations, and ran the critical comparison on a smaller model first to make sure it was worth the full run. We submitted on time with the key result, and added the secondary ablations in the rebuttal."</p>
+      <p><b>误区：</b>"我通宵了三天"——这展示的是努力，不是判断。</p>
+    </div></details>
+
+    <details><summary><b>Q10. Tell me about a time you dealt with ambiguity / an unclear goal.</b></summary><div class="inner">
+      <p><b>考察：</b>研究岗的核心能力之一——在问题定义不清时，如何把它变成可执行的步骤。</p>
+      <p><b>模板：</b>模糊在哪里 → 我如何收集信息/缩小范围 → 我定义的第一个可验证的小目标 → 迭代 → 结果。</p>
+      <p><b>示例：</b>"My advisor once suggested I 'look into whether models can plan.' That's extremely broad. I spent the first week reading and talking to two senior students, then narrowed it to a concrete question: can a model predict the number of steps a problem needs before solving it? I set a one-week goal of building a small dataset and a probe. The first result was weak, but it pointed to a better formulation, and that eventually became my second project."</p>
+      <p><b>误区：</b>等待别人给出明确方向；或者一头扎进去做了很久而不和任何人确认方向。</p>
+    </div></details>
+
+    <details><summary><b>Q11. Tell me about a time you had to change direction / pivot.</b></summary><div class="inner">
+      <p><b>考察：</b>能否用证据而不是沉没成本做决策。</p>
+      <p><b>模板：</b>原计划 → 出现的信号（实验、新论文、反馈）→ 我如何判断该继续还是转向（设了什么标准）→ 转向后的结果。</p>
+      <p><b>示例：</b>"Three months into a project, a concurrent paper came out that covered most of our planned contribution. Rather than racing them, I spent a few days analyzing where our setups differed. Our method behaved very differently on longer problems, which they hadn't studied, so we pivoted to focus on that regime. The resulting paper was narrower but had a clear, distinct contribution."</p>
+      <p><b>误区：</b>把转向讲成"被迫放弃"的抱怨；没有说明决策标准。</p>
+    </div></details>
+
+    <details><summary><b>Q12. How do you handle stress or setbacks (e.g., paper rejection)?</b></summary><div class="inner">
+      <p><b>考察：</b>心理韧性、可持续的工作方式。</p>
+      <p><b>模板：</b>承认它真实存在 → 一个具体事件 → 我的应对方法（分解问题、和人交流、保持节奏）→ 长期习惯。</p>
+      <p><b>示例：</b>"Rejections still sting, but I've developed a routine. I give myself a day, then I go through every review and sort comments into 'valid and fixable', 'valid but out of scope', and 'misunderstanding we should clarify in writing'. That turns a vague bad feeling into a concrete to-do list. I also keep at least two projects at different stages, so one setback doesn't stall everything."</p>
+      <p><b>误区：</b>说"我从来没有压力"——不可信。</p>
+    </div></details>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"One failure I learned a lot from was a paper rejection in my first year. The reviewers said our baselines were under-tuned, and honestly, they were right — I had rushed. I re-ran everything with an equal tuning budget, our gain shrank, and we reframed the paper around the analysis. It got accepted next time, and since then I always fix the tuning budget before running any method."</p></div>
+</section>
+
+<section class="concept" id="c-q-initiative">
+  <div class="concept-head"><span class="pri p1">★</span><h3>问题组 C：主动性、领导力、学习与成就（Q13–Q20）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>这一组考察 ownership（主动发现并解决问题）、影响力（没有职权时如何推动事情）、学习速度、以及你如何定义"做得好"。</p><p class="en">These questions probe ownership, influence without authority, learning speed, and what you consider good work.</p></div>
+  <div class="deep">
+    <details><summary><b>Q13. Tell me about a time you took initiative.</b></summary><div class="inner">
+      <p><b>考察：</b>不等别人分配，主动发现问题并推动解决。</p>
+      <p><b>模板：</b>我注意到的问题（别人没注意或没人负责）→ 为什么值得做 → 我做了什么 → 影响。</p>
+      <p><b>示例：</b>"I noticed that many of our lab's training jobs were failing silently overnight, and people would only discover it the next morning. I wrote a small monitoring script that checked loss curves and GPU utilization and sent a message when a job stalled. It took me an afternoon, and it saved several people a day of lost compute each week."</p>
+      <p><b>误区：</b>主动性变成"越权"（没跟任何人沟通就改了别人的东西）。</p>
+    </div></details>
+
+    <details><summary><b>Q14. Tell me about a time you led a project or influenced others without formal authority.</b></summary><div class="inner">
+      <p><b>考察：</b>研究中的领导力往往不是"管人"，而是设定方向、说服、协调。</p>
+      <p><b>模板：</b>目标 → 需要说服谁、为什么他们一开始不同意 → 我如何建立共识（数据、原型、倾听）→ 结果。</p>
+      <p><b>示例：</b>"In a three-student collaboration, I proposed switching our evaluation from a single benchmark to a suite of five, which meant extra work for everyone. To make the case, I ran a quick experiment showing our method's ranking flipped on two of the five benchmarks. Once everyone saw that, they agreed, and I took on writing the shared evaluation code so the extra cost for others was small. Reviewers later specifically praised the breadth of our evaluation."</p>
+      <p><b>误区：</b>把领导讲成"我分配任务给别人"。</p>
+    </div></details>
+
+    <details><summary><b>Q15. Tell me about a time you had to learn something new quickly.</b></summary><div class="inner">
+      <p><b>考察：</b>学习方法和速度——对实习尤其重要（12 周要上手新代码库、新工具）。</p>
+      <p><b>模板：</b>要学什么、时间多紧 → 我的学习策略（找最小可用路径、读源码、问人、做小实验）→ 用学到的东西产出了什么。</p>
+      <p><b>示例：</b>"For one project, I needed to move from single-GPU training to multi-node training within two weeks. Rather than reading all the documentation, I started from a minimal working example, scaled it step by step — one GPU, eight GPUs, then two nodes — and wrote down every error and its fix. I also asked a senior student for a thirty-minute walkthrough of his setup. By the end of the two weeks, I was running our full experiments on four nodes, and my notes became the lab's onboarding doc."</p>
+      <p><b>误区：</b>只说"我很会学"；没有具体方法。</p>
+    </div></details>
+
+    <details><summary><b>Q16. What's your proudest accomplishment?</b></summary><div class="inner">
+      <p><b>考察：</b>你的价值观（你觉得什么是"好"）和你的能力上限。</p>
+      <p><b>模板：</b>成就 → 为什么难 → 我的关键贡献 → 为什么对我有意义（这一点最能体现个性）。</p>
+      <p><b>示例：</b>"I'm proudest of a negative result, actually. I spent a month showing that a popular trick for improving reasoning benchmarks mostly came from a data contamination issue. It was less exciting than a new method, but it required being very careful, and a few groups changed their evaluation setup because of it. It taught me that rigor can be a contribution in itself."</p>
+      <p><b>误区：</b>只讲奖项或录用，不讲过程和意义。</p>
+    </div></details>
+
+    <details><summary><b>Q17. Tell me about a time you had to prioritize between competing tasks.</b></summary><div class="inner">
+      <p><b>考察：</b>时间管理、对影响的判断、沟通期望。</p>
+      <p><b>模板：</b>冲突的任务 → 我用的排序标准（影响、紧急、依赖、谁在等）→ 我和谁沟通了延期 → 结果。</p>
+      <p><b>示例：</b>"Last spring I had a paper deadline, a TA grading load, and a collaborator waiting on my code at the same time. I listed everything by deadline and by who was blocked on me. The collaborator was blocked, so I unblocked them first with a minimal version of the code, told them the polished version would come after the deadline, and scheduled grading for fixed evening slots. Everything got done, and nobody was surprised by a delay because I communicated early."</p>
+      <p><b>误区：</b>"我同时做所有事"——没有排序就是没有判断。</p>
+    </div></details>
+
+    <details><summary><b>Q18. Tell me about a time you went above and beyond / had a big impact.</b></summary><div class="inner">
+      <p><b>考察：</b>标准高、关心结果而不仅仅是完成任务。</p>
+      <p><b>模板：</b>"最低要求"是什么 → 我额外做了什么、为什么 → 额外部分带来的影响。</p>
+      <p><b>示例：</b>"For a course project, the requirement was to reproduce one paper's main table. I reproduced it, but I also noticed the result was sensitive to the random seed, so I ran five seeds and reported confidence intervals. That analysis showed one of the paper's claimed improvements wasn't statistically significant. The instructor shared our report with the class as an example of careful evaluation."</p>
+      <p><b>误区：</b>额外工作与目标无关（只是做得多，不是做得好）。</p>
+    </div></details>
+
+    <details><summary><b>Q19. Tell me about a time you made a decision with incomplete information.</b></summary><div class="inner">
+      <p><b>考察：</b>决策质量——是否识别出关键不确定性、是否设计了可逆的决策、是否设定检查点。</p>
+      <p><b>模板：</b>决策 + 缺少的信息 → 我如何评估风险（可逆吗？代价多大？）→ 我的决定与"止损点" → 结果。</p>
+      <p><b>示例：</b>"We had to decide which base model to build on before knowing whether a newer one would be released. I reasoned that our method was model-agnostic, so the decision was reversible as long as we kept the code modular. We started with the available model and set a checkpoint: if a better model came out within a month, we'd re-run our main experiment on it. One did, we re-ran in a few days, and the results held."</p>
+      <p><b>误区：</b>讲成运气好；没有提风险管理。</p>
+    </div></details>
+
+    <details><summary><b>Q20. Tell me about a time you had to say no or push back.</b></summary><div class="inner">
+      <p><b>考察：</b>能否保护重要的事、能否礼貌拒绝、能否提出替代方案。</p>
+      <p><b>模板：</b>请求 → 为什么不能/不该接 → 我如何说不（理由 + 替代方案）→ 结果。</p>
+      <p><b>示例：</b>"A collaborator asked me to add a large new set of experiments one week before our deadline. I explained that it would put the core results at risk, and suggested instead a smaller version on two datasets that I could finish in three days, with the full version as future work. He agreed, and the smaller experiment was actually enough to address the concern."</p>
+      <p><b>误区：</b>直接拒绝而没有替代方案；或者讲成永远说 yes（显示边界感不足）。</p>
+    </div></details>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"When I need to learn something quickly, I look for the smallest working example and scale it up one step at a time. For instance, I had two weeks to move our training to multiple nodes. I started with one GPU, then eight, then two nodes, documenting every error. I also asked a senior student for a short walkthrough. By the end, I was running full experiments, and my notes became the lab's onboarding guide."</p></div>
+</section>
+
+<section class="concept" id="c-q-personal">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>问题组 D：自我认知与动机（Q21–Q26）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>这类问题不需要完整 STAR，但仍要具体：给一个真实的点 + 一个例子 + 你在怎么做。</p><p class="en">These don't need a full STAR, but they still need specifics: a genuine point, one example, and what you're doing about it.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>问题</th><th>考察</th><th>回答策略</th><th>虚构示例要点（英文）</th></tr>
+      <tr><td>Q21. What's your greatest strength?</td><td>自我认知，是否与岗位相关</td><td>选一个和 RS 相关的强项 + 一个证据故事</td><td>"I'm good at finding the cause when experiments don't work — for example, tracing a reproduction gap to a tokenization difference."</td></tr>
+      <tr><td>Q22. What's your biggest weakness?</td><td>诚实、自我改进</td><td>真实但不致命的弱点 + 你在采取的具体措施 + 进展</td><td>"I used to hold onto ideas too long before sharing them. Now I share a rough one-page draft within the first week, which has saved me from at least one dead end."</td></tr>
+      <tr><td>Q23. Where do you see yourself in 5 years?</td><td>长期动机、是否与公司方向相符</td><td>讲想解决的问题和想成为的研究者类型，而不是职位</td><td>"I want to be someone who has made reasoning models meaningfully more efficient, whether in industry or academia, and I want to get good at doing research at scale."</td></tr>
+      <tr><td>Q24. How do you stay up to date with research?</td><td>学习习惯、信息筛选能力</td><td>具体的流程：来源、频率、如何筛选、如何深读</td><td>"I skim new arXiv listings a few times a week, keep a short list of must-read papers, and do one deep read per week where I try to reproduce a key figure or write a summary."</td></tr>
+      <tr><td>Q25. Tell me about a paper you read recently that you liked.</td><td>品味、深度、热情</td><td>问题 → 核心 idea → 为什么你喜欢 → 一个疑问/局限</td><td>见 <a href="m16-research.html">m16</a> 的论文讲述模板。</td></tr>
+      <tr><td>Q26. What do you do outside of research?</td><td>是否是一个可持续、有趣的人</td><td>简短真实，一两句即可，可以带一点个性</td><td>"I run a few times a week — it's actually where I do a lot of my thinking — and I like cooking for friends."</td></tr>
+    </table></div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>弱点说"我太追求完美 / 太努力"：俗套且不诚实，面试官普遍反感。</li>
+      <li>弱点选择岗位核心能力（例如 RS 岗说"我不擅长写代码"），并且没有改进措施。</li>
+      <li>5 年规划说"想去另一家公司"或过于具体的职位名。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"One weakness I've been working on is that I used to wait too long before sharing early ideas, because I wanted them to be polished. That cost me time on at least one project that turned out to be a dead end. Now I write a rough one-page proposal within the first week and get feedback from two people. It feels uncomfortable sometimes, but it's made my projects much more focused."</p></div>
+</section>
+
+<!-- ============================== §5 ============================== -->
+<h2 class="sec" id="s-rs"><span class="num">§5 · RS-SPECIFIC QUESTIONS</span>Research Scientist 特有问题</h2>
+<p class="sec-intro">这些问题在 SWE 面试里不常见，但在 RS 面试里非常高频。它们考察的是"研究者素质"：品味、诚实、对局限的认识、和工程的关系、能否在有限时间内产出。</p>
+
+<section class="concept" id="c-rs-vs-eng">
+  <div class="concept-head"><span class="pri p1">★</span><h3>"Research scientist 和 research engineer 有什么区别？你为什么选 RS？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RS 更侧重于提出问题、设计实验、产出新知识；RE 更侧重于让研究可规模化、可靠、高效。现实中边界模糊，好的 RS 需要很强的工程能力——回答时要表明你尊重并具备工程能力，而不是"我只想做 idea"。</p><p class="en">Scientists lean toward asking questions and designing experiments, engineers toward making research scale reliably; in practice the line is blurry, and good scientists are strong engineers.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>维度</th><th>Research Scientist（偏向）</th><th>Research Engineer（偏向）</th></tr>
+      <tr><td>核心产出</td><td>新问题、新方法、新发现、论文/内部报告</td><td>训练/评估基础设施、可扩展实现、性能优化</td></tr>
+      <tr><td>关键能力</td><td>问题选择、实验设计、分析、写作</td><td>系统设计、性能、可靠性、代码质量</td></tr>
+      <tr><td>成功标准</td><td>"我们学到了什么新东西？"</td><td>"它能不能在规模上稳定运行？"</td></tr>
+      <tr><td>重叠</td><td colspan="2">在前沿实验室里大量重叠：RS 也写大量代码、调试大规模训练；RE 也提出研究想法。很多团队对两者的区分并不严格。</td></tr>
+    </table></div>
+    <p><b>回答策略：</b>(1) 简要说明你理解的区别；(2) 说明你为什么偏向 RS（例如你最兴奋的是提出和验证假设）；(3) <b>强调你重视工程</b>，举一个工程能力的例子；(4) 表示对团队实际分工的开放态度。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>贬低工程（"我不想只写代码"）。在很多前沿实验室，"能把想法快速、正确地实现并规模化"恰恰是最受重视的研究能力之一。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"The way I see it, a research scientist is mainly responsible for asking the right questions and designing experiments that answer them, while a research engineer focuses on making that research work reliably at scale. In practice, the line is pretty blurry — I write most of my own training and evaluation code, and some of my best ideas came from debugging. I lean toward the scientist side because what excites me most is forming and testing hypotheses, but I really value strong engineering, and I'm happy to do whatever the project needs."</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Tell me about the most complex piece of code you've written.</b><details><summary>思路</summary><div class="inner">准备一个工程故事：系统做什么、规模（代码行数、GPU 数、数据量）、难点（并发、显存、数值稳定、正确性测试）、你如何验证正确、你的设计决策。重点是"如何确保正确"——测试、对照小规模实现、单元测试。</div></details></li>
+    <li><b>How do you make sure your experimental code is correct?</b><details><summary>思路</summary><div class="inner">列具体手段：小规模能过拟合（overfit one batch）、和已知结果对齐（复现 baseline）、单元测试关键函数（例如 loss、mask）、固定 seed 复现、检查数据（打印样本、检查 tokenization）、对每个结果记录 config 和 commit hash。见 <a href="m13-eval.html">m13</a>。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-choose-problems">
+  <div class="concept-head"><span class="pri p1">★</span><h3>"你如何选择研究问题？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>给一个明确的框架：重要性（解决了会改变什么）× 可行性（我有没有独特的切入点/资源）× 时机（为什么现在可以做）+ 快速验证（便宜的早期实验）+ 止损标准。</p><p class="en">I weigh importance, tractability, and timing, then look for a cheap early experiment that tells me quickly whether the direction is worth pursuing.</p></div>
+  <div class="deep">
+    <p>这是考察<b>研究品味（research taste）</b>的经典问题。好的回答包含一个框架 + 一个真实例子。可以参考的维度：</p>
+    <ul>
+      <li><b>Importance：</b>如果成功，会改变什么？谁会用？是否解决了一个"瓶颈"？</li>
+      <li><b>Tractability：</b>有没有一个可以在几周内产出信号的第一步？我是否有独特的视角、数据、工具或技能？</li>
+      <li><b>Timing / neglectedness：</b>为什么现在可以做（新能力、新数据、新工具）？是不是很多人在做同样的事（如果是，我的差异化在哪）？</li>
+      <li><b>Personal fit：</b>我是否真的对它好奇（研究周期长，好奇心是燃料）。</li>
+      <li><b>Fast feedback：</b>先设计最便宜的、能否定假设的实验。</li>
+      <li><b>Kill criteria：</b>事先定好"什么结果出现我就放弃或转向"。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>面试官真正想知道的是：如果给你 12 周和一些算力，你会把它花在有价值的地方，还是花在一个做不完或做了也没人在乎的问题上。所以"快速验证"和"止损标准"在实习语境下尤其重要。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"I usually think about three things: how much it would matter if it worked, whether I have a tractable first step or some unique angle, and why now is the right time. Then I try to design the cheapest experiment that could prove me wrong. For example, before committing to my current project, I spent a week checking whether reasoning traces actually contain redundant verification — if they didn't, the whole idea would've been dead. They did, so I went ahead. I also try to set kill criteria upfront, so I don't fall into the sunk-cost trap."</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What's an important open problem in your field that you think people are not working on enough?</b><details><summary>思路</summary><div class="inner">提前准备 2–3 个。好的答案：具体（不是"AGI"）、有理由（为什么重要、为什么被忽视）、有第一步想法。见 <a href="m16-research.html">m16</a> 开放问题部分。</div></details></li>
+    <li><b>How do you decide when to stop working on an idea?</b><details><summary>思路</summary><div class="inner">讲事先定好的标准 + 中间检查点 + 一个你真的放弃过的例子。区分"想法错了"和"实现有 bug"——放弃前先确认后者已排除（例如在简化设置下 sanity check）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-failed-project">
+  <div class="concept-head"><span class="pri p1">★</span><h3>"讲一个失败的研究项目"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>研究中的失败是常态。重点不是失败本身，而是：你怎么发现它不行、你从负结果中提取了什么信息、你怎么决定止损、这如何改变了你后来的做法。</p><p class="en">Failure is normal in research; what matters is how you detected it, what you extracted from the negative result, how you decided to stop, and what you do differently now.</p></div>
+  <div class="deep">
+    <p><b>模板（研究版 CARL）：</b></p>
+    <ol>
+      <li><b>假设：</b>当时我相信什么，为什么相信（显示你的推理是合理的）。</li>
+      <li><b>证据：</b>哪些实验结果说明它不行；你如何排除"是 bug 而非想法错"。</li>
+      <li><b>决策：</b>何时、为什么止损或转向；花了多少时间。</li>
+      <li><b>收获：</b>负结果告诉了我们什么（可能是领域里有价值的知识）；它后来如何启发了别的工作。</li>
+      <li><b>改变：</b>现在我会更早做什么检查。</li>
+    </ol>
+    <p><b>Alex 的虚构示例：</b>"I spent about two months on the idea that we could reduce reasoning length by distilling from shorter traces. The hypothesis seemed reasonable — shorter traces exist for most problems. But accuracy dropped consistently, especially on harder problems. Before giving up, I checked whether it was an implementation issue by reproducing a known distillation result with the same code, and that worked fine. So the idea itself was the problem: the short traces were mostly from easy problems, and the model learned to skip reasoning on hard ones too. That negative result actually led directly to my next project, where the length penalty only applies after the answer stabilizes. Now I always check the difficulty distribution of my training data before running anything."</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>选一个"其实成功了"的故事。</li>
+      <li>没讲如何排除 bug（面试官会怀疑你放弃了一个好想法）。</li>
+      <li>听起来很沮丧或在责怪环境（算力不够、导师不支持）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"A project that didn't work out was trying to shorten reasoning by distilling from short traces. Accuracy kept dropping on hard problems. Before abandoning it, I made sure it wasn't a bug by reproducing a known result with the same pipeline. It turned out the short traces mostly came from easy problems, so the model learned to skip reasoning everywhere. That insight directly motivated my next project, so I'd say the two months weren't wasted."</p></div>
+</section>
+
+<section class="concept" id="c-scale">
+  <div class="concept-head"><span class="pri p1">★</span><h3>"你在大代码库 / 大算力上的经验？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>诚实说明你的规模（GPU 数、模型大小、代码库规模），强调可迁移的能力（读陌生代码、调试分布式、严谨实验管理），并表明你理解规模带来的新问题。</p><p class="en">Be honest about your scale, highlight transferable skills like reading unfamiliar code and debugging distributed jobs, and show you understand what changes at scale.</p></div>
+  <div class="deep">
+    <p>学术界 PhD 通常没有前沿规模的经验，面试官也知道这一点。他们想知道的是：(1) 你是否能<b>快速上手一个巨大的、陌生的代码库</b>；(2) 你是否理解<b>规模带来的问题</b>（稳定性、通信开销、显存、实验成本、评估噪声）；(3) 你在有限算力下是否有<b>严谨的实验习惯</b>。</p>
+    <p><b>可以准备的具体点：</b></p>
+    <ul>
+      <li>你用过的最大规模：多少 GPU、什么型号、多大模型、训练多久、用什么框架（例如 PyTorch FSDP、DeepSpeed、Megatron 类框架、vLLM 等——只说你真的用过的）。</li>
+      <li>你读过/改过的大型开源代码库，以及你怎么上手的（从入口文件读、跑最小例子、加 print/断点、画调用图）。</li>
+      <li>一个分布式/显存问题的调试故事（OOM、NCCL hang、loss spike）。</li>
+      <li>你在小算力下的"省钱"实验方法：小模型先验证、scaling 曲线外推、减少 seed 浪费……</li>
+      <li>对规模问题的理解：见 <a href="m09-distributed.html">m09</a>、<a href="m05-pretraining.html">m05</a>。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>夸大规模（说用过 1000 卡其实只是跑了别人的脚本）——追问一下就露馅。诚实 + 展示学习能力远比夸大好。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Honestly, my largest runs have been on the order of tens of GPUs, training models up to a few billion parameters, so I haven't worked at frontier scale. But I've spent a lot of time in large open-source training codebases — I usually start from the entry point, get a minimal config running, and then trace one training step end to end. I've also debugged the usual distributed issues, like hangs and out-of-memory errors. And I try to be careful about experiments at small scale — for example, checking that a trend holds across a few model sizes before claiming anything. Learning how this all changes at real scale is one of the main reasons I'm excited about this internship."</p></div>
+</section>
+
+<section class="concept" id="c-ai-tools">
+  <div class="concept-head"><span class="pri p1">★</span><h3>"你用 AI 编程工具吗？怎么用？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>诚实说用，并说明你如何用它提高效率同时保证正确性（自己理解每一行、写测试、对关键逻辑手动验证）；同时<b>严格遵守每家公司面试中关于 AI 工具的规定</b>。</p><p class="en">Say yes honestly, explain how you use it while staying responsible for correctness, and strictly follow each company's rules about AI use during interviews.</p></div>
+  <div class="deep">
+    <p>2025–2026 年这个问题越来越常见。几乎所有研究者都在用 AI 辅助编程，所以"不用"不可信，"全靠它"又令人担心。面试官想知道：</p>
+    <ol>
+      <li>你是否<b>理解</b>自己提交的代码（能解释、能调试、能发现 AI 的错误）。</li>
+      <li>你是否有<b>验证习惯</b>（测试、对照、阅读）。</li>
+      <li>你是否能在<b>没有 AI 的情况下</b>完成基本编程——这也是为什么很多面试轮次会禁止 AI 工具。</li>
+    </ol>
+    <p><b>诚实的框架：</b>用于什么（样板代码、不熟悉的 API、写测试、重构、解释陌生代码）/ 不用于什么或会格外小心的地方（核心算法逻辑、loss 和 mask 等容易出隐蔽错误的地方、评估代码）/ 怎么验证（读每一行、单元测试、小规模 sanity check）。</p>
+    <p><b>关于面试规则：</b>不同公司对面试中使用 AI 有不同规定（例如 Anthropic 公开了<a href="https://www.anthropic.com/candidate-ai-guidance" target="_blank" rel="noreferrer">候选人 AI 使用指南</a>，区分了不同场景：准备面试、润色自己写的申请材料可以用 AI；take-home 和实时面试默认不能用，除非公司明确说可以）。其他公司的规定可能完全不同。<b>永远提前确认，不确定就问，严格遵守。</b>违反规则使用 AI 不仅会导致失去机会，也是诚信问题。</p>
+    <div class="box why"><span class="lbl">直觉</span>如果你自己感觉"用 AI 补全太久，手写能力退化了"，这正是需要在面试前专门练习的地方：练习时关掉补全，用 <a href="m14-ml-coding.html">m14</a> 和 <a href="m15-algorithms.html">m15</a> 的题目在纯编辑器里手写。面试中你只能依赖自己。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>说"我从不用 AI"——几乎不可信，且可能显得不了解现代工具。</li>
+      <li>说"AI 写了大部分代码"却无法解释细节。</li>
+      <li>在禁止 AI 的面试轮次偷偷使用——严重的诚信问题。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Yes, I use AI coding assistants every day, mostly for boilerplate, unfamiliar APIs, writing tests, and getting oriented in a new codebase. For the parts where subtle bugs matter most — loss functions, masking, evaluation code — I either write them myself or review every line very carefully, and I always back them up with small sanity checks, like making sure the model can overfit a single batch. I think of the tool as a fast junior collaborator: it speeds me up a lot, but I'm the one responsible for correctness. And of course, I follow whatever rules you have for this interview."</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Can you give an example of a bug an AI tool introduced that you caught?</b><details><summary>思路</summary><div class="inner">准备一个真实的小例子，例如：attention mask 的维度广播错误、log_softmax 用错 dim、padding token 没有被 loss mask 掉、评估时没调用 eval()。讲你是怎么发现的（测试失败、数值异常、读代码）。</div></details></li>
+    <li><b>How do you think AI tools will change research?</b><details><summary>思路</summary><div class="inner">给一个平衡的观点：加速实现和实验迭代，降低尝试新想法的成本；但对验证、实验设计、判断"什么问题重要"的要求反而更高。可以加一句你自己是如何调整工作方式的。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-internship-goals">
+  <div class="concept-head"><span class="pri p1">★</span><h3>"你对这次实习有什么期望 / 想做出什么？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>给出具体、现实的目标：一个对团队有用的成果（论文、内部报告、代码、发现）+ 你想学的东西 + 对 12 周节奏的理解（前 2–3 周上手、中间主实验、最后写作/交接）。</p><p class="en">Give a concrete, realistic goal: a useful outcome for the team, what you want to learn, and an understanding of the 12-week rhythm.</p></div>
+  <div class="deep">
+    <p>Host 最担心的是：实习生 12 周什么都没做出来。所以你的回答要显示你<b>理解时间约束</b>、<b>重视交付</b>、<b>灵活</b>。</p>
+    <div class="table-wrap"><table>
+      <tr><th>时间</th><th>典型节奏（示意）</th></tr>
+      <tr><td>第 1–2 周</td><td>熟悉代码库与基础设施；复现一个 baseline；和 host 确定具体问题</td></tr>
+      <tr><td>第 3–8 周</td><td>主实验：快速迭代，每周和 host 对齐；中期汇报</td></tr>
+      <tr><td>第 9–11 周</td><td>扩展/消融；写报告或论文初稿</td></tr>
+      <tr><td>第 12 周</td><td>最终汇报；代码和文档交接，让工作能被团队继续使用</td></tr>
+    </table></div>
+    <p><b>回答要素：</b>(1) 结果目标（例如"一个可发表的结果或对团队有用的内部发现"）；(2) 学习目标（大规模训练、某种技术）；(3) 合作目标（和团队建立长期联系）；(4) 灵活性（愿意根据团队需要调整）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>只讲"学习"——显得是来上课的。</li>
+      <li>坚持一个只对你自己 PhD 有用、和团队无关的项目。</li>
+      <li>目标过于宏大（"12 周训练一个新的 SOTA 模型"）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"By the end of the internship, I'd like to have a concrete result that's genuinely useful to the team — ideally something publishable, but a solid internal finding with clean code that others can build on would also be a success. In terms of learning, I really want to understand how post-training works at scale, which I can't really see in academia. I know twelve weeks goes fast, so I'd want to scope the project with you early, get a baseline running in the first two weeks, and check in frequently so we can adjust quickly."</p></div>
+</section>
+
+<section class="concept" id="c-limitations">
+  <div class="concept-head"><span class="pri p1">★</span><h3>"你的论文最大的局限是什么？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>主动、具体地讲出最重要的 1–2 个局限（规模、评估范围、假设、因果性），说明它为什么存在、你做过什么来缓解、下一步怎么解决。能看清自己工作局限的人更可信。</p><p class="en">Name the one or two most important limitations specifically, explain why they exist, what you did to mitigate them, and how you'd address them next.</p></div>
+  <div class="deep">
+    <p>这是检验<b>科学诚实性和深度</b>的问题。准备方式：对你的每篇论文，像一个苛刻的审稿人一样列出局限，挑出最重要的 2–3 个。常见局限类别：</p>
+    <div class="table-wrap"><table>
+      <tr><th>类别</th><th>例子</th><th>如何表述</th></tr>
+      <tr><td>规模</td><td>只在 ≤7B 模型验证</td><td>"We only tested up to X; the effect might shrink or change at larger scale because…"</td></tr>
+      <tr><td>评估范围</td><td>只在数学 benchmark 上测试</td><td>"Our evaluation is limited to math; it's unclear whether it transfers to code or open-ended tasks."</td></tr>
+      <tr><td>Benchmark 有效性</td><td>可能存在污染、指标噪声大</td><td>"Some of these benchmarks may be contaminated; we ran a contamination check but it isn't conclusive."</td></tr>
+      <tr><td>统计</td><td>seed 少、置信区间宽</td><td>"We used three seeds; some differences are within noise."</td></tr>
+      <tr><td>机制/因果</td><td>知道它有效，但不确定为什么</td><td>"We have a hypothesis for why it works, but our evidence is correlational."</td></tr>
+      <tr><td>假设/适用性</td><td>依赖可验证的奖励</td><td>"The method assumes a verifiable reward, which doesn't exist for many tasks."</td></tr>
+    </table></div>
+    <p><b>回答结构：</b>局限 → 为什么存在（资源、范围选择）→ 已做的缓解 → 如何进一步解决 / 期待看到什么结果。不要停留在"我们没时间做"。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>说"我觉得没有什么大的局限"——这是最差的回答。</li>
+      <li>只说无关痛痒的局限（"我们可以多测一个数据集"）。</li>
+      <li>过度自我否定，让人觉得工作没价值。讲完局限后可以简短地重申贡献。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"I'd say the biggest limitation is scale. All our experiments are on models up to seven billion parameters, and it's possible that larger models are already more efficient, which would shrink the gains. A second limitation is that we only evaluate on math, where answers are easy to verify. We did a small experiment on code that looked promising, but it's not conclusive. If I had more compute, the first thing I'd do is test whether the effect holds across a wider range of model sizes. That said, I think the core observation — where the extra tokens come from — should be fairly robust."</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If a reviewer said your gains are just from more tuning, how would you respond?</b><details><summary>思路</summary><div class="inner">讲你如何保证公平比较：相同的调参预算、相同的计算预算、多个 seed、报告方差；如果确实没做到，就承认并说明如何补做。</div></details></li>
+    <li><b>What experiment would most convince you that your method is wrong?</b><details><summary>思路</summary><div class="inner">这是很好的研究问题——展示你能"证伪"自己的工作。例如："If the gains disappeared under an equal-compute comparison, or if a much simpler baseline like truncation matched it, I'd reconsider."</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-rs-misc">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>其他 RS 高频问题速答</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>以下问题都可以用"一个明确观点 + 一个例子 + 一句反思"回答，控制在 60–90 秒。</p><p class="en">Answer each with one clear position, one example, and one line of reflection, in about a minute.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>问题</th><th>回答要点</th></tr>
+      <tr><td>How do you balance exploration vs. exploitation in research?</td><td>投资组合：一个主项目（稳定产出）+ 一个探索性的副项目；探索用小实验、时间盒（time-box）。</td></tr>
+      <tr><td>How do you work with your advisor?</td><td>每周固定会议、提前发议程和结果、自己推动项目、遇到问题带着方案去讨论。体现独立性。</td></tr>
+      <tr><td>Describe your ideal mentor / how do you like to be managed?</td><td>"定期对齐方向 + 日常自主"；喜欢直接的反馈；会主动沟通进度。表现出适应性。</td></tr>
+      <tr><td>How do you evaluate whether a result is real?</td><td>多 seed、置信区间、强 baseline 同等调参、消融、换数据集、检查污染、看样本而不只是数字。指向 <a href="m13-eval.html">m13</a>。</td></tr>
+      <tr><td>What's a research opinion you hold that many people disagree with?</td><td>准备一个有理有据、不极端的观点，并说明什么证据会让你改变看法。展示独立思考和开放性。</td></tr>
+      <tr><td>How do you think about the safety / societal impact of your work?</td><td>认真对待：具体到你的方向可能的风险与益处；你在研究中做过的相关考虑（评估、披露、限制）。特别是在重视安全的公司，要有真实思考。</td></tr>
+      <tr><td>Why a PhD? / Do you plan to finish?</td><td>说明 PhD 对你的意义（深度、独立研究训练）；实习是互补的。如果被问到"实习后是否考虑全职"，诚实表达开放态度。</td></tr>
+      <tr><td>What would you do if your results contradicted your host's hypothesis?</td><td>先彻底确认结果（排除 bug、多 seed），然后尽早、清楚地分享，带上证据和可能的解释；把它当作信息而不是冲突。</td></tr>
+    </table></div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"If my results contradicted my host's hypothesis, the first thing I'd do is make sure the result is real — check for bugs, run more seeds, maybe try a simpler setup. If it holds up, I'd share it early rather than waiting, with the evidence and a couple of possible explanations. In my experience, surprising results are often the most interesting part of a project, so I'd treat it as information rather than a disagreement."</p></div>
+</section>
+
+<!-- ============================== §6 ============================== -->
+<h2 class="sec" id="s-live"><span class="num">§6 · LIVE COMMUNICATION</span>现场表达：英文句式库</h2>
+<p class="sec-intro">技术面试中，面试官评估的不只是最终答案，还有<b>你的思考过程和协作方式</b>。下面是按场景整理的句式库。建议：每个场景挑 2–3 句你最顺口的，大声练到能脱口而出——卡壳的时候你不会有时间"翻译"。</p>
+
+<section class="concept" id="c-think-aloud">
+  <div class="concept-head"><span class="pri p1">★</span><h3>边想边说（thinking aloud）与结构化表达（signposting）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>沉默对面试官来说是"黑箱"。把你的思路说出来：先复述问题、说出计划、边做边讲每一步的理由、最后总结和验证。</p><p class="en">Silence is a black box to the interviewer; narrate your plan, your reasoning at each step, and a final check.</p></div>
+  <div class="deep">
+    <p><b>标准节奏（coding 或推导题都适用）：</b>复述问题 → 澄清 → 给出朴素方案 → 优化 → 写/推 → 测试/验证 → 总结复杂度或结论。</p>
+    <div class="table-wrap"><table>
+      <tr><th>阶段</th><th>英文句式</th></tr>
+      <tr><td>开场复述</td><td>"Let me make sure I understand the problem. We're given …, and we need to return … Is that right?"<br>"So, in other words, the goal is to …"</td></tr>
+      <tr><td>说出计划</td><td>"My plan is to first write a brute-force solution, and then optimize."<br>"I'll start with the simplest approach and then see where it breaks."<br>"Let me think about this in three steps: …"</td></tr>
+      <tr><td>边做边讲</td><td>"I'm using a hash map here so that lookups are constant time."<br>"The reason I'm sorting first is that it lets me use two pointers."<br>"At this point, the invariant is that everything to the left of i is …"</td></tr>
+      <tr><td>Signposting（结构信号）</td><td>"There are two main ideas here. The first is … The second is …"<br>"Let me step back for a second."<br>"Going back to your earlier question, …"<br>"To summarize, …"</td></tr>
+      <tr><td>权衡</td><td>"One option is A, which is simpler but uses more memory. The other is B … Given the constraints, I'd go with A."<br>"The trade-off here is between … and …"</td></tr>
+      <tr><td>验证</td><td>"Let me walk through a small example to check this."<br>"Let me test an edge case — what if the input is empty?"<br>"The time complexity is O(n log n) because of the sort, and space is O(n)."</td></tr>
+      <tr><td>收尾</td><td>"I think this works. If I had more time, I'd also handle … / add tests for …"</td></tr>
+    </table></div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>长时间沉默写代码，写完才解释。</li>
+      <li>过度讲解，每一行都念出来——讲"为什么"，而不是念代码。</li>
+      <li>一上来就写代码，没有确认理解和计划。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Okay, let me make sure I understand. We're given a list of intervals, and we need to merge any that overlap. Can I assume the input isn't sorted? … Great. My plan is to sort by start time first, which takes n log n, and then do a single pass, merging as I go. Let me write that, and then I'll walk through a small example to check it."</p></div>
+</section>
+
+<section class="concept" id="c-clarify">
+  <div class="concept-head"><span class="pri p1">★</span><h3>澄清问题与争取时间</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>澄清是加分项，不是减分项。需要时间思考时，明确说出来，并给出你在想什么方向——这比慌乱地说话或沉默好得多。</p><p class="en">Clarifying questions are a plus, not a minus; when you need time, say so explicitly and hint at what you're thinking about.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>场景</th><th>英文句式</th></tr>
+      <tr><td>澄清输入/约束</td><td>"Can I assume the input fits in memory?"<br>"What's the expected size of n — roughly thousands or billions?"<br>"Are there duplicates? Can values be negative?"<br>"Should I optimize for time or memory here?"<br>"What should happen if the input is invalid?"</td></tr>
+      <tr><td>澄清开放性问题（ML/研究）</td><td>"When you say 'better', do you mean accuracy, latency, or cost?"<br>"Are we assuming we have labeled data, or only a reward signal?"<br>"What's the scale we're talking about — a research prototype or production?"<br>"Is the goal to understand the phenomenon or to fix it?"</td></tr>
+      <tr><td>没听清/没听懂</td><td>"Sorry, could you repeat the last part?"<br>"I want to make sure I got that right — did you say …?"<br>"Could you give me an example of what you mean?"<br>"Just to clarify, are you asking about … or about …?"</td></tr>
+      <tr><td>争取时间</td><td>"That's a great question. Let me think about it for a moment."<br>"Give me a few seconds to organize my thoughts."<br>"Can I take a minute to sketch this out?"<br>"Let me think out loud, if that's okay."</td></tr>
+      <tr><td>在思考中给信号</td><td>"I'm trying to decide between two approaches …"<br>"My first instinct is …, but let me check whether that holds."<br>"I'm thinking about whether there's a way to avoid the nested loop."</td></tr>
+    </table></div>
+    <div class="box why"><span class="lbl">直觉</span>面试题经常故意留有模糊性，<b>看你会不会问</b>。研究工作中最重要的能力之一就是把模糊问题变清晰，所以澄清本身就在展示研究能力。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Before I jump in, can I ask a couple of clarifying questions? First, roughly how large is the input? And second, should I optimize for time or memory? … Okay, thanks. Give me a few seconds to think about the approach. My first instinct is a heap, but let me check whether sorting would be simpler here."</p></div>
+</section>
+
+<section class="concept" id="c-uncertainty">
+  <div class="concept-head"><span class="pri p1">★</span><h3>承认不确定与"我不知道"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>不知道时：诚实说明边界 → 说出你知道的相关部分 → 给出合理推理/猜测并标明是猜测 → 说明你会如何查证。绝不编造。</p><p class="en">When you don't know: be honest about the boundary, share what you do know, reason toward an educated guess clearly labeled as such, and say how you'd verify it.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>场景</th><th>英文句式</th></tr>
+      <tr><td>完全不知道</td><td>"I'm not familiar with that specific method. Could you give me a one-line description? Then I can try to reason about it."<br>"I haven't read that paper, but based on the title, I'd guess it's about … Is that right?"</td></tr>
+      <tr><td>部分知道</td><td>"I don't remember the exact details, but the key idea, as I understand it, is …"<br>"I know the high-level idea, but I'd need to double-check the exact formula."<br>"I'm not 100% sure about the number, but I believe it's on the order of …"</td></tr>
+      <tr><td>推理/猜测</td><td>"I haven't seen this before, but let me try to reason from first principles."<br>"My educated guess would be …, because … but I'd want to verify that."<br>"If I had to bet, I'd say …"</td></tr>
+      <tr><td>如何查证</td><td>"The way I'd check this is by running a small experiment where …"<br>"I'd look at … to confirm."</td></tr>
+    </table></div>
+    <p><b>为什么诚实最好：</b>研究岗对"编造"零容忍——一个会在面试中编答案的人，也可能在论文里过度声称结果。相反，"清楚自己知识边界 + 能从第一性原理推理"是非常好的信号。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>编造论文名、数字、作者。</li>
+      <li>只说 "I don't know" 然后停住——要接着推理。</li>
+      <li>过度道歉（"Sorry, sorry, I'm so bad at this"）——会显得不自信，一句 "I'm not sure, but let me reason about it" 就够了。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"I'm not sure about the exact details of that paper, so I don't want to make something up. But if it's applying a KL penalty in that setting, my guess is that the main effect would be to keep the policy close to the reference model, which usually trades off some reward for stability. If I wanted to verify that, I'd look at how the KL term changes during training."</p></div>
+</section>
+
+<section class="concept" id="c-recover">
+  <div class="concept-head"><span class="pri p1">★</span><h3>卡住、出错与接住提示</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>卡住时：说出你卡在哪 → 退回简单情况/例子 → 主动请提示。出错时：平静承认 → 定位原因 → 修复 → 继续。得到提示时：感谢 → 复述提示的含义 → 顺着它推进。</p><p class="en">When stuck, say where you're stuck and try a simpler case; when wrong, acknowledge calmly and fix it; when given a hint, paraphrase it and build on it.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>场景</th><th>英文句式</th></tr>
+      <tr><td>卡住了</td><td>"I'm a bit stuck on how to handle … Let me try a smaller example."<br>"Let me step back and think about what information I actually need at each step."<br>"I think the bottleneck is … Let me see if there's a way around it."</td></tr>
+      <tr><td>主动请提示</td><td>"Am I heading in the right direction?"<br>"Would it be okay if I asked for a small hint?"<br>"Is there a constraint I'm missing?"</td></tr>
+      <tr><td>发现自己错了</td><td>"Actually, wait — I think there's a bug here. Let me trace through it again."<br>"Oh, I see — I made a mistake. This should be … instead of …"<br>"Good catch, thank you. Let me fix that."</td></tr>
+      <tr><td>面试官指出错误</td><td>"You're right, I missed that case. Let me update the logic."<br>"Hmm, let me think about that — I think you're right because …"<br>（如果你认为自己是对的）"Let me double-check… I think it actually works here because … but please let me know if I'm missing something."</td></tr>
+      <tr><td>接住提示</td><td>"That's helpful, thank you. So if I use a heap, then I can get the minimum in log n time, which means …"<br>"Ah, I see what you're suggesting — instead of recomputing, I can reuse …"</td></tr>
+      <tr><td>重新开始</td><td>"I don't think this approach is going to work, because … Let me try a different one."</td></tr>
+      <tr><td>时间不够</td><td>"I'm running low on time, so let me describe how I'd finish this: …"<br>"I won't be able to implement the optimization fully, but here's the idea …"</td></tr>
+    </table></div>
+    <div class="box why"><span class="lbl">直觉</span>面试官给提示时往往是在<b>帮你</b>——他们希望你成功。"接住提示并快速推进"在很多面试评分标准里本身就是一个正面信号（coachability / 可指导性）。卡住后能平静恢复的人，比一路顺利但无法应对意外的人更让人放心。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>假装没听到提示，坚持原路线。</li>
+      <li>被指出错误后慌乱或防御，或者毫无思考地全盘接受（即使你原本是对的）。</li>
+      <li>情绪化反应（叹气、"I'm so stupid"）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Hmm, I'm a bit stuck on how to avoid recomputing the window sum each time. Let me try a small example… Okay, I see — when the window moves by one, only one element leaves and one enters. So I can just subtract the old one and add the new one, which brings it down to linear time. Let me update the code."</p></div>
+</section>
+
+<section class="concept" id="c-research-talk-phrases">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>研究讨论与讲论文时的句式</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>研究讨论的语气是"协作的同事"，不是"被考的学生"：提出假设、表达不同意见、承认对方的好观点、把讨论引向可验证的实验。</p><p class="en">In research discussions, sound like a collaborating colleague: propose hypotheses, disagree politely, credit good points, and steer toward testable experiments.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>场景</th><th>英文句式</th></tr>
+      <tr><td>讲动机</td><td>"The problem we were trying to solve is …"<br>"What surprised us was …"<br>"The key insight is …"</td></tr>
+      <tr><td>讲结果</td><td>"The main takeaway from this figure is …"<br>"On the left you can see …; the important thing to notice is …"<br>"This improvement is consistent across …, but it's smaller on …"</td></tr>
+      <tr><td>提出假设</td><td>"One hypothesis is that … If that's true, we'd expect to see …"<br>"I wonder whether …"<br>"A simple way to test that would be …"</td></tr>
+      <tr><td>礼貌地不同意</td><td>"That's a good point. I see it slightly differently, though …"<br>"I'm not sure I agree — my concern would be …"<br>"That could be part of it, but I think there's also …"</td></tr>
+      <tr><td>认可对方</td><td>"That's a really good point, I hadn't thought about that."<br>"Yes, that's actually a limitation of our setup."</td></tr>
+      <tr><td>应对难问题（Q&amp;A）</td><td>"That's a fair question. We didn't test that directly, but …"<br>"We tried that, and it didn't work, because …"<br>"That's outside the scope of this paper, but my guess would be …"</td></tr>
+      <tr><td>推进讨论</td><td>"If we wanted to make progress on this in a few weeks, I'd start with …"<br>"What would convince us one way or the other?"</td></tr>
+    </table></div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"That's a fair question — we didn't test that directly. My hypothesis is that the effect would be smaller for code, because verification there is cheaper. A simple way to check would be to measure how often the model's answer changes after the first complete solution. If that rate is much lower for code, it would support the idea."</p></div>
+</section>
+
+<!-- ============================== §7 ============================== -->
+<h2 class="sec" id="s-ask"><span class="num">§7 · YOUR QUESTIONS</span>反问：最后五分钟</h2>
+<p class="sec-intro">"Do you have any questions for me?" 不是礼貌性的结尾，而是最后一个展示你的好奇心、你做过的功课、你关心什么的机会；同时也是你收集信息、判断这个组适不适合你的机会。<b>永远不要说 "No, I think you covered everything."</b></p>
+
+<section class="concept" id="c-reverse-qs">
+  <div class="concept-head"><span class="pri p1">★</span><h3>按面试官类型分类的反问清单（30 个）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>根据面试官角色选问题：recruiter 问流程，研究员问研究和日常，host 问项目和期望，经理问团队和成长。准备 3–4 个，至少一个是针对对方工作的具体问题。</p><p class="en">Tailor your questions to the interviewer's role, prepare three or four, and make at least one specific to their own work.</p></div>
+  <div class="deep">
+    <p><b>Recruiter（流程与安排）：</b></p>
+    <ol>
+      <li>What does the rest of the process look like, and what's the typical timeline?</li>
+      <li>Is there a host-matching stage, and how does it work?</li>
+      <li>Is there anything you'd recommend I focus on when preparing for the next rounds?</li>
+      <li>How flexible are the internship start dates and duration?</li>
+      <li>Are internships typically in person, and at which locations?</li>
+    </ol>
+    <p><b>研究员 / 面试官（研究与工作方式）：</b></p>
+    <ol start="6">
+      <li>What are you most excited about in your current work?</li>
+      <li>I read your paper on [X] — I was curious about [specific question]. Did you explore that?</li>
+      <li>What does a typical week look like for you?</li>
+      <li>How do research directions get decided on your team — top-down, bottom-up, or a mix?</li>
+      <li>What's the balance between publishing and internal impact on your team?</li>
+      <li>What's something you believed a year ago about [area] that you've changed your mind on?</li>
+      <li>What's the biggest open problem your team is thinking about right now?</li>
+      <li>How do you collaborate with engineering or other research teams?</li>
+      <li>What do you think is underrated in the field right now?</li>
+    </ol>
+    <p><b>潜在 host / mentor（项目与期望）：</b></p>
+    <ol start="15">
+      <li>What kind of project would an intern typically work on with you? Do you have something in mind already?</li>
+      <li>What did successful past interns on your team accomplish?</li>
+      <li>What would make this internship a clear success from your perspective?</li>
+      <li>How do you like to work with interns — how often do you usually meet?</li>
+      <li>What compute and infrastructure would an intern have access to?</li>
+      <li>Is publishing the work from the internship typically possible?</li>
+      <li>Is there anything I could read or set up before the internship to hit the ground running?</li>
+      <li>What skills do you think I'd need to strengthen to be most effective on this project?</li>
+    </ol>
+    <p><b>经理 / 团队负责人（团队与成长）：</b></p>
+    <ol start="23">
+      <li>How does this team's work fit into the broader organization's goals?</li>
+      <li>How has the team's focus changed over the past year, and where do you see it going?</li>
+      <li>What do you look for in people who thrive on this team?</li>
+      <li>How do interns usually stay connected with the team afterwards?</li>
+    </ol>
+    <p><b>任何人（收尾 / 反思类）：</b></p>
+    <ol start="27">
+      <li>What do you enjoy most about working here?</li>
+      <li>What's one thing you wish you'd known when you joined?</li>
+      <li>Is there anything about my background you'd like me to clarify?（谨慎使用，见下）</li>
+      <li>What are the next steps after today?</li>
+    </ol>
+    <div class="box why"><span class="lbl">直觉</span>最好的反问是"只有做了功课的人才问得出"的问题（例如第 7 题），以及会让对方愿意多说的开放问题（例如第 6、11 题）。面试官被问到自己的工作时通常会很高兴——这会在面试最后留下好的印象。</div>
+  </div>
+  <details class="deep"><summary>应避免的问题</summary><div class="inner">
+    <ul>
+      <li><b>能简单查到的信息：</b>"What does your company do?" "What's your team working on?"（你应该提前查过）</li>
+      <li><b>过早谈待遇细节：</b>技术面试官通常不负责薪资、福利，这类问题应在 offer 阶段问 recruiter。</li>
+      <li><b>负面或带攻击性的：</b>"I heard people leave your team a lot — why?" 可以换成中性版本："What do people who stay long-term enjoy about the team?"</li>
+      <li><b>"Did I pass?" / "How did I do?"：</b>让对方尴尬，且他们通常不能回答。可以用 "What are the next steps?" 代替。</li>
+      <li><b>"Is there anything about my background that concerns you?"：</b>有争议——有人认为可以借机澄清，但也可能让面试官难堪或强化负面印象。如果要用，用较温和的版本（第 29 题）。</li>
+      <li><b>只问自己能得到什么：</b>"How many vacation days?" "Can I work remotely all the time?"（offer 阶段再问）</li>
+      <li><b>是/否问题：</b>"Do you like working here?" ——换成开放式的 "What do you enjoy most …?"</li>
+    </ul>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>准备的问题在面试中已经被回答了，又问一遍。所以要多准备几个（4–6 个）。</li>
+      <li>只准备了"通用问题"，没有针对面试官个人工作的问题。</li>
+      <li>问题太长，或者变成了自我展示的演讲。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"Yes, I have a few. First, I read your recent paper on adaptive compute, and I was curious whether you saw different behavior on problems that need backtracking — did that come up? … That's really interesting. And second, from your perspective, what would make an internship on your team a clear success? … Great, thank you. And finally, what are the next steps after today?"</p></div>
+</section>
+
+<!-- ============================== §8 ============================== -->
+<h2 class="sec" id="s-apply"><span class="num">§8 · APPLYING &amp; COMMUNICATING</span>申请与沟通</h2>
+<p class="sec-intro">面试之前和之后的书面沟通同样影响结果：简历决定你能不能进入面试，cold email 和内推能打开正式渠道之外的门，面试后的跟进和 offer 沟通影响最终结果。下面的模板都可以直接改用。</p>
+
+<section class="concept" id="c-resume">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>RS 实习简历要点</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>一页到两页；最上方是一句研究方向；论文列表放前面并<b>加粗你的名字</b>；每个项目一行"做了什么 + 怎么做 + 结果（数字）"；技能写具体工具；附上个人主页、Google Scholar、GitHub 链接。</p><p class="en">Lead with your research focus and publications, write each project as action plus method plus measurable result, and link your homepage, Scholar, and GitHub.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>部分</th><th>建议</th></tr>
+      <tr><td>Header</td><td>姓名、邮箱、个人主页、Google Scholar、GitHub；可选一行 "Research interests: LLM reasoning, RL post-training, …"</td></tr>
+      <tr><td>Education</td><td>学校、学位、预计毕业时间、导师</td></tr>
+      <tr><td>Publications</td><td>按重要性或时间；会议/期刊名清楚；你的名字加粗；共同一作用 * 标注并说明；under review / preprint 如实标注</td></tr>
+      <tr><td>Research experience</td><td>每段 2–4 条 bullet，每条以强动词开头（Designed, Proposed, Built, Showed, Scaled），包含方法和结果</td></tr>
+      <tr><td>Industry experience</td><td>同上，强调规模和影响；遵守保密要求，只写可公开的内容</td></tr>
+      <tr><td>Skills</td><td>具体：Python, PyTorch, JAX, distributed training (FSDP/DeepSpeed), vLLM, CUDA basics…（只写能被问倒也不怕的）</td></tr>
+      <tr><td>Honors / Service</td><td>奖学金、审稿（reviewer for …）、助教</td></tr>
+    </table></div>
+    <p><b>Bullet 改写示例：</b></p>
+    <ul>
+      <li>弱："Worked on RL for LLMs."</li>
+      <li>强："Designed a length-aware reward for RL post-training that reduced reasoning tokens by ~30% with no accuracy loss on 4 math benchmarks."（虚构）</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>写了不熟悉的技能或夸大贡献——面试官会针对简历上的每一行追问。另外，个人主页要更新到最新（面试官经常会看）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"On my resume, the project I'd most like to highlight is the length-aware reward work, since it's the most relevant to your team. I'm happy to walk through any of the other items as well."</p></div>
+</section>
+
+<section class="concept" id="c-cold-email">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Cold email 与内推</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Cold email 要短（150 词以内）、具体（提到对方的某篇工作和你的连接）、有明确请求（是否在招实习生 / 能否聊 20 分钟）、附简历和主页。内推要让推荐人容易帮你：给他一段可直接转发的简介。</p><p class="en">Keep cold emails under 150 words, specific to their work, with a clear ask and your CV attached; make referrals easy by giving the referrer a forwardable blurb.</p></div>
+  <div class="deep">
+    <p><b>Cold email 模板（发给潜在 host）：</b></p>
+<pre><code class="language-plaintext">Subject: Prospective research intern — [your topic] (PhD student, [University])
+
+Hi [Dr./Name],
+
+I'm [name], a [year]-year PhD student at [university] working with [advisor]
+on [one-line research focus]. I really enjoyed your recent paper on [specific
+paper] — in particular, [one specific thing you found interesting / a question].
+
+My recent work on [your project] (link) found that [one-sentence result], which
+seems closely related to [how it connects to their work].
+
+I'm looking for a research internship for [Summer 2027]. Would you be open to
+hosting an intern, or to a short chat about whether my interests might fit your
+team? I've attached my CV, and my homepage is [link].
+
+Thank you for your time!
+Best,
+[Name]</code></pre>
+    <p><b>要点：</b></p>
+    <ul>
+      <li><b>主题行</b>要让对方一眼知道是什么（实习申请 + 方向）。</li>
+      <li><b>第二段是关键</b>：证明你读过并理解他们的工作，且你的研究有实际连接。</li>
+      <li><b>一个明确的请求</b>，而且是容易答应的（"short chat"）。</li>
+      <li>如果已经通过正式渠道申请，可以说明并附上申请 ID，方便对方在系统中找到你。</li>
+      <li><b>跟进：</b>1–2 周没回复可以礼貌跟进一次；再没回复就不要再发。研究员都很忙，不回复通常不是针对你。</li>
+    </ul>
+    <p><b>请求内推的消息模板：</b></p>
+<pre><code class="language-plaintext">Hi [Name], hope you're doing well! I'm applying for the [Research Scientist
+Intern] role at [company] for [summer 2027] — specifically interested in teams
+working on [area]. Would you be comfortable referring me? I've included a short
+blurb below that you can forward as-is, plus my CV. Totally understand if
+it's not a good fit — thanks either way!
+
+Blurb: [Name] is a [year]-year PhD student at [university] working on
+[focus]. Recent work: [one line + link]. Interested in [team/area].</code></pre>
+    <p><b>其他渠道：</b>会议（poster 环节主动和感兴趣的研究员聊）、导师和组里校友的介绍、workshop、学术社交媒体上的公开招聘帖。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>群发同一封模板，只换名字——研究员一眼看得出来。</li>
+      <li>邮件太长，附上完整研究陈述。</li>
+      <li>夸大与对方工作的关系，或称赞对方没写过的论文（务必确认作者）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(At a conference poster) "Hi, I really liked your poster — especially the result about [X]. I'm working on something related: [one sentence]. I'm actually looking for a research internship next summer — would it be okay if I sent you a short email with my CV?"</p></div>
+</section>
+
+<section class="concept" id="c-followup">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>面试后跟进、多个 offer 与截止日期</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>面试后可以发简短感谢（可选）；等待超过约定时间可以礼貌询问；有其他 offer 的截止日期时，<b>尽早、诚实</b>地告诉其他公司的 recruiter，请求加速或延期。</p><p class="en">Send a short thank-you if appropriate, follow up politely after the promised timeline, and when you hold a deadline, tell other recruiters early and honestly.</p></div>
+  <div class="deep">
+    <p><b>1. 感谢邮件（面试后 24 小时内，可选，简短）：</b></p>
+<pre><code class="language-plaintext">Subject: Thank you — [role] interview
+
+Hi [Name],
+Thank you for taking the time to talk with me today. I especially enjoyed our
+discussion about [specific topic], and it made me even more excited about the
+team's work on [X]. Please let me know if there's anything else I can provide.
+Best, [Name]</code></pre>
+    <p><b>2. 询问进度（超过约定时间后）：</b></p>
+<pre><code class="language-plaintext">Hi [Recruiter], I hope you're well. I wanted to follow up on my interviews
+on [date] for the [role]. I remain very interested in the position. Is there
+any update on the timeline? Thank you!</code></pre>
+    <p><b>3. 有其他 offer 截止日期，请求加速：</b></p>
+<pre><code class="language-plaintext">Hi [Recruiter], I wanted to give you a heads-up: I've received an internship
+offer from another company with a decision deadline of [date]. [Company] is
+one of my top choices, so I'd love to complete the process here before then if
+at all possible. Would it be possible to expedite the remaining steps? I
+completely understand if not — I just wanted to keep you informed. Thank you!</code></pre>
+    <p><b>4. 请求延长 offer 截止日期：</b></p>
+<pre><code class="language-plaintext">Hi [Name], thank you so much for the offer — I'm genuinely excited about the
+team and the project. I'm still completing a couple of processes that I
+committed to earlier, which are expected to conclude by [date]. Would it be
+possible to extend my decision deadline to [date]? I want to make a fully
+informed decision and give you a firm answer. Thank you for understanding.</code></pre>
+    <p><b>5. 礼貌拒绝 offer：</b></p>
+<pre><code class="language-plaintext">Hi [Name], thank you again for the offer and for everyone's time during the
+process. After a lot of thought, I've decided to accept another position that
+is a closer fit for my current research. This was a difficult decision, and I
+really enjoyed meeting the team. I hope we can stay in touch, and I'd love to
+be considered for future opportunities.</code></pre>
+    <p><b>原则：</b></p>
+    <ul>
+      <li><b>诚实：</b>不要编造不存在的 offer 来施压——行业很小，而且这不诚信。</li>
+      <li><b>尽早：</b>一拿到截止日期就通知其他公司，而不是最后一天。</li>
+      <li><b>守信：</b>接受 offer 后再反悔会严重损害信誉（也可能影响导师和学校的声誉），尽量避免。</li>
+      <li><b>及时拒绝：</b>决定后尽快拒绝其他 offer，把名额让给别人。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(On a call with a recruiter) "I wanted to be transparent with you: I received another offer with a deadline at the end of next week. This team is honestly one of my top choices, so if there's any way to speed up the remaining steps, I'd really appreciate it. And if that's not possible, I completely understand."</p></div>
+</section>
+
+<section class="concept" id="c-host-matching">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Host matching 聊天：怎么准备，怎么聊</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Host chat 是双向面试：对方判断"我愿不愿意带你 12 周、你能不能做出东西"，你判断"这个项目和 mentor 适不适合我"。准备：读对方论文、准备 1–2 个可能的项目想法、问清楚项目与工作方式。</p><p class="en">A host chat is a two-way interview: they assess whether you can deliver in twelve weeks, and you assess whether the project and mentor fit you.</p></div>
+  <div class="deep">
+    <p><b>典型结构（30–45 分钟）：</b></p>
+    <ol>
+      <li>互相介绍（你的 1 分钟版本；对方介绍团队）。</li>
+      <li>深入你的一个研究（通常是和他们最相关的）。</li>
+      <li>对方介绍可能的实习项目，问你的想法——<b>这是关键环节</b>。</li>
+      <li>你的反问。</li>
+    </ol>
+    <p><b>当 host 介绍一个项目时，好的回应方式：</b></p>
+    <ul>
+      <li>复述你的理解，问 1–2 个澄清问题（目标、现有基础设施、成功标准）。</li>
+      <li>给一个初步想法："One way I might approach this is … A first experiment could be …"</li>
+      <li>联系你的经验："This is related to what I did in …, where I learned that …"</li>
+      <li>指出一个可能的难点 / 风险，并提出如何降低风险——显示成熟的研究判断。</li>
+    </ul>
+    <p><b>你需要从 host chat 中搞清楚（帮助你做决定）：</b>项目是否已有雏形还是完全开放？每周开会频率？是否可以发表？算力和数据？团队其他成员？过去实习生的去向和成果？</p>
+    <div class="box why"><span class="lbl">直觉</span>一个好的 host 匹配对实习体验的影响往往比公司品牌更大。项目范围清楚、mentor 投入时间、能发表或产生实际影响——这三点比"哪家公司"更值得优先考虑。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>把 host chat 当作闲聊，没有准备。</li>
+      <li>对 host 提出的项目只说 "Sounds great!"，没有任何想法或问题。</li>
+      <li>为了拿到 offer 接受一个完全不感兴趣的项目——12 周会很痛苦，也很难做好。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>"That sounds like a really interesting project. Just to make sure I understand — the goal is to find out whether the adaptive budget transfers to agentic tasks, and you already have the evaluation environment set up? … Great. One way I might start is by measuring how often the agent's plan changes after each tool call, as a cheap signal for when extra compute helps. One risk I'd want to check early is whether the evaluation is noisy enough to hide small effects. What would success look like for you by the end of the summer?"</p></div>
+</section>
+
+<!-- ============================== §9 ============================== -->
+<h2 class="sec" id="s-check"><span class="num">§9 · CHECKLISTS</span>清单：面试前一周、当天与模拟面试</h2>
+<p class="sec-intro">把准备工作变成可勾选的清单，减少面试前的焦虑和遗漏。</p>
+
+<section class="concept" id="c-week-before">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>面试前一周与当天清单</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>前一周：确认格式、读面试官论文、彩排 talk、过故事库、练 coding。前一天：检查设备、准备材料、早睡。当天：提前 10 分钟就位、准备水和纸笔、结束后立刻记录。</p><p class="en">A week before: confirm formats, read interviewers' papers, rehearse, review stories. The day before: test equipment and sleep. On the day: be early, then write notes right after.</p></div>
+  <div class="deep">
+    <p><b>面试前一周：</b></p>
+    <ul>
+      <li>☐ 向 recruiter 确认每一轮的格式、时长、平台、是否允许 AI 工具/查资料。</li>
+      <li>☐ 查到面试官名字的，读他们最近 2–3 篇论文，每篇做三行笔记。</li>
+      <li>☐ Research talk：完整计时彩排至少 2 次（最好一次讲给同学听），准备 15 个可能的追问。</li>
+      <li>☐ 练 30s / 1min / 3min 自我介绍，录音回听。</li>
+      <li>☐ 过一遍故事库（6–8 个故事），每个大声讲一遍，控制在 2 分钟。</li>
+      <li>☐ 针对每家公司写好 Why us（三层匹配）和 4–6 个反问。</li>
+      <li>☐ Coding：每天 2–3 题，<b>关掉 AI 补全</b>，在和面试相同的环境（纯编辑器 / 共享文档）里写，边写边说英文。</li>
+      <li>☐ ML 基础：过各模块的 Cheat Sheet 和自测卡片。</li>
+      <li>☐ 复习自己论文的细节：数字、超参、消融、局限。</li>
+    </ul>
+    <p><b>面试前一天：</b></p>
+    <ul>
+      <li>☐ 测试视频软件、摄像头、麦克风、网络；准备有线网络或备用热点。</li>
+      <li>☐ 关闭不必要的通知；准备好要共享的 slides / 屏幕（关闭无关标签页）。</li>
+      <li>☐ 确认时区（面试邀请上的时区和你所在的时区！）。</li>
+      <li>☐ 准备水、纸笔、简历打印版、自己的要点卡（如果允许看的话）。</li>
+      <li>☐ 早睡。前一天晚上不要再刷新题——复习已经会的东西即可。</li>
+    </ul>
+    <p><b>面试当天：</b></p>
+    <ul>
+      <li>☐ 提前 10 分钟进入会议链接，检查音视频。</li>
+      <li>☐ 开始前大声说几句英文热身（例如念一遍 30 秒自我介绍）。</li>
+      <li>☐ 面试中：澄清 → 计划 → 边做边说 → 验证。</li>
+      <li>☐ 每轮结束后<b>立即</b>记录：问了什么、你怎么答的、哪里卡住、面试官的反应。这些对后续轮次和下一家公司非常有价值。</li>
+      <li>☐ 轮次之间短暂休息、喝水，不要沉浸在上一轮的失误里——每一轮通常是独立评估的。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(If there's a technical problem at the start) "Sorry, I think my audio cut out for a second — could you hear me okay? … Great. If the connection drops, I'll rejoin right away, and I can also call in by phone if that helps."</p></div>
+</section>
+
+<section class="concept" id="c-mock">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>模拟面试计划与自我录像</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>模拟面试是提升最快的方法：每周 1–2 次，覆盖 coding、ML 基础、research talk、behavioral；录像回看找出口头禅、语速和结构问题；用固定评分表追踪进步。</p><p class="en">Mock interviews are the fastest way to improve: do one or two a week across round types, record yourself, and track progress with a fixed rubric.</p></div>
+  <div class="deep">
+    <p><b>四周模拟面试计划（示意）：</b></p>
+    <div class="table-wrap"><table>
+      <tr><th>周</th><th>重点</th><th>形式</th></tr>
+      <tr><td>第 1 周</td><td>自我介绍 + behavioral 故事</td><td>自己录像 2 次；找一个同学互问 behavioral</td></tr>
+      <tr><td>第 2 周</td><td>Coding（边写边讲英文）</td><td>和同学互相出题，每次 45 分钟，严格计时，禁用 AI</td></tr>
+      <tr><td>第 3 周</td><td>Research talk + 追问 + ML 基础</td><td>给组里讲一次 talk，请大家尽量刁难；互问 ML 概念</td></tr>
+      <tr><td>第 4 周</td><td>完整模拟</td><td>连续 3 轮（coding + research + behavioral），模拟真实疲劳</td></tr>
+    </table></div>
+    <p><b>自我录像回看清单：</b></p>
+    <ul>
+      <li>口头禅（um, like, you know, basically）每分钟几次？</li>
+      <li>语速是否太快？关键数字是否清楚？</li>
+      <li>是否先讲结论？结构信号词是否清楚？</li>
+      <li>回答长度：behavioral 是否在 2 分钟内？自我介绍是否超时？</li>
+      <li>眼神和表情：是否一直看着别处？是否显得紧张？</li>
+    </ul>
+    <p><b>评分表（每次模拟后 1–5 分打分）：</b></p>
+    <div class="table-wrap"><table>
+      <tr><th>维度</th><th>问自己</th></tr>
+      <tr><td>Problem understanding</td><td>是否复述并澄清了问题？</td></tr>
+      <tr><td>Communication</td><td>面试官能否随时知道我在想什么？</td></tr>
+      <tr><td>Correctness</td><td>答案/代码是否正确？是否自己验证了？</td></tr>
+      <tr><td>Depth</td><td>被追问时能否深入 2–3 层？</td></tr>
+      <tr><td>Composure</td><td>卡住时能否平静地恢复？是否接住了提示？</td></tr>
+      <tr><td>Structure</td><td>behavioral 是否遵循 STAR，Action 是否足够具体？</td></tr>
+    </table></div>
+    <p><b>练习伙伴的来源：</b>同组/同届同学（互相帮助）、学校职业中心、已经在目标公司工作的学长学姐。用 AI 做模拟面试官来练英语表达和 behavioral 也很有用（练习场景中），但真人模拟不可替代——特别是在压力下的表现。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只"在脑子里"准备，不出声练。思考和用英文说出来是两种不同的技能——只有大声说才能练到后者。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>(Asking a friend for a mock) "Hey, I have a research internship interview in two weeks. Would you be up for a mock session sometime this week? I can do one for you in return. It'd be great if you could be a bit tough with follow-up questions, especially on my paper."</p></div>
+</section>
+
+<!-- ============================== CHEAT SHEET ============================== -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚看这一节就够了。</p>
+
+<div class="table-wrap"><table>
+  <tr><th>主题</th><th>记住这些</th></tr>
+  <tr><td>自我介绍</td><td>Present → Past → Future；30s ≈ 80 词 / 1min ≈ 150 词 / 3min ≈ 450 词；一条主线；具体数字；结尾指向对方；只提能讲 10 分钟的项目</td></tr>
+  <tr><td>Why us</td><td>三层匹配：Problem fit → Approach/scale fit → Specific hook（一篇论文 + 一个问题）；贡献与收获约 1:1；不贬低竞争对手</td></tr>
+  <tr><td>STAR</td><td>S 15% / T 10% / A 50–60% / R 15–20%；用 "I"；有张力；讲判断（why）；量化；反思"下次怎么做"</td></tr>
+  <tr><td>故事库</td><td>6–8 个故事 × 矩阵（冲突、失败、主动、模糊、学习、帮助、成就）；一场面试里不重复用同一个故事</td></tr>
+  <tr><td>失败问题</td><td>真实、有分量；承担你那部分；讲排除 bug 的过程；负结果的价值；具体的改变</td></tr>
+  <tr><td>弱点</td><td>真实但非岗位核心 + 具体措施 + 进展；不要"我太追求完美"</td></tr>
+  <tr><td>局限</td><td>主动讲 1–2 个最重要的（规模 / 评估范围 / 统计 / 因果 / 假设）+ 原因 + 已有缓解 + 下一步；最后简短重申贡献</td></tr>
+  <tr><td>AI 工具</td><td>诚实说用；用于样板/API/测试；关键逻辑自己写或逐行审；sanity check；严格遵守每家面试规则</td></tr>
+  <tr><td>实习目标</td><td>有用成果 + 学习目标 + 理解 12 周节奏（2 周上手、主实验、写作交接）+ 灵活</td></tr>
+  <tr><td>RS vs RE</td><td>问题与实验 vs 规模与可靠；边界模糊；尊重并具备工程能力</td></tr>
+  <tr><td>选题</td><td>重要性 × 可行性 × 时机 + 最便宜的证伪实验 + 事先定止损标准</td></tr>
+  <tr><td>现场节奏</td><td>复述 → 澄清 → 朴素方案 → 优化 → 写 → 测试 → 复杂度/总结</td></tr>
+  <tr><td>不知道时</td><td>说明边界 → 讲知道的部分 → 标明是猜测的推理 → 如何查证；绝不编造</td></tr>
+  <tr><td>卡住/出错</td><td>说出卡点 → 小例子 → 请提示；"Good catch, let me fix that"；接住提示并复述</td></tr>
+  <tr><td>反问</td><td>按角色选；3–4 个 + 备用；至少一个针对对方论文；不问能查到的、薪资（技术轮）、"Did I pass?"</td></tr>
+  <tr><td>Cold email</td><td>≤150 词；具体论文 + 你的连接 + 明确容易答应的请求 + CV/主页；1–2 周后跟进一次</td></tr>
+  <tr><td>Offer 沟通</td><td>诚实、尽早、守信；拿到截止日期立刻通知其他 recruiter；决定后尽快拒绝其他 offer</td></tr>
+</table></div>
+
+<p><b>万能句式（背下来）：</b></p>
+<ul>
+  <li>"Let me make sure I understand the question…"</li>
+  <li>"Can I ask a couple of clarifying questions first?"</li>
+  <li>"Let me think about that for a moment."</li>
+  <li>"My plan is to start simple and then optimize."</li>
+  <li>"There are two parts to this. First… Second…"</li>
+  <li>"I'm not sure, but let me reason through it."</li>
+  <li>"Good catch — let me fix that."</li>
+  <li>"That's helpful, thank you. So that means…"</li>
+  <li>"To summarize…"</li>
+  <li>"What would success look like for you by the end of the internship?"</li>
+</ul>
+
+<h3 id="s-hfq">高频面试题清单</h3>
+<div class="table-wrap"><table>
+  <tr><th>#</th><th>问题</th><th>看这里</th></tr>
+  <tr><td>1</td><td>Tell me about yourself.</td><td><a href="#c-pitch-structure">§2 结构</a> · <a href="#c-pitch-example">示例</a></td></tr>
+  <tr><td>2</td><td>Walk me through your research.</td><td><a href="#c-pitch-example">3 分钟版</a></td></tr>
+  <tr><td>3</td><td>Why this company / team?</td><td><a href="#c-whyus-template">三层匹配</a></td></tr>
+  <tr><td>4</td><td>Why a research internship (vs. academia)?</td><td><a href="#c-whyus-template">§3</a></td></tr>
+  <tr><td>5</td><td>Which of our papers did you find interesting?</td><td><a href="#c-research-team">团队研究</a></td></tr>
+  <tr><td>6</td><td>Tell me about a time you disagreed with someone.</td><td><a href="#c-q-collab">Q1</a></td></tr>
+  <tr><td>7</td><td>Tell me about working with a difficult person.</td><td><a href="#c-q-collab">Q2</a></td></tr>
+  <tr><td>8</td><td>Tell me about critical feedback you received.</td><td><a href="#c-q-collab">Q4</a></td></tr>
+  <tr><td>9</td><td>Tell me about a time you failed.</td><td><a href="#c-q-failure">Q7</a></td></tr>
+  <tr><td>10</td><td>Tell me about a mistake you made.</td><td><a href="#c-q-failure">Q8</a></td></tr>
+  <tr><td>11</td><td>Tell me about a tight deadline.</td><td><a href="#c-q-failure">Q9</a></td></tr>
+  <tr><td>12</td><td>Tell me about dealing with ambiguity.</td><td><a href="#c-q-failure">Q10</a></td></tr>
+  <tr><td>13</td><td>Tell me about a time you took initiative / led.</td><td><a href="#c-q-initiative">Q13–Q14</a></td></tr>
+  <tr><td>14</td><td>Tell me about learning something quickly.</td><td><a href="#c-q-initiative">Q15</a></td></tr>
+  <tr><td>15</td><td>Strengths and weaknesses?</td><td><a href="#c-q-personal">Q21–Q22</a></td></tr>
+  <tr><td>16</td><td>RS vs. RE — why research scientist?</td><td><a href="#c-rs-vs-eng">§5</a></td></tr>
+  <tr><td>17</td><td>How do you choose research problems?</td><td><a href="#c-choose-problems">§5</a></td></tr>
+  <tr><td>18</td><td>Tell me about a research project that failed.</td><td><a href="#c-failed-project">§5</a></td></tr>
+  <tr><td>19</td><td>Experience with large codebases / compute?</td><td><a href="#c-scale">§5</a></td></tr>
+  <tr><td>20</td><td>Do you use AI coding tools?</td><td><a href="#c-ai-tools">§5</a></td></tr>
+  <tr><td>21</td><td>What do you want to get out of this internship?</td><td><a href="#c-internship-goals">§5</a></td></tr>
+  <tr><td>22</td><td>What's the biggest limitation of your paper?</td><td><a href="#c-limitations">§5</a></td></tr>
+  <tr><td>23</td><td>What would you work on if you joined?</td><td><a href="#c-whyus-template">追问链</a> · <a href="#c-host-matching">host chat</a></td></tr>
+  <tr><td>24</td><td>Do you have any questions for me?</td><td><a href="#c-reverse-qs">§7</a></td></tr>
+</table></div>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m18" data-title="模块 18 自测卡片"></div>
+<div class="footer-nav"><a href="m16-research.html">← 16 研究讨论轮</a><a href="../index.html">路线图 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m18.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>

@@ -75,7 +75,7 @@ window.MODULES = [
     title: '研究讨论轮',
     desc: '5 分钟讲论文、批判论文、现场提 idea、必读论文清单、研究品味类问题。',
     topics: '论文讲述模板 · 批判框架 · idea 生成 · 30–50 篇必读 · 开放问题' },
-  { id: 'm18', num: '18', phase: 'p4', pri: 2, status: 'planned', file: 'modules/m18-behavioral.html',
+  { id: 'm18', num: '18', phase: 'p4', pri: 2, status: 'ready', file: 'modules/m18-behavioral.html',
     title: 'Behavioral 与面试策略',
     desc: '英文自我介绍、"为什么选我们组"、STAR 框架、反问、卡壳时的表达。（个人故事放私密版本）',
     topics: '1 分钟 / 3 分钟介绍 · STAR · 冲突与失败 · 反问清单 · 常用英文句式' },
