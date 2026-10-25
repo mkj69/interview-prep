@@ -55,7 +55,7 @@ window.MODULES = [
     title: '可解释性',
     desc: '被问到时能聊：探针、因果干预、SAE、steering、circuits。',
     topics: 'logit lens · probing · activation patching · SAE · superposition · steering vectors · induction heads' },
-  { id: 'm12', num: '12', phase: 'p2', pri: 3, status: 'planned', file: 'modules/m12-generative.html',
+  { id: 'm12', num: '12', phase: 'p2', pri: 3, status: 'ready', file: 'modules/m12-generative.html',
     title: '生成模型补充',
     desc: 'VAE、GAN、Diffusion、Flow matching / rectified flow、离散扩散语言模型。',
     topics: 'ELBO · score matching · DDPM · flow matching · rectified flow · discrete diffusion' },

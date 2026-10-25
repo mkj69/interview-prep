@@ -1,0 +1,1070 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12 · 生成模型补充 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m12">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 12 · Phase 2</div>
+<h1 class="title">生成模型<em>补充</em></h1>
+<p class="lede">LLM 面试主要考自回归语言模型，但 RS 面试官经常会问一句"你了解 diffusion / flow matching 吗？"。这一章把 VAE、GAN、normalizing flow、diffusion、flow matching / rectified flow 和离散扩散语言模型放进同一个框架：<strong>它们都在学一个从简单分布到数据分布的映射，区别只在于训练目标和采样方式</strong>。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完后你应该能：(1) 在白板上从零推导 ELBO、高斯 KL、GAN 的最优判别器、DDPM 的 \(q(x_t\mid x_0)\)、classifier-free guidance、conditional flow matching 的梯度等价；(2) 用 3 分钟讲清楚 diffusion、score matching、SDE / probability-flow ODE、flow matching、rectified flow 之间的关系；(3) 解释"为什么路径越直，采样步数越少"，以及 reflow 和一步蒸馏在做什么；(4) 聊离散扩散语言模型（MDLM、LLaDA）相对 AR 的优缺点。<br><br>
+<b>建议顺序：</b>§1 全景（10 分钟建立地图）→ §3 VAE（ELBO 是后面 diffusion 的基础）→ §6 Diffusion → §7 Flow matching / RF（本章重点，和 Qiang Liu 组的工作直接相关）→ §9 跑一遍代码 → §10 练习推导。§2 AR、§4 GAN、§5 Flows、§8 离散扩散按需阅读。<br><br>
+<b>和其他模块的关系：</b>AR 语言建模的细节在 <a href="m05-pretraining.html">05 预训练</a>；KL、Jensen、高斯分布等数学基础在 <a href="m02-math-ml.html">02 数学</a>；RL 中的 KL 正则和这里的 ELBO 是同一个 KL 对象，见 <a href="m06-rl-posttraining.html">06 Post-training</a>。<br><br>
+<b>延伸阅读：</b><a href="https://mkj69.github.io/cs395t-generative-ai-notes/" target="_blank" rel="noreferrer">CS 395T Generative AI 学习笔记</a>（课程笔记、推导与研究问题）。</div>
+
+<!-- ======================================================= §1 -->
+<h2 class="sec" id="s-overview"><span class="num">§1 · THE LANDSCAPE</span>全景：五大家族怎么比</h2>
+<p class="sec-intro">所有生成模型都在回答同一个问题：给定样本 \(x_1,\dots,x_N \sim p_{\text{data}}\)，怎么得到一个能<strong>采样</strong>（有时还要能<strong>算似然</strong>）的模型 \(p_\theta\)。先建立地图，再逐个深入。</p>
+
+<section class="concept" id="c-landscape">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>五大家族对比：目标、似然、采样代价</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>AR 和 flow 给精确似然，VAE 和 diffusion 给似然下界，GAN 不给似然；AR 和 diffusion 采样慢（多步），GAN、VAE、flow 一步采样；diffusion / flow matching 用稳定的回归损失换来了最好的质量和多样性。</p><p class="en">AR and flows give exact likelihood, VAEs and diffusion give a bound, GANs give none; diffusion trades many sampling steps for a stable regression objective and the best quality–diversity trade-off.</p></div>
+  <div class="deep">
+    <p>一个好用的思考框架是"<b>生成模型三难</b>"（generative learning trilemma）：高质量样本、覆盖所有模式（多样性）、快速采样，三者很难同时做到。GAN 快且清晰但容易 mode collapse；VAE 快且覆盖但模糊；diffusion 质量高且覆盖但慢。后续大量工作（DDIM、蒸馏、consistency models、rectified flow）都在想办法让 diffusion 变快。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>家族</th><th>训练目标</th><th>似然</th><th>采样</th><th>典型问题</th><th>代表</th></tr></thead>
+      <tbody>
+        <tr><td><b>Autoregressive</b></td><td>最大似然：\(\sum_i \log p(x_i\mid x_{\lt i})\)</td><td>精确</td><td>\(O(L)\) 次串行前向</td><td>串行慢、exposure bias、需要定一个顺序</td><td>GPT 系列、PixelCNN、WaveNet</td></tr>
+        <tr><td><b>VAE</b></td><td>最大化 ELBO</td><td>下界</td><td>1 步（decoder）</td><td>样本模糊、posterior collapse</td><td>VAE、β-VAE、VQ-VAE（作为 tokenizer）</td></tr>
+        <tr><td><b>GAN</b></td><td>判别器和生成器的 minimax 博弈</td><td>无</td><td>1 步</td><td>训练不稳定、mode collapse</td><td>DCGAN、StyleGAN、BigGAN</td></tr>
+        <tr><td><b>Normalizing flow</b></td><td>精确最大似然（变量替换公式）</td><td>精确</td><td>1 步（可逆网络）</td><td>架构受限（必须可逆、维度不变）</td><td>RealNVP、Glow、MAF</td></tr>
+        <tr><td><b>Diffusion / score</b></td><td>去噪回归（ELBO 的加权形式 / score matching）</td><td>下界（或经 ODE 精确计算）</td><td>几十到上千步</td><td>采样慢</td><td>DDPM、NCSN、Stable Diffusion、Imagen</td></tr>
+        <tr><td><b>Flow matching / RF</b></td><td>速度场回归 \(\|v_\theta - (x_1-x_0)\|^2\)</td><td>可经 ODE 计算</td><td>ODE 求解，路径越直步数越少</td><td>仍需多步，reflow/蒸馏可降到 1–4 步</td><td>Rectified Flow、Stable Diffusion 3</td></tr>
+      </tbody>
+    </table></div>
+    <p><b>从"散度"看训练目标：</b></p>
+    <ul>
+      <li>最大似然 = 最小化前向 KL \(\mathrm{KL}(p_{\text{data}}\,\|\,p_\theta)\)。只要数据有质量的地方模型给的概率接近 0，惩罚就是无穷大，所以前向 KL 是 <b>mode-covering</b>（宁可铺开也不漏模式），代价是可能在模式之间放概率 → VAE 模糊。</li>
+      <li>反向 KL \(\mathrm{KL}(p_\theta\,\|\,p_{\text{data}})\) 是 <b>mode-seeking</b>：模型只要待在数据有质量的地方即可，可以只抓住一个模式。</li>
+      <li>原始 GAN 在最优判别器下最小化 Jensen–Shannon 散度，介于两者之间，实际训练中表现得更像 mode-seeking → 清晰但容易丢模式。</li>
+      <li>Diffusion 的 ELBO 本质还是似然（前向 KL）型目标，所以覆盖性好；它不模糊的原因是把一个困难的一步生成拆成很多个简单的去噪小步，每一小步的条件分布都接近高斯。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>可以把这些模型都看成"从噪声 \(z\) 到数据 \(x\) 的一个映射"。GAN/VAE/flow 用一个网络一步完成映射；diffusion 和 flow matching 把映射拆成一条连续轨迹，网络只学"每一刻往哪里走一小步"（速度或 score）。一步映射难学，小步映射好学，这就是 diffusion 胜出的核心原因。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"Diffusion 没有似然"是错的：DDPM 训练的是似然下界，而且通过 probability-flow ODE 和瞬时变量替换公式可以算精确对数似然（只是很贵）。"GAN 已经过时"也不准确：GAN 风格的对抗损失仍广泛用于 VAE tokenizer 训练和 diffusion 一步蒸馏（例如对抗蒸馏）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I usually organize generative models by two questions: do they give a tractable likelihood, and how expensive is sampling. Autoregressive models and normalizing flows give exact likelihoods; VAEs and diffusion models optimize a lower bound; GANs give no likelihood at all. GANs and VAEs sample in one network evaluation, while diffusion needs many denoising steps. Diffusion won on images because it turns a hard one-shot generation problem into many easy regression problems with a stable loss, and most recent work, like distillation and rectified flow, is about getting that quality with far fewer steps.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why are VAE samples blurry while GAN samples are sharp?</b><details><summary>思路</summary><div class="inner">VAE 常用高斯 decoder，重建项是 L2 损失，L2 的最优解是条件均值，多个可能的细节被平均掉 → 模糊；同时 ELBO 是前向 KL 型，倾向覆盖。GAN 的判别器直接惩罚"不像真图"的样本，均值图会被判别器识别，因此生成器被推向某个具体的清晰模式，但代价是可能丢模式。</div></details></li>
+    <li><b>If you had to pick a model for text, which and why?</b><details><summary>思路</summary><div class="inner">默认 AR：文本离散、天然有顺序、精确似然便于训练和评估（perplexity）、KV cache 让推理高效、可变长度自然。离散扩散（MDLM、LLaDA）是有前景的替代方案，优点是并行解码和双向上下文，但目前在效率和质量上的综合权衡还在研究中。见 <a href="#c-ar">§2</a> 和 <a href="#c-mdlm">§8</a>。</div></details></li>
+    <li><b>What is the trilemma in generative modeling?</b><details><summary>思路</summary><div class="inner">高质量、模式覆盖（多样性）、快速采样三者难以兼得。GAN：质量+速度；VAE/flow：覆盖+速度；diffusion：质量+覆盖。研究方向就是突破这个三角：蒸馏、consistency models、rectified flow 都在给 diffusion 加速。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ======================================================= §2 -->
+<h2 class="sec" id="s-ar"><span class="num">§2 · AUTOREGRESSIVE</span>自回归模型</h2>
+<p class="sec-intro">你最熟悉的家族。这里只强调它在"生成模型全景"里的位置：为什么它在文本上是默认选择，它的固有缺陷是什么。</p>
+
+<section class="concept" id="c-ar">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>链式法则、精确似然、exposure bias</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>AR 用概率链式法则把联合分布精确分解为条件分布的乘积，训练就是逐位置的交叉熵（teacher forcing）；代价是串行采样，以及训练（看真实前缀）和推理（看自己生成的前缀）之间的不一致，即 exposure bias。</p><p class="en">AR models factorize the joint exactly with the chain rule and train with per-token cross-entropy under teacher forcing; the costs are sequential sampling and exposure bias.</p></div>
+  <div class="deep">
+    <p><b>分解。</b>对任意顺序，链式法则都成立，没有任何近似：</p>
+    $$p_\theta(x_1,\dots,x_L)=\prod_{i=1}^{L} p_\theta(x_i\mid x_{\lt i}),\qquad \log p_\theta(x)=\sum_{i=1}^{L}\log p_\theta(x_i\mid x_{\lt i}).$$
+    <p>所以 AR 的似然是<b>精确</b>的，最大似然训练 = 最小化每个位置上的交叉熵。Transformer 加 causal mask 后，一次前向就能并行算出所有位置的条件分布（训练并行），但采样必须一个 token 一个 token 来（推理串行）。评价指标 perplexity \(=\exp\big(-\tfrac{1}{L}\sum_i \log p(x_i\mid x_{\lt i})\big)\)。</p>
+    <p><b>Teacher forcing 与 exposure bias。</b>训练时第 \(i\) 步的输入是真实前缀 \(x_{\lt i}\)；推理时输入是模型自己生成的 \(\hat x_{\lt i}\)。模型从没在"自己犯过错的前缀"上训练过，一旦偏离数据分布，错误可能累积（compounding error）。缓解方法：scheduled sampling（训练时以一定概率喂模型自己的预测）、序列级训练（RL、MRT）、以及今天 LLM 的 RL post-training 在模型自己的采样分布上做优化，本质上也在缓解这种分布偏移。值得一提：对于大规模 LLM，exposure bias 的实际影响有多大仍有争论，强模型在长序列上表现良好说明它不一定是主要瓶颈。</p>
+    <p><b>为什么文本用 AR、图像主流用 diffusion？</b></p>
+    <ul>
+      <li>文本是离散的，没有自然的"加一点高斯噪声"操作；有天然从左到右的顺序；序列长度可变。</li>
+      <li>精确似然让 scaling law、perplexity 评估和 RL 中的 log-prob 计算都很方便；KV cache 让每步增量计算。</li>
+      <li>图像是连续高维的，像素之间没有天然顺序，逐像素 AR 极慢（\(256\times256\times3\) 次串行）。图像 AR 的现代做法是先用 VQ tokenizer 压缩成几百到几千个 token，再做 AR（如 Parti 类方法）。Diffusion 一次去噪所有像素，可以并行。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"AR 训练也是串行的"——错，训练时 causal mask 让所有位置并行计算，只有采样串行。另外 AR 的顺序是一个建模选择：链式法则对任意顺序成立，但不同顺序下的条件分布难度不同（例如先生成后半句再生成前半句通常更难学），这就是"reversal curse"类现象的一个来源。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>An autoregressive model factorizes the joint distribution with the chain rule, so the likelihood is exact and training is just next-token cross-entropy with teacher forcing. Training is parallel thanks to the causal mask, but sampling is sequential. The classic weakness is exposure bias: at training time the model always conditions on ground-truth prefixes, but at inference it conditions on its own samples, so errors can compound. For text, AR is the natural default because tokens are discrete, there's a natural order, and exact likelihood plus the KV cache make training and inference efficient.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How does RL post-training relate to exposure bias?</b><details><summary>思路</summary><div class="inner">RL（PPO、GRPO 等）在模型自己生成的序列上计算奖励并更新，训练分布 = 推理分布（on-policy），所以不存在"只见过真实前缀"的问题。这是序列级训练缓解 exposure bias 的现代版本。</div></details></li>
+    <li><b>Can you make AR sampling faster?</b><details><summary>思路</summary><div class="inner">Speculative decoding（小模型提议、大模型并行验证，分布不变）、multi-token prediction、Medusa 类多头、并行解码的非自回归模型、离散扩散。详见 <a href="m08-inference.html">08 推理系统</a>。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ======================================================= §3 -->
+<h2 class="sec" id="s-vae"><span class="num">§3 · VARIATIONAL AUTOENCODER</span>VAE：ELBO 与重参数化</h2>
+<p class="sec-intro">VAE 是必考推导。ELBO 不只用于 VAE：diffusion 的训练目标就是一个多层的 ELBO，RL 里的 KL 正则、变分推断都用同样的工具。把这一节推熟。</p>
+
+<section class="concept" id="c-elbo">
+  <div class="concept-head"><span class="pri p1">★</span><h3>ELBO：两种推导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\log p_\theta(x) = \underbrace{\mathbb{E}_{q_\phi(z\mid x)}[\log p_\theta(x\mid z)] - \mathrm{KL}(q_\phi(z\mid x)\,\|\,p(z))}_{\text{ELBO}} + \mathrm{KL}(q_\phi(z\mid x)\,\|\,p_\theta(z\mid x))\)；最后一项 \(\ge 0\)，所以 ELBO 是对数似然的下界，间隙恰好是近似后验和真实后验的 KL。</p><p class="en">The ELBO equals the log-likelihood minus the KL between the approximate and true posterior, so maximizing it both fits the data and makes the encoder a better posterior.</p></div>
+  <div class="deep">
+    <p><b>设定。</b>潜变量模型 \(p_\theta(x)=\int p_\theta(x\mid z)p(z)\,dz\)，先验 \(p(z)=\mathcal N(0,I)\)，decoder \(p_\theta(x\mid z)\) 是神经网络。问题：积分不可算，真实后验 \(p_\theta(z\mid x)=p_\theta(x\mid z)p(z)/p_\theta(x)\) 也不可算。解决：引入 encoder（推断网络）\(q_\phi(z\mid x)\) 近似后验，这叫 <b>amortized variational inference</b>（用一个网络给所有 \(x\) 输出后验参数，而不是对每个 \(x\) 单独优化）。</p>
+    <p><b>推导一：Jensen 不等式。</b></p>
+    $$\begin{aligned}
+    \log p_\theta(x) &= \log \int p_\theta(x,z)\,dz = \log \int q_\phi(z\mid x)\,\frac{p_\theta(x,z)}{q_\phi(z\mid x)}\,dz = \log \mathbb{E}_{q_\phi(z\mid x)}\!\left[\frac{p_\theta(x,z)}{q_\phi(z\mid x)}\right]\\
+    &\ge \mathbb{E}_{q_\phi(z\mid x)}\!\left[\log \frac{p_\theta(x,z)}{q_\phi(z\mid x)}\right] \quad(\log \text{ 是凹函数, Jensen})\\
+    &= \mathbb{E}_{q}[\log p_\theta(x\mid z)] + \mathbb{E}_{q}\!\left[\log\frac{p(z)}{q_\phi(z\mid x)}\right] = \mathbb{E}_{q}[\log p_\theta(x\mid z)] - \mathrm{KL}(q_\phi(z\mid x)\,\|\,p(z)).
+    \end{aligned}$$
+    <p>这个推导快，但不告诉你"差了多少"。</p>
+    <p><b>推导二：KL 恒等式（更有信息量）。</b>从后验 KL 出发：</p>
+    $$\begin{aligned}
+    \mathrm{KL}(q_\phi(z\mid x)\,\|\,p_\theta(z\mid x)) &= \mathbb{E}_q\big[\log q_\phi(z\mid x) - \log p_\theta(z\mid x)\big]\\
+    &= \mathbb{E}_q\big[\log q_\phi(z\mid x) - \log p_\theta(x,z) + \log p_\theta(x)\big] \quad (p(z\mid x)=p(x,z)/p(x))\\
+    &= \log p_\theta(x) - \mathbb{E}_q\!\left[\log\frac{p_\theta(x,z)}{q_\phi(z\mid x)}\right] = \log p_\theta(x) - \mathrm{ELBO}.
+    \end{aligned}$$
+    <p>移项得 \(\log p_\theta(x)=\mathrm{ELBO}+\mathrm{KL}(q\,\|\,p(z\mid x))\)。三个结论：(1) KL \(\ge0\) ⇒ ELBO 是下界；(2) 对 \(\phi\) 最大化 ELBO 等价于最小化后验 KL（因为 \(\log p_\theta(x)\) 与 \(\phi\) 无关）；(3) 当且仅当 \(q=p(z\mid x)\) 时取等。</p>
+    <p><b>两项的含义。</b></p>
+    <ul>
+      <li><b>重建项</b> \(\mathbb{E}_q[\log p_\theta(x\mid z)]\)：高斯 decoder 时等于 \(-\tfrac{1}{2\sigma^2}\|x-\hat x(z)\|^2\) + 常数（即 MSE）；伯努利 decoder 时是 BCE。</li>
+      <li><b>KL 项</b> \(\mathrm{KL}(q_\phi(z\mid x)\,\|\,p(z))\)：把每个 \(x\) 的后验拉向先验，保证潜空间规整，从先验采样的 \(z\) 解码后有意义。</li>
+    </ul>
+    <p>另一种写法：\(\mathrm{ELBO}=\mathbb{E}_q[\log p_\theta(x,z)] + \mathcal H(q_\phi(z\mid x))\)，即"期望联合对数似然 + 熵"。这个形式和 RL 里的 max-entropy 目标长得一样。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 把 KL 方向写反：ELBO 中是 \(\mathrm{KL}(q\,\|\,p)\)，期望在 \(q\) 下取（因为我们只能从 \(q\) 采样）。(2) 以为 KL 项越小越好——KL 为 0 意味着 \(q(z\mid x)=p(z)\)，\(z\) 不携带任何 \(x\) 的信息，这正是 posterior collapse。(3) 混淆"后验 KL"（ELBO 的间隙）和"先验 KL"（ELBO 中的正则项），它们是两个不同的 KL。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The marginal likelihood of a latent variable model is intractable, so we introduce an approximate posterior q of z given x and maximize a lower bound. You can get it from Jensen's inequality, but the more informative derivation is the identity: log p of x equals the ELBO plus the KL between q and the true posterior. Since that KL is non-negative, the ELBO is a lower bound, and the gap is exactly how wrong our posterior is. The ELBO itself splits into a reconstruction term and a KL term that pulls each posterior towards the prior.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why can't we just maximize log p(x) directly?</b><details><summary>思路</summary><div class="inner">\(p(x)=\int p(x\mid z)p(z)dz\) 在高维 \(z\) 和神经网络 decoder 下没有闭式解。用先验采样做 Monte Carlo 估计 \(\frac1K\sum_k p(x\mid z_k)\) 方差极大：绝大多数从先验采到的 \(z\) 解码出的东西和 \(x\) 无关。encoder \(q(z\mid x)\) 本质上是 importance sampling 的 proposal，把采样集中到"能解释 \(x\)"的 \(z\) 上。</div></details></li>
+    <li><b>How can you get a tighter bound?</b><details><summary>思路</summary><div class="inner">IWAE：\(\mathcal L_K=\mathbb{E}\big[\log\frac1K\sum_{k=1}^K \frac{p(x,z_k)}{q(z_k\mid x)}\big]\)，\(K=1\) 是 ELBO，\(K\to\infty\) 收敛到 \(\log p(x)\)，且关于 \(K\) 单调不减。也可以用更灵活的后验（normalizing flow 后验、层次化 VAE）。</div></details></li>
+    <li><b>Where else does the ELBO show up?</b><details><summary>思路</summary><div class="inner">Diffusion 训练目标（多层潜变量的 ELBO）、EM 算法（E 步令 \(q=p(z\mid x)\) 使 bound 变紧，M 步最大化 bound）、变分推断、以及 "RL as inference" 框架（KL 正则的 RL 目标也是一个 ELBO）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-reparam">
+  <div class="concept-head"><span class="pri p1">★</span><h3>重参数化技巧（reparameterization trick）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把 \(z\sim\mathcal N(\mu_\phi,\sigma_\phi^2)\) 改写成 \(z=\mu_\phi+\sigma_\phi\odot\epsilon,\ \epsilon\sim\mathcal N(0,I)\)，随机性移到与参数无关的 \(\epsilon\) 上，梯度就能穿过采样操作反传到 encoder，且方差远低于 score-function（REINFORCE）估计。</p><p class="en">Write the sample as a deterministic, differentiable function of the parameters and parameter-free noise, so gradients flow through the sampling step with low variance.</p></div>
+  <div class="deep">
+    <p><b>问题。</b>我们要算 \(\nabla_\phi\,\mathbb{E}_{q_\phi(z)}[f(z)]\)。期望的分布本身依赖 \(\phi\)，不能直接把梯度移进期望里。</p>
+    <p><b>两种估计器：</b></p>
+    <ul>
+      <li><b>Score function / REINFORCE / likelihood ratio：</b>\(\nabla_\phi\mathbb{E}_{q_\phi}[f(z)]=\mathbb{E}_{q_\phi}[f(z)\,\nabla_\phi\log q_\phi(z)]\)。只需要 \(f\) 的值（\(f\) 可以不可导、可以是离散的），但方差大。这就是 policy gradient 的公式（见 <a href="m06-rl-posttraining.html">06</a>）。</li>
+      <li><b>Pathwise / reparameterization：</b>若 \(z=g_\phi(\epsilon)\)，\(\epsilon\sim p(\epsilon)\)，则 \(\nabla_\phi\mathbb{E}_{q_\phi}[f(z)]=\mathbb{E}_{p(\epsilon)}[\nabla_z f(g_\phi(\epsilon))\,\nabla_\phi g_\phi(\epsilon)]\)。要求 \(f\) 对 \(z\) 可导、\(z\) 连续。利用了 \(f\) 的梯度信息，所以方差通常低得多。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>REINFORCE 只知道"这次采样的结果好不好"，只能调高或调低这个样本的概率；重参数化知道"把 \(z\) 往哪个方向挪一点，\(f\) 会变好"，信息量多一个维度。</div>
+    <p><b>离散潜变量怎么办？</b>不能直接重参数化。选择：REINFORCE + baseline、Gumbel-Softmax（连续松弛）、straight-through estimator（VQ-VAE 用的就是这个）。</p>
+  </div>
+  <details class="deep"><summary>PyTorch：完整 VAE 前向与损失</summary><div class="inner">
+<pre><code class="language-python">import torch, torch.nn as nn, torch.nn.functional as F
+
+class VAE(nn.Module):
+    def __init__(self, d_in=784, d_h=256, d_z=16):
+        super().__init__()
+        self.enc = nn.Sequential(nn.Linear(d_in, d_h), nn.ReLU())
+        self.mu = nn.Linear(d_h, d_z)
+        self.logvar = nn.Linear(d_h, d_z)          # predict log sigma^2 for stability
+        self.dec = nn.Sequential(nn.Linear(d_z, d_h), nn.ReLU(), nn.Linear(d_h, d_in))
+
+    def forward(self, x):
+        h = self.enc(x)
+        mu, logvar = self.mu(h), self.logvar(h)
+        eps = torch.randn_like(mu)                  # noise is outside the graph
+        z = mu + torch.exp(0.5 * logvar) * eps      # reparameterization trick
+        return self.dec(z), mu, logvar              # decoder returns logits
+
+def vae_loss(x, logits, mu, logvar, beta=1.0):
+    # -E_q[log p(x|z)] with Bernoulli decoder, summed over pixels, averaged over batch
+    rec = F.binary_cross_entropy_with_logits(logits, x, reduction='sum') / x.size(0)
+    # KL(N(mu, sigma^2) || N(0, I)) closed form
+    kl = 0.5 * torch.sum(mu.pow(2) + logvar.exp() - 1 - logvar) / x.size(0)
+    return rec + beta * kl, rec, kl</code></pre>
+    <p>要点：(1) encoder 输出 \(\log\sigma^2\) 而非 \(\sigma\)，避免正值约束和数值问题；(2) <code>randn_like</code> 生成的噪声不需要梯度，梯度经由 <code>mu</code> 和 <code>logvar</code> 回传；(3) 重建项按像素求和、按 batch 平均，KL 同样按维度求和，两项尺度才一致——如果重建用 <code>mean</code> 而 KL 用 <code>sum</code>，相当于隐式设了一个巨大的 β，很容易 posterior collapse。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"重参数化让采样变得确定"——不对，\(z\) 仍是随机的，只是随机性来源 \(\epsilon\) 不再依赖参数。另一个误区：以为重参数化总是比 REINFORCE 好。当 \(f\) 非常不光滑时，pathwise 梯度也可能方差很大；离散情况下根本不可用。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The problem is that we need the gradient of an expectation whose distribution depends on the parameters. The reparameterization trick rewrites the sample as mu plus sigma times epsilon, where epsilon is standard normal noise that doesn't depend on the parameters. Now the expectation is over epsilon, so we can push the gradient inside and backprop through mu and sigma. Compared with the score-function estimator used in REINFORCE, it uses the gradient of the objective with respect to z, so the variance is usually much lower, but it requires continuous, differentiable latents.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does policy gradient in LLM RL use REINFORCE instead of reparameterization?</b><details><summary>思路</summary><div class="inner">token 是离散的，采样操作没有可导的重参数化；奖励（如单元测试通过与否）对 token 不可导。所以只能用 score-function 估计器，再用 baseline / advantage 降方差。</div></details></li>
+    <li><b>What is the Gumbel-max trick?</b><details><summary>思路</summary><div class="inner">\(\arg\max_k(\log\pi_k+g_k)\)，\(g_k\sim\text{Gumbel}(0,1)\) 独立，得到的正好是 Categorical(\(\pi\)) 样本。把 argmax 换成温度为 \(\tau\) 的 softmax 就是 Gumbel-Softmax，可导但有偏，\(\tau\to0\) 时趋近 one-hot。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-gausskl">
+  <div class="concept-head"><span class="pri p1">★</span><h3>高斯 KL 的闭式解</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\mathrm{KL}\big(\mathcal N(\mu,\mathrm{diag}\,\sigma^2)\,\|\,\mathcal N(0,I)\big)=\tfrac12\sum_j\big(\mu_j^2+\sigma_j^2-1-\log\sigma_j^2\big)\)。</p><p class="en">KL from a diagonal Gaussian to the standard normal is one-half the sum of mu squared plus sigma squared minus one minus log sigma squared.</p></div>
+  <div class="deep">
+    <p><b>一维推导</b>（多维对角时各维独立，直接求和）。设 \(q=\mathcal N(\mu,\sigma^2)\)，\(p=\mathcal N(0,1)\)：</p>
+    $$\log q(z) = -\tfrac12\log(2\pi\sigma^2)-\frac{(z-\mu)^2}{2\sigma^2},\qquad \log p(z)=-\tfrac12\log(2\pi)-\frac{z^2}{2}.$$
+    $$\begin{aligned}
+    \mathrm{KL}(q\|p)&=\mathbb{E}_q[\log q(z)-\log p(z)]
+    = -\tfrac12\log\sigma^2 - \frac{\mathbb{E}_q[(z-\mu)^2]}{2\sigma^2} + \frac{\mathbb{E}_q[z^2]}{2}\\
+    &= -\tfrac12\log\sigma^2-\tfrac12+\tfrac12(\mu^2+\sigma^2) \qquad(\mathbb{E}_q[(z-\mu)^2]=\sigma^2,\ \mathbb{E}_q[z^2]=\mu^2+\sigma^2)\\
+    &=\tfrac12\big(\mu^2+\sigma^2-1-\log\sigma^2\big).
+    \end{aligned}$$
+    <p><b>检查：</b>\(\mu=0,\sigma=1\) 时为 0 ✓；\(f(s)=s-1-\log s\ge0\)（在 \(s=1\) 取最小）✓。</p>
+    <p><b>一般形式</b>（两个任意多元高斯，\(d\) 维）：</p>
+    $$\mathrm{KL}\big(\mathcal N(\mu_1,\Sigma_1)\,\|\,\mathcal N(\mu_2,\Sigma_2)\big)=\tfrac12\Big[\mathrm{tr}(\Sigma_2^{-1}\Sigma_1)+(\mu_2-\mu_1)^\top\Sigma_2^{-1}(\mu_2-\mu_1)-d+\log\frac{\det\Sigma_2}{\det\Sigma_1}\Big].$$
+    <p>Diffusion 里 ELBO 的每一项都是两个高斯的 KL，方差固定时只剩均值差的平方项 \(\frac{1}{2\sigma^2}\|\mu_1-\mu_2\|^2\)，这就是 diffusion 损失变成 MSE 的原因。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>代码里常见 bug：(1) 符号写反成 \(1+\log\sigma^2-\mu^2-\sigma^2\) 却仍然"加"到损失里（应当减，或者说 KL 本身是 \(-\tfrac12\sum(1+\log\sigma^2-\mu^2-\sigma^2)\)）；(2) 把 <code>logvar</code> 当成 \(\log\sigma\) 用，漏了因子 2。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For a diagonal Gaussian against a standard normal, the KL is one half times the sum over dimensions of mu squared plus sigma squared minus one minus log sigma squared. You get it by writing out both log densities and using that the expectation of z minus mu squared is sigma squared, and the expectation of z squared is mu squared plus sigma squared. It's zero exactly when mu is zero and sigma is one, and every term is non-negative because s minus one minus log s is minimized at s equals one.</p></div>
+</section>
+
+<section class="concept" id="c-collapse">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Posterior collapse 与 β-VAE</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>当 decoder 足够强（如 AR decoder）时，它可以不用 \(z\) 就把 \(x\) 建模好，于是最优解是 \(q(z\mid x)=p(z)\)、KL 项为 0，潜变量被忽略；β-VAE 用 \(\beta\) 加权 KL 项，在重建质量和潜空间规整/解耦之间权衡。</p><p class="en">Posterior collapse happens when a powerful decoder ignores the latent, so the KL term goes to zero; beta-VAE reweights the KL to trade reconstruction against a more regular, disentangled latent.</p></div>
+  <div class="deep">
+    <p><b>为什么会塌缩。</b>KL 项对每个样本都有"使用 \(z\) 的代价"：要让 \(z\) 携带关于 \(x\) 的信息，\(q(z\mid x)\) 必须偏离 \(p(z)\)，KL 就大于 0。如果 decoder 自己（比如一个 PixelCNN 或 LSTM 语言模型）就能把 \(p(x)\) 建模得很好，那么使用 \(z\) 带来的重建收益小于 KL 代价，优化就会让 \(z\) 失效。训练早期 encoder 还很差、\(z\) 是噪声时，decoder 很快学会忽略它，形成局部最优。文本 VAE 尤其严重。</p>
+    <p><b>常见缓解：</b></p>
+    <ul>
+      <li><b>KL annealing / warm-up：</b>\(\beta\) 从 0 逐渐升到 1，让 encoder 先学到有用信息。</li>
+      <li><b>Free bits：</b>每个维度（或每组）的 KL 低于阈值 \(\lambda\) 时不惩罚：\(\sum_j\max(\lambda,\mathrm{KL}_j)\)。</li>
+      <li><b>削弱 decoder：</b>word dropout、限制感受野，迫使 decoder 依赖 \(z\)。</li>
+      <li><b>改目标：</b>δ-VAE 限制后验族使 KL 有下界；VQ-VAE 用离散码本，从根本上绕开（见下）。</li>
+    </ul>
+    <p><b>β-VAE：</b>\(\mathcal L_\beta=\mathbb{E}_q[\log p(x\mid z)]-\beta\,\mathrm{KL}(q(z\mid x)\,\|\,p(z))\)。\(\beta\gt1\) 加强"信息瓶颈"，逼 \(z\) 的各维更独立（解耦表示，disentanglement），代价是重建更模糊；\(\beta\lt1\) 重建更好但潜空间不规整，从先验采样质量下降。\(\beta\ne1\) 时它不再是 \(\log p(x)\) 的下界（\(\beta\lt1\) 时不保证）。Stable Diffusion 用的 VAE（作为图像压缩器）就是一个 KL 权重很小（约 \(10^{-6}\) 量级）的 VAE + 感知损失 + 对抗损失，目标是高保真重建，而非好的先验采样。</p>
+    <div class="box why"><span class="lbl">直觉</span>把 \(\mathbb{E}_x[\mathrm{KL}(q(z\mid x)\|p(z))]\) 理解为"每个样本编码进 \(z\) 的信息量（nats）"的上界：它 \(\ge I_q(x;z)\)。β 就是信息的单价。单价太高，模型选择不传信息 → collapse。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"KL 很小说明 VAE 训练得好"——可能恰恰说明塌缩了。诊断要看 active units（各维度 \(\mathrm{Var}_x[\mathbb E_q z_j]\) 是否显著大于 0）和互信息估计。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Posterior collapse is when the approximate posterior just equals the prior, so the KL term is zero and the decoder ignores the latent. It happens when the decoder is expressive enough, say an autoregressive decoder for text, to model the data on its own, so paying KL to use z isn't worth it. Common fixes are KL annealing, free bits, weakening the decoder, or switching to discrete latents like VQ-VAE. Beta-VAE reweights the KL term: beta greater than one gives more disentangled but blurrier representations, and beta less than one gives sharper reconstructions but a less regular latent space.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does the KL upper-bound the mutual information?</b><details><summary>思路</summary><div class="inner">\(\mathbb E_{p(x)}\mathrm{KL}(q(z\mid x)\|p(z)) = I_q(x;z) + \mathrm{KL}(q(z)\|p(z))\)，其中 \(q(z)=\mathbb E_x q(z\mid x)\) 是聚合后验。第二项 \(\ge0\)，所以平均 KL \(\ge I_q(x;z)\)。最小化 KL 会同时压低互信息，这是 collapse 的信息论解释。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-vqvae">
+  <div class="concept-head"><span class="pri p3">○</span><h3>VQ-VAE（简述）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>encoder 输出向量后取码本中最近的码字作为离散潜变量，用 straight-through 估计器传梯度，加 codebook loss 和 commitment loss；它是现代图像/音频 tokenizer 的基础，让 AR 或 diffusion 在压缩后的离散/连续 token 上工作。</p><p class="en">VQ-VAE quantizes encoder outputs to the nearest codebook vector, uses a straight-through gradient, and serves as the tokenizer for many image and audio generative models.</p></div>
+  <div class="deep">
+    <p>损失（\(\mathrm{sg}\) 为 stop-gradient，\(z_e\) 为 encoder 输出，\(e\) 为最近码字）：</p>
+    $$\mathcal L=\underbrace{\|x-\hat x(z_q)\|^2}_{\text{重建}}+\underbrace{\|\mathrm{sg}[z_e]-e\|^2}_{\text{码本向 encoder 靠拢}}+\beta\underbrace{\|z_e-\mathrm{sg}[e]\|^2}_{\text{commitment}},\qquad z_q = z_e+\mathrm{sg}[e-z_e].$$
+    <p>最后那个写法就是 straight-through：前向值等于 \(e\)，反向梯度原样传给 \(z_e\)。先验均匀且固定时，KL 项是常数 \(\log K\)，因此不会 posterior collapse。码本也可以用 EMA 更新代替 codebook loss。常见问题：码本利用率低（dead codes），对策有 k-means 初始化、重启未用码字、低维码本 / 余弦距离、FSQ（有限标量量化）等。VQ-GAN 在此基础上加感知损失和对抗损失提升清晰度。</p>
+    <p>与本模块的联系：Latent diffusion 用的是连续 KL-VAE 潜空间；图像 AR 模型（如 Parti 类）和许多多模态 LLM 用 VQ 类离散 token。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>VQ-VAE replaces the Gaussian latent with a discrete codebook: the encoder output is snapped to its nearest code vector, and gradients are passed straight through the quantization. Two extra losses move the codebook towards encoder outputs and keep the encoder committed to its codes. Because the prior is uniform, the KL is a constant, so there's no posterior collapse. Today it's mainly used as a tokenizer, so that a transformer can model images or audio as sequences of discrete tokens.</p></div>
+</section>
+
+<!-- ======================================================= §4 -->
+<h2 class="sec" id="s-gan"><span class="num">§4 · GENERATIVE ADVERSARIAL NETWORKS</span>GAN：博弈、JS 散度与训练难点</h2>
+<p class="sec-intro">GAN 本身在 LLM 面试里不太常考深，但"最优判别器 → JS 散度"是经典白板题，而且"判别器作为可学习的散度"这个思想在 reward model、对抗蒸馏中都会出现。</p>
+
+<section class="concept" id="c-gan-opt">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Minimax 目标与最优判别器 → JS 散度</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>固定 \(G\) 时最优判别器 \(D^*(x)=\frac{p_{\text{data}}(x)}{p_{\text{data}}(x)+p_g(x)}\)，代回后 \(V(G,D^*)=2\,\mathrm{JS}(p_{\text{data}}\|p_g)-\log4\)，所以理想情况下生成器在最小化 JS 散度，全局最优为 \(p_g=p_{\text{data}}\)、\(D^*\equiv\tfrac12\)。</p><p class="en">The optimal discriminator is p_data over p_data plus p_g; plugging it back shows the generator minimizes twice the Jensen–Shannon divergence minus log 4.</p></div>
+  <div class="deep">
+    <p><b>目标。</b></p>
+    $$\min_G\max_D\ V(D,G)=\mathbb{E}_{x\sim p_{\text{data}}}[\log D(x)]+\mathbb{E}_{z\sim p(z)}[\log(1-D(G(z)))].$$
+    <p><b>Step 1：固定 \(G\)，求最优 \(D\)。</b>把第二项换成对 \(p_g\)（\(G(z)\) 的分布）的期望：</p>
+    $$V(D,G)=\int\big[p_{\text{data}}(x)\log D(x)+p_g(x)\log(1-D(x))\big]dx.$$
+    <p>对每个 \(x\) 逐点最大化 \(f(y)=a\log y+b\log(1-y)\)，\(a=p_{\text{data}}(x)\)，\(b=p_g(x)\)，\(y\in(0,1)\)。令 \(f'(y)=\frac{a}{y}-\frac{b}{1-y}=0\) 得 \(y^*=\frac{a}{a+b}\)；\(f''(y)=-\frac{a}{y^2}-\frac{b}{(1-y)^2}\lt0\)，是最大值。所以</p>
+    $$D^*_G(x)=\frac{p_{\text{data}}(x)}{p_{\text{data}}(x)+p_g(x)}.$$
+    <p><b>Step 2：代回。</b>记 \(m=\tfrac12(p_{\text{data}}+p_g)\)：</p>
+    $$\begin{aligned}
+    V(D^*,G)&=\mathbb{E}_{p_{\text{data}}}\!\left[\log\frac{p_{\text{data}}}{p_{\text{data}}+p_g}\right]+\mathbb{E}_{p_g}\!\left[\log\frac{p_g}{p_{\text{data}}+p_g}\right]\\
+    &=\mathbb{E}_{p_{\text{data}}}\!\left[\log\frac{p_{\text{data}}}{2m}\right]+\mathbb{E}_{p_g}\!\left[\log\frac{p_g}{2m}\right]
+    =\mathrm{KL}(p_{\text{data}}\|m)+\mathrm{KL}(p_g\|m)-2\log2\\
+    &=2\,\mathrm{JS}(p_{\text{data}}\|p_g)-\log 4.
+    \end{aligned}$$
+    <p>JS \(\ge0\)，当且仅当两个分布相等时为 0，因此全局最小值 \(-\log4\) 在 \(p_g=p_{\text{data}}\) 处取得。</p>
+    <div class="box why"><span class="lbl">直觉</span>判别器在学密度比：\(\frac{D^*}{1-D^*}=\frac{p_{\text{data}}}{p_g}\)。这就是"用分类器估计密度比"的技巧（density ratio trick），在 noise-contrastive estimation、classifier guidance、对比学习里都出现过。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>这个分析假设 (1) \(D\) 有无限容量并能在每一步训练到最优；(2) 在函数空间（而非参数空间）中优化 \(G\)。实际中两者都不成立，所以"GAN 最小化 JS"只是理想化的解释，实际训练动态是交替梯度下降的博弈，可能震荡而不收敛。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For a fixed generator, the value function is an integral over x, so we can maximize it pointwise. Each point gives a times log y plus b times log one minus y, which is maximized at y equals a over a plus b, so the optimal discriminator is p data over p data plus p g. Plugging that back in and introducing the mixture m, we get two KL terms to the mixture, which is twice the Jensen–Shannon divergence minus log four. So in the idealized setting the generator minimizes JS, with the optimum at p g equals p data and D equal to one half everywhere.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What goes wrong with JS when the supports don't overlap?</b><details><summary>思路</summary><div class="inner">高维中真实数据和生成分布通常集中在低维流形上，支撑集几乎不相交。此时 JS 恒等于 \(\log 2\)，与两个分布离多远无关，梯度为 0；完美判别器存在且饱和，生成器得不到有用信号。这是 WGAN 的动机：Wasserstein 距离在不相交时仍随距离连续变化。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-gan-train">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>训练难点：non-saturating loss、mode collapse、WGAN</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>原始生成器损失 \(\log(1-D(G(z)))\) 在 \(D\) 很强时梯度消失，所以实际用 non-saturating 版本 \(-\log D(G(z))\)；mode collapse 是生成器只产出少数几种样本；WGAN 用 Wasserstein-1 距离（通过 1-Lipschitz critic 的对偶形式）提供更平滑的梯度。</p><p class="en">Use the non-saturating generator loss to avoid vanishing gradients; mode collapse is the generator covering only a few modes; WGAN replaces JS with an Earth-Mover distance estimated by a Lipschitz critic.</p></div>
+  <div class="deep">
+    <p><b>Non-saturating loss。</b>训练早期 \(G\) 很差，\(D(G(z))\approx0\)。原损失 \(\log(1-D)\) 在 \(D\to0\) 附近很平：若 \(D=\sigma(\ell)\)，则 \(\frac{\partial}{\partial \ell}\log(1-\sigma(\ell))=-\sigma(\ell)\to0\)。改为最大化 \(\log D(G(z))\)：\(\frac{\partial}{\partial \ell}\log\sigma(\ell)=1-\sigma(\ell)\to1\)，梯度大。两者的不动点相同，但梯度动态不同。（理论上 non-saturating 目标对应的散度是 \(\mathrm{KL}(p_g\|p_{\text{data}})-2\mathrm{JS}\)，更偏向 mode-seeking。）</p>
+    <p><b>Mode collapse。</b>生成器发现某个样本能骗过当前判别器，就把所有 \(z\) 都映射过去；判别器随后学会识别它，生成器再跳到另一个模式……形成循环，始终覆盖不全。根源：交替优化下 \(\min_G\max_D\) 实际变成了 \(\max_D\min_G\) 的近似，而对固定 \(D\)，最优的 \(G\) 就是把所有质量放在 \(D\) 最高的那个点。缓解：minibatch discrimination、unrolled GAN、WGAN、谱归一化、更多的数据增强等。</p>
+    <p><b>WGAN（简述）。</b>Wasserstein-1（Earth Mover）距离的 Kantorovich–Rubinstein 对偶：</p>
+    $$W_1(p,q)=\sup_{\|f\|_L\le1}\ \mathbb{E}_{p}[f(x)]-\mathbb{E}_{q}[f(x)].$$
+    <p>critic \(f\) 不再输出概率，而是无界实数，需要满足 1-Lipschitz：原论文用权重裁剪（粗糙），WGAN-GP 用梯度惩罚 \(\lambda\,\mathbb{E}_{\hat x}(\|\nabla f(\hat x)\|-1)^2\)（在真假样本连线上取 \(\hat x\)），谱归一化（spectral norm）是另一种常用方式。好处：支撑不相交时距离仍有意义，loss 值和样本质量更相关。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"GAN loss 下降说明生成器在变好"——不成立，GAN 损失是两个玩家的博弈值，不是单调指标；评估要看 FID、precision/recall 等。另外 WGAN 的 critic 不应加 sigmoid。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In practice nobody uses the original generator loss, because when the discriminator easily rejects fakes, log of one minus D saturates and the gradient vanishes. Instead we maximize log D of G of z, which has the same fixed point but strong gradients early on. Mode collapse is when the generator maps many latents to a few outputs that fool the current discriminator, and the two players chase each other around. WGAN replaces the JS divergence with the Wasserstein distance through its dual, using a Lipschitz-constrained critic, which gives useful gradients even when the distributions don't overlap.</p></div>
+</section>
+
+<!-- ======================================================= §5 -->
+<h2 class="sec" id="s-flows"><span class="num">§5 · NORMALIZING FLOWS</span>Normalizing flow</h2>
+<p class="sec-intro">离散时间的可逆映射。它是理解"连续时间 flow（Neural ODE / flow matching）"的前置知识：变量替换公式 → 瞬时变量替换 → 连续性方程。</p>
+
+<section class="concept" id="c-nf">
+  <div class="concept-head"><span class="pri p3">○</span><h3>变量替换、可逆架构与局限</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用可逆映射 \(x=f_\theta(z)\) 把简单分布推成复杂分布，\(\log p(x)=\log p_z(f^{-1}(x))+\log\big|\det \tfrac{\partial f^{-1}}{\partial x}\big|\)，可精确最大似然；代价是架构必须可逆且 Jacobian 行列式要好算，表达能力受限。</p><p class="en">Flows push a simple density through an invertible map and get exact likelihood by the change-of-variables formula, at the price of constrained architectures with cheap Jacobian determinants.</p></div>
+  <div class="deep">
+    <p><b>变量替换公式。</b>若 \(z\sim p_z\)，\(x=f(z)\)，\(f\) 可逆可导，则</p>
+    $$p_x(x)=p_z(f^{-1}(x))\,\Big|\det\frac{\partial f^{-1}(x)}{\partial x}\Big| = p_z(z)\,\Big|\det\frac{\partial f(z)}{\partial z}\Big|^{-1}.$$
+    <p>直觉：体积被 \(f\) 放大多少倍，密度就缩小多少倍（概率质量守恒）。多层复合 \(f=f_K\circ\dots\circ f_1\) 时，log-det 相加。一般 \(d\times d\) 矩阵的行列式是 \(O(d^3)\)，所以要设计三角 Jacobian 的层。</p>
+    <p><b>代表架构：</b></p>
+    <ul>
+      <li><b>Coupling layer（NICE / RealNVP / Glow）：</b>把 \(x\) 分成两半 \((x_a,x_b)\)，\(y_a=x_a\)，\(y_b=x_b\odot\exp(s(x_a))+t(x_a)\)。Jacobian 是下三角，\(\log|\det|=\sum s(x_a)\)；逆变换 \(x_b=(y_b-t(y_a))\odot\exp(-s(y_a))\) 也很便宜。\(s,t\) 可以是任意网络（不需要可逆）。Glow 加了可逆 1×1 卷积来混合通道。</li>
+      <li><b>Autoregressive flow（MAF / IAF）：</b>每一维的变换依赖前面的维度，Jacobian 三角。MAF 密度评估快、采样慢；IAF 反之。</li>
+      <li><b>连续时间 flow（Neural ODE / FFJORD）：</b>\(\frac{dx}{dt}=v_\theta(x,t)\)，对数密度满足瞬时变量替换 \(\frac{d\log p(x_t)}{dt}=-\nabla\cdot v_\theta(x_t,t)\)（迹可用 Hutchinson 估计）。不需要特殊架构，但训练要反复解 ODE，很慢。<b>Flow matching 正是为了"不用模拟 ODE 就能训练连续 flow"而提出的</b>（见 <a href="#c-fm">§7</a>）。</li>
+    </ul>
+    <p><b>局限：</b>维度必须保持不变（潜变量和数据同维，不能压缩）；可逆约束让每层表达能力弱，需要很多层；拓扑限制（连续可逆映射无法把单峰高斯变成不连通的多峰分布，只能拉出细"桥"）；样本质量历史上不如 GAN 和 diffusion。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A normalizing flow pushes a simple base distribution through an invertible, differentiable map, and the change-of-variables formula gives the exact density: the base density times the inverse of the Jacobian determinant. To keep that tractable, layers are designed with triangular Jacobians, like the affine coupling layers in RealNVP and Glow. The downsides are that dimensionality can't change and invertibility limits expressiveness. Continuous normalizing flows remove the architectural constraint by defining the map with an ODE, and flow matching is a way to train those without simulating the ODE.</p></div>
+</section>
+
+<!-- ======================================================= §6 -->
+<h2 class="sec" id="s-diffusion"><span class="num">§6 · DIFFUSION MODELS</span>Diffusion：DDPM、score、SDE 与 guidance</h2>
+<p class="sec-intro">本章最重要的一节。主线：<b>前向加噪有闭式解 → 反向用网络近似 → 损失化简为预测噪声的 MSE → 预测噪声等价于估计 score → 连续时间下是 SDE，并有一个确定性的 probability-flow ODE → DDIM 是这个 ODE 的离散化 → guidance 是在 score 上加条件项</b>。符号统一用 DDPM 记法：\(\beta_t\)、\(\alpha_t=1-\beta_t\)、\(\bar\alpha_t=\prod_{s\le t}\alpha_s\)。<b>注意：diffusion 文献里 \(x_0\) 是数据、\(x_T\) 是噪声；§7 rectified flow 里按要求用 \(x_0\) 为噪声、\(x_1\) 为数据，方向相反。</b></p>
+
+<section class="concept" id="c-ddpm-forward">
+  <div class="concept-head"><span class="pri p1">★</span><h3>前向过程与 \(q(x_t\mid x_0)\) 闭式解</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>前向每步 \(q(x_t\mid x_{t-1})=\mathcal N(\sqrt{\alpha_t}\,x_{t-1},\beta_t I)\)；由高斯的可加性，任意 \(t\) 都可一步采样：\(q(x_t\mid x_0)=\mathcal N(\sqrt{\bar\alpha_t}\,x_0,(1-\bar\alpha_t)I)\)，即 \(x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\,\epsilon\)。</p><p class="en">Because Gaussians compose, you can jump to any noise level in one shot: x_t equals root alpha-bar times x_0 plus root one minus alpha-bar times epsilon.</p></div>
+  <div class="deep">
+    <p><b>为什么系数是 \(\sqrt{\alpha_t}\) 而不是 1？</b>为了保持方差：若 \(\mathrm{Var}(x_{t-1})=1\)，则 \(\mathrm{Var}(x_t)=\alpha_t\cdot1+\beta_t=1\)。这叫 variance-preserving（VP）。最终 \(x_T\approx\mathcal N(0,I)\)，与 \(x_0\) 几乎无关。</p>
+    <p><b>推导（归纳法）。</b>假设 \(x_{t-1}=\sqrt{\bar\alpha_{t-1}}x_0+\sqrt{1-\bar\alpha_{t-1}}\,\epsilon_{t-1}\)，\(\epsilon_{t-1}\sim\mathcal N(0,I)\)。一步前向 \(x_t=\sqrt{\alpha_t}x_{t-1}+\sqrt{1-\alpha_t}\,\epsilon'\)，\(\epsilon'\) 独立：</p>
+    $$x_t=\sqrt{\alpha_t\bar\alpha_{t-1}}\,x_0+\underbrace{\sqrt{\alpha_t(1-\bar\alpha_{t-1})}\,\epsilon_{t-1}+\sqrt{1-\alpha_t}\,\epsilon'}_{\text{两个独立零均值高斯之和}}.$$
+    <p>独立高斯之和仍是高斯，方差相加：\(\alpha_t(1-\bar\alpha_{t-1})+(1-\alpha_t)=1-\alpha_t\bar\alpha_{t-1}=1-\bar\alpha_t\)。又 \(\alpha_t\bar\alpha_{t-1}=\bar\alpha_t\)，所以</p>
+    $$x_t=\sqrt{\bar\alpha_t}\,x_0+\sqrt{1-\bar\alpha_t}\,\epsilon,\qquad \epsilon\sim\mathcal N(0,I).\ \ \blacksquare$$
+    <p>基例 \(t=1\)：\(\bar\alpha_1=\alpha_1\) 直接成立。这个闭式解是 diffusion 训练高效的关键：<b>训练时不需要模拟前向链</b>，随机抽一个 \(t\)，一步加噪，算损失即可。</p>
+    <p><b>信噪比（SNR）。</b>\(\mathrm{SNR}(t)=\bar\alpha_t/(1-\bar\alpha_t)\)，随 \(t\) 单调递减。很多理论（ELBO 的权重、不同参数化的等价）用 SNR 表达最干净：VDM 论文证明连续时间 ELBO 只依赖 SNR 在两端的值，而与中间的 schedule 形状无关（schedule 只影响 Monte Carlo 方差）。</p>
+    <p>数值验证（本站 scratch 中跑过）：线性 schedule 下迭代 300 步前向链得到的经验均值/方差与闭式解在 \(10^{-3}\) 量级一致。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>写成 \(x_t=\sqrt{\bar\alpha_t}x_0+(1-\bar\alpha_t)\epsilon\)（方差和标准差混淆）。或者以为 \(\bar\alpha_t=1-\sum\beta_s\)——是乘积 \(\prod(1-\beta_s)\)，不是求和。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The forward process adds a small amount of Gaussian noise at every step, scaling the signal by root alpha so the variance stays one. Because a sum of independent Gaussians is Gaussian, we can compose all the steps: the mean coefficients multiply to root alpha-bar, and the variances add up to one minus alpha-bar. So x_t equals root alpha-bar t times x_0 plus root one minus alpha-bar t times epsilon. This is what makes training cheap: we sample a random timestep and noise the data in one shot, without simulating the chain.</p></div>
+</section>
+
+<section class="concept" id="c-ddpm-reverse">
+  <div class="concept-head"><span class="pri p1">★</span><h3>反向过程、后验 \(q(x_{t-1}\mid x_t,x_0)\) 与 ε-prediction</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(q(x_{t-1}\mid x_t)\) 不可算，但给定 \(x_0\) 的后验是高斯，均值可写成 \(\tilde\mu=\frac{1}{\sqrt{\alpha_t}}\big(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon\big)\)；于是让网络预测噪声 \(\epsilon_\theta(x_t,t)\)，代入同样形式得到反向均值，ELBO 中每一项 KL 化简为加权的 \(\|\epsilon-\epsilon_\theta\|^2\)，去掉权重就是 \(L_{\text{simple}}\)。</p><p class="en">The posterior given x_0 is Gaussian; parameterizing the reverse mean through predicted noise turns every KL in the ELBO into a weighted noise-prediction MSE, and dropping the weights gives the simple loss.</p></div>
+  <div class="deep">
+    <p><b>反向模型。</b>\(p_\theta(x_{t-1}\mid x_t)=\mathcal N(\mu_\theta(x_t,t),\sigma_t^2I)\)，\(p(x_T)=\mathcal N(0,I)\)。当 \(\beta_t\) 很小时，真实反向条件分布确实近似高斯，这是"小步可以用高斯近似"的理论依据。</p>
+    <p><b>后验（用 Bayes 和配方）。</b>\(q(x_{t-1}\mid x_t,x_0)\propto q(x_t\mid x_{t-1})\,q(x_{t-1}\mid x_0)\)，两个都是关于 \(x_{t-1}\) 的高斯，乘积仍是高斯：</p>
+    $$q(x_{t-1}\mid x_t,x_0)=\mathcal N\big(\tilde\mu_t(x_t,x_0),\tilde\beta_tI\big),\quad
+    \tilde\mu_t=\frac{\sqrt{\bar\alpha_{t-1}}\beta_t}{1-\bar\alpha_t}x_0+\frac{\sqrt{\alpha_t}(1-\bar\alpha_{t-1})}{1-\bar\alpha_t}x_t,\quad
+    \tilde\beta_t=\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\beta_t.$$
+    <details><summary>配方细节</summary><div class="inner">
+      <p>对 \(x_{t-1}\) 收集指数中的二次项和一次项：</p>
+      $$-\tfrac12\Big[\frac{(x_t-\sqrt{\alpha_t}x_{t-1})^2}{\beta_t}+\frac{(x_{t-1}-\sqrt{\bar\alpha_{t-1}}x_0)^2}{1-\bar\alpha_{t-1}}\Big]
+      =-\tfrac12\Big[\underbrace{\Big(\frac{\alpha_t}{\beta_t}+\frac{1}{1-\bar\alpha_{t-1}}\Big)}_{1/\tilde\beta_t}x_{t-1}^2-2\Big(\frac{\sqrt{\alpha_t}}{\beta_t}x_t+\frac{\sqrt{\bar\alpha_{t-1}}}{1-\bar\alpha_{t-1}}x_0\Big)x_{t-1}\Big]+C.$$
+      <p>\(\frac{\alpha_t}{\beta_t}+\frac{1}{1-\bar\alpha_{t-1}}=\frac{\alpha_t(1-\bar\alpha_{t-1})+\beta_t}{\beta_t(1-\bar\alpha_{t-1})}=\frac{1-\bar\alpha_t}{\beta_t(1-\bar\alpha_{t-1})}\)，所以 \(\tilde\beta_t=\frac{(1-\bar\alpha_{t-1})\beta_t}{1-\bar\alpha_t}\)。均值 = \(\tilde\beta_t\times\)一次项系数，展开即得上式。数值上，我们用蒙特卡洛回归验证了系数（误差 \(\lt10^{-3}\)）。</p>
+    </div></details>
+    <p><b>换成 ε 表达。</b>把 \(x_0=\frac{1}{\sqrt{\bar\alpha_t}}(x_t-\sqrt{1-\bar\alpha_t}\,\epsilon)\) 代入 \(\tilde\mu_t\)。\(x_t\) 的系数：\(\frac{\sqrt{\alpha_t}(1-\bar\alpha_{t-1})}{1-\bar\alpha_t}+\frac{\beta_t}{(1-\bar\alpha_t)\sqrt{\alpha_t}}=\frac{\alpha_t(1-\bar\alpha_{t-1})+\beta_t}{\sqrt{\alpha_t}(1-\bar\alpha_t)}=\frac{1}{\sqrt{\alpha_t}}\)；\(\epsilon\) 的系数：\(-\frac{\sqrt{\bar\alpha_{t-1}}\beta_t\sqrt{1-\bar\alpha_t}}{(1-\bar\alpha_t)\sqrt{\bar\alpha_t}}=-\frac{\beta_t}{\sqrt{\alpha_t}\sqrt{1-\bar\alpha_t}}\)。因此</p>
+    $$\tilde\mu_t=\frac{1}{\sqrt{\alpha_t}}\Big(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\,\epsilon\Big)\ \Longrightarrow\ \mu_\theta(x_t,t):=\frac{1}{\sqrt{\alpha_t}}\Big(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\,\epsilon_\theta(x_t,t)\Big).$$
+    <p><b>ELBO 分解。</b>把 \(x_{1:T}\) 当作潜变量、前向过程当作固定的"encoder" \(q\)，套用 §3 的 ELBO，并利用 Markov 性与 Bayes 重排，得到</p>
+    $$-\mathrm{ELBO}=\mathbb{E}_q\Big[\underbrace{\mathrm{KL}(q(x_T\mid x_0)\|p(x_T))}_{L_T:\ \text{无参数}}+\sum_{t=2}^{T}\underbrace{\mathrm{KL}\big(q(x_{t-1}\mid x_t,x_0)\,\|\,p_\theta(x_{t-1}\mid x_t)\big)}_{L_{t-1}}\ \underbrace{-\log p_\theta(x_0\mid x_1)}_{L_0}\Big].$$
+    <p>每个 \(L_{t-1}\) 是两个同方差高斯的 KL = \(\frac{1}{2\sigma_t^2}\|\tilde\mu_t-\mu_\theta\|^2\)+常数。代入两者的 ε 形式：</p>
+    $$L_{t-1}=\frac{\beta_t^2}{2\sigma_t^2\alpha_t(1-\bar\alpha_t)}\ \mathbb{E}_{x_0,\epsilon}\big\|\epsilon-\epsilon_\theta(\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon,\,t)\big\|^2+C.$$
+    <p>Ho et al. 发现丢掉前面的权重、对 \(t\) 均匀采样，样本质量更好：</p>
+    $$L_{\text{simple}}=\mathbb{E}_{t\sim U\{1..T\},\,x_0,\,\epsilon}\big\|\epsilon-\epsilon_\theta(\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon,\,t)\big\|^2.$$
+    <p>\(L_{\text{simple}}\) 是一个<b>重新加权</b>的 ELBO：相对 ELBO 降低了小 \(t\)（几乎无噪声、任务很简单）的权重，把容量留给更难的中高噪声水平。代价是对数似然（bits/dim）略差；Improved DDPM 通过学习方差 \(\sigma_t\) 和混合损失 \(L_{\text{hybrid}}\) 改善了似然。</p>
+    <p><b>采样（ancestral sampling）。</b>\(x_T\sim\mathcal N(0,I)\)；对 \(t=T,\dots,1\)：\(x_{t-1}=\mu_\theta(x_t,t)+\sigma_t z\)，\(z\sim\mathcal N(0,I)\)（\(t=1\) 时不加噪声）。\(\sigma_t^2\) 取 \(\beta_t\) 或 \(\tilde\beta_t\)，两者分别对应数据为单点与标准高斯两种极端下的最优，实践中差别不大。</p>
+  </div>
+  <details class="deep"><summary>PyTorch：DDPM 训练损失、ancestral 采样、DDIM 采样</summary><div class="inner">
+<pre><code class="language-python">import torch, torch.nn as nn
+
+T = 1000
+betas = torch.linspace(1e-4, 0.02, T)
+alphas = 1.0 - betas
+abar = torch.cumprod(alphas, dim=0)
+
+def q_sample(x0, t, eps):
+    """x_t = sqrt(abar_t) x0 + sqrt(1 - abar_t) eps ;  t: (B,) long"""
+    a = abar[t].view(-1, *([1] * (x0.dim() - 1)))
+    return a.sqrt() * x0 + (1 - a).sqrt() * eps
+
+def ddpm_loss(model, x0):
+    t = torch.randint(0, T, (x0.size(0),))
+    eps = torch.randn_like(x0)
+    xt = q_sample(x0, t, eps)
+    return ((model(xt, t) - eps) ** 2).mean()      # L_simple
+
+@torch.no_grad()
+def ddpm_sample(model, shape):
+    x = torch.randn(shape)
+    for t in reversed(range(T)):
+        tt = torch.full((shape[0],), t, dtype=torch.long)
+        eps = model(x, tt)
+        mean = (x - betas[t] / (1 - abar[t]).sqrt() * eps) / alphas[t].sqrt()
+        if t &gt; 0:
+            x = mean + betas[t].sqrt() * torch.randn_like(x)   # sigma_t^2 = beta_t
+        else:
+            x = mean
+    return x
+
+@torch.no_grad()
+def ddim_sample(model, shape, n_steps=50, eta=0.0):
+    ts = torch.linspace(T - 1, 0, n_steps).long()
+    x = torch.randn(shape)
+    for i, t in enumerate(ts):
+        tt = torch.full((shape[0],), int(t), dtype=torch.long)
+        eps = model(x, tt)
+        a_t = abar[t]
+        a_prev = abar[ts[i + 1]] if i + 1 &lt; len(ts) else torch.tensor(1.0)
+        x0_hat = (x - (1 - a_t).sqrt() * eps) / a_t.sqrt()
+        sigma = eta * ((1 - a_prev) / (1 - a_t) * (1 - a_t / a_prev)).sqrt()
+        dir_xt = (1 - a_prev - sigma ** 2).sqrt() * eps
+        x = a_prev.sqrt() * x0_hat + dir_xt + sigma * torch.randn_like(x)
+    return x</code></pre>
+    <p>验证方式：数据分布取一维高斯 \(\mathcal N(2,0.5^2)\) 时，最优噪声预测器有闭式解 \(\epsilon^*(x_t,t)=\mathbb E[\epsilon\mid x_t]=\sqrt{1-\bar\alpha_t}\,(x_t-\sqrt{\bar\alpha_t}m)/(\bar\alpha_t s^2+1-\bar\alpha_t)\)。用它代替网络，DDPM 1000 步采样得到均值 2.004、标准差 0.499；DDIM 50 步得到 2.00 / 0.476，DDIM 10 步标准差降到约 0.36（离散化误差让确定性采样器在步数很少时样本"收缩"）。这些数字来自等价的 numpy 实现。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 以为网络直接预测 \(x_{t-1}\)——可以，但 ε-参数化效果好得多，因为 ε 在各个 \(t\) 上都是单位方差，回归目标尺度稳定。(2) 以为 \(L_{\text{simple}}\) 就是 ELBO——它是加权版本，不再是严格下界。(3) 采样最后一步还加噪声。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The true reverse step is intractable, but conditioned on x_0 the posterior is Gaussian with a closed-form mean. If we rewrite that mean in terms of the noise epsilon, it's x_t minus a scaled epsilon, divided by root alpha. So we parameterize the reverse model the same way, with a network that predicts the noise. Then every KL term in the ELBO becomes a weighted squared error between the true and predicted noise, and DDPM found that simply dropping the weights, the simple loss, gives better samples, because it puts more emphasis on the harder, noisier timesteps.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why predict noise rather than the clean image?</b><details><summary>思路</summary><div class="inner">三种参数化（\(\epsilon\)、\(x_0\)、\(v\)）在数学上可以互相换算，区别在于隐含的损失权重和数值条件。ε 目标在各时间步都是单位方差，网络输出尺度稳定；在高噪声区域，预测 \(x_0\) 更容易，而在低噪声区域，预测 ε 会把小误差放大（\(\hat x_0=(x_t-\sqrt{1-\bar\alpha}\hat\epsilon)/\sqrt{\bar\alpha}\)，\(\bar\alpha\to0\) 时除以很小的数）。v-prediction 在两端都表现良好，见 <a href="#c-vpred">v-prediction</a>。</div></details></li>
+    <li><b>Why does the forward process need many small steps?</b><details><summary>思路</summary><div class="inner">只有当每步噪声很小时，真实反向条件分布 \(q(x_{t-1}\mid x_t)\) 才近似高斯，用高斯 \(p_\theta\) 去拟合才合理。步数太少，反向条件分布是多峰的，高斯近似失效。这也是为什么"少步采样"需要 DDIM/ODE 求解器或蒸馏，而不能直接把 \(T\) 设成 10。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-schedule">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>噪声 schedule</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>schedule 决定各噪声水平（SNR）上分配多少训练和采样预算：DDPM 用线性 \(\beta_t\in[10^{-4},0.02]\)、\(T=1000\)；cosine schedule 让 \(\bar\alpha_t\) 更平缓地下降，避免末端浪费；终点 SNR 不为 0 会导致训练–推理不一致。</p><p class="en">The schedule decides how much effort goes to each noise level; cosine schedules avoid wasting steps near pure noise, and a non-zero terminal SNR creates a train–test mismatch.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Linear（DDPM）：</b>\(\beta_t\) 从 \(10^{-4}\) 线性增到 0.02，\(T=1000\)。我们算得 \(\bar\alpha_T\approx4.0\times10^{-5}\)，\(\sqrt{\bar\alpha_T}\approx0.0064\)：最后一步仍有微弱信号，并非纯噪声。对低分辨率图像，后段很多步几乎都是噪声，信息被破坏得太快。</li>
+      <li><b>Cosine（Nichol &amp; Dhariwal, <a href="https://arxiv.org/abs/2102.09672" target="_blank" rel="noreferrer">Improved DDPM</a>）：</b>\(\bar\alpha_t=\frac{f(t)}{f(0)}\)，\(f(t)=\cos^2\!\big(\frac{t/T+s}{1+s}\cdot\frac{\pi}{2}\big)\)，\(s=0.008\)。中间段线性下降，两端平缓。</li>
+      <li><b>分辨率的影响：</b>高分辨率图像像素冗余大，同样的噪声水平"看起来"信息破坏更少，所以需要把 schedule 往更高噪声偏移（SD3 等工作中对 timestep 采样做 resolution-dependent shift）。</li>
+      <li><b>Zero terminal SNR（<a href="https://arxiv.org/abs/2305.08891" target="_blank" rel="noreferrer">Lin et al. 2023</a>）：</b>训练时 \(x_T\) 仍泄露少量信号（例如图像的平均亮度），推理时却从纯噪声出发，导致模型生成不了很亮或很暗的图。修正：重缩放 schedule 让 \(\bar\alpha_T=0\)，并配合 v-prediction（因为 \(\bar\alpha_T=0\) 时 ε-prediction 在最后一步无意义）。</li>
+      <li><b>EDM（<a href="https://arxiv.org/abs/2206.00364" target="_blank" rel="noreferrer">Karras et al. 2022</a>）：</b>把 diffusion 的设计空间拆成噪声水平分布、网络预条件（输入/输出缩放）、损失权重、采样器（Heun 二阶 ODE）几个独立部件，各自调优。它统一用噪声标准差 \(\sigma\) 而非离散 \(t\) 来参数化。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The noise schedule controls how training and sampling effort is spread across signal-to-noise ratios. The original linear schedule destroys information quickly, so many late steps are nearly pure noise; the cosine schedule makes alpha-bar decay more gently. One subtle issue is that common schedules don't reach zero terminal SNR, so the model never sees pure noise during training but starts from pure noise at inference, which is fixed by rescaling the schedule and using v-prediction.</p></div>
+</section>
+
+<section class="concept" id="c-score">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Score matching 与 denoising score matching</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>score 是 \(\nabla_x\log p(x)\)，与归一化常数无关；直接拟合需要未知的真 score，Vincent (2011) 证明：在加噪数据上回归条件 score \(\nabla_{\tilde x}\log q_\sigma(\tilde x\mid x)=-(\tilde x-x)/\sigma^2\) 与回归边缘 score 只差一个常数；因此 ε-prediction 就是在学 score：\(s_\theta(x_t,t)=-\epsilon_\theta(x_t,t)/\sqrt{1-\bar\alpha_t}\)。</p><p class="en">Denoising score matching shows that regressing the conditional score of the noising kernel equals regressing the true noisy score up to a constant, so predicting noise is estimating the score.</p></div>
+  <div class="deep">
+    <p><b>为什么要 score？</b>能量模型 \(p(x)=e^{-E(x)}/Z\) 的 \(Z\) 不可算，但 \(\nabla_x\log p(x)=-\nabla_xE(x)\) 不含 \(Z\)。有了 score，就可以用 Langevin dynamics 采样：\(x\leftarrow x+\frac{\eta}{2}\nabla_x\log p(x)+\sqrt{\eta}\,z\)。</p>
+    <p><b>Explicit score matching (ESM)：</b>\(J_{\text{ESM}}(\theta)=\mathbb{E}_{q(\tilde x)}\|s_\theta(\tilde x)-\nabla\log q(\tilde x)\|^2\)，真 score 未知，不能直接算。Hyvärinen 的 implicit score matching 用分部积分去掉真 score，但需要 Jacobian 的迹，高维代价大。</p>
+    <p><b>Denoising score matching (DSM)。</b>设 \(q_\sigma(\tilde x)=\int q_\sigma(\tilde x\mid x)p(x)dx\)：</p>
+    $$J_{\text{DSM}}(\theta)=\mathbb{E}_{p(x)q_\sigma(\tilde x\mid x)}\big\|s_\theta(\tilde x)-\nabla_{\tilde x}\log q_\sigma(\tilde x\mid x)\big\|^2 = J_{\text{ESM}}(\theta)+C.$$
+    <p><b>证明。</b>展开两个目标的平方。\(\|s_\theta\|^2\) 项相同（边缘化后都是 \(\mathbb{E}_{q(\tilde x)}\|s_\theta\|^2\)）；目标的平方项与 \(\theta\) 无关。只需证交叉项相等：</p>
+    $$\begin{aligned}
+    \mathbb{E}_{q(\tilde x)}\big[s_\theta(\tilde x)^\top\nabla\log q(\tilde x)\big]&=\int s_\theta(\tilde x)^\top\nabla_{\tilde x}q(\tilde x)\,d\tilde x
+    =\int s_\theta(\tilde x)^\top\nabla_{\tilde x}\!\int p(x)q(\tilde x\mid x)\,dx\,d\tilde x\\
+    &=\iint p(x)q(\tilde x\mid x)\,s_\theta(\tilde x)^\top\nabla_{\tilde x}\log q(\tilde x\mid x)\,dx\,d\tilde x
+    =\mathbb{E}_{p(x)q(\tilde x\mid x)}\big[s_\theta(\tilde x)^\top\nabla_{\tilde x}\log q(\tilde x\mid x)\big].\ \blacksquare
+    \end{aligned}$$
+    <p>关键一步是 \(q\nabla\log q=\nabla q\)（把 log 的梯度变回密度的梯度）。最优解是 \(s^*(\tilde x)=\mathbb{E}[\nabla\log q(\tilde x\mid x)\mid\tilde x]=\nabla\log q(\tilde x)\)：<b>条件目标的条件期望等于边缘目标</b>。这个"回归条件目标 ⇒ 学到边缘量"的套路在 §7 flow matching 里会原样再出现一次。</p>
+    <p><b>和 DDPM 的联系。</b>对 \(q(x_t\mid x_0)=\mathcal N(\sqrt{\bar\alpha_t}x_0,(1-\bar\alpha_t)I)\)：\(\nabla_{x_t}\log q(x_t\mid x_0)=-\frac{x_t-\sqrt{\bar\alpha_t}x_0}{1-\bar\alpha_t}=-\frac{\epsilon}{\sqrt{1-\bar\alpha_t}}\)。所以 DSM 目标 \(\|s_\theta+\epsilon/\sqrt{1-\bar\alpha_t}\|^2\) 与 \(\|\epsilon_\theta-\epsilon\|^2\) 只差一个 \(1/(1-\bar\alpha_t)\) 的权重，二者对应 \(s_\theta=-\epsilon_\theta/\sqrt{1-\bar\alpha_t}\)。</p>
+    <p><b>Tweedie 公式</b>（另一种看法）：若 \(x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon\)，则 \(\mathbb{E}[x_0\mid x_t]=\frac{x_t+(1-\bar\alpha_t)\nabla\log p_t(x_t)}{\sqrt{\bar\alpha_t}}\)。去噪器（后验均值）和 score 是同一个东西的两种写法。</p>
+    <p><b>多噪声水平（NCSN, Song &amp; Ermon 2019）。</b>单一 \(\sigma\) 的问题：低密度区几乎没有数据，score 估计不准，Langevin 在那里迷路；而大 \(\sigma\) 填满空间但分布被模糊。解决：训练一族 \(\sigma_1\gt\dots\gt\sigma_L\) 的 noise-conditional score network，采样时 annealed Langevin 从大噪声逐级到小噪声。这和 DDPM 本质相同，Song et al. 的 SDE 框架把两者统一。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"score 是 \(\nabla_\theta\log p\)"——在 diffusion 语境里 score 是对<b>数据 \(x\)</b> 的梯度，不是统计学里对参数的 Fisher score。另外 DSM 学到的是加噪分布 \(q_\sigma\) 的 score，不是干净数据的 score，\(\sigma\to0\) 时才逼近。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The score is the gradient of the log density with respect to x, which doesn't depend on the normalizing constant. We can't regress it directly because we don't know the true score, but Vincent showed that if you add Gaussian noise to the data and regress the score of the noising kernel, which is just minus the noise over sigma squared, you get the same objective up to a constant. The reason is that the conditional expectation of the conditional score is the marginal score. In DDPM terms, the score is minus the predicted noise divided by root one minus alpha-bar, so noise prediction is score estimation.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What is Tweedie's formula and why does it matter?</b><details><summary>思路</summary><div class="inner">对高斯噪声 \(y=x+\sigma n\)，后验均值 \(\mathbb E[x\mid y]=y+\sigma^2\nabla_y\log p(y)\)。意义：最优 MMSE 去噪器完全由加噪边缘分布的 score 决定。所以"训练一个去噪器"="学 score"，也是 diffusion posterior sampling、去噪先验（plug-and-play）等方法的基础。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-sde">
+  <div class="concept-head"><span class="pri p1">★</span><h3>SDE 视角与 probability-flow ODE</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把步数取到无穷，前向过程是 SDE \(dx=f(x,t)dt+g(t)dw\)；其逆时间过程是 \(dx=[f-g^2\nabla_x\log p_t(x)]dt+g\,d\bar w\)；还存在一个确定性 ODE \(\frac{dx}{dt}=f-\tfrac12g^2\nabla_x\log p_t(x)\)，其每个时刻的边缘分布与 SDE 完全相同（probability-flow ODE）。</p><p class="en">Diffusion in continuous time is an SDE whose reverse needs only the score; the probability-flow ODE shares the same marginals and gives deterministic sampling and exact likelihoods.</p></div>
+  <div class="deep">
+    <p><b>两个常见前向 SDE（Song et al. 2021, <a href="https://arxiv.org/abs/2011.13456" target="_blank" rel="noreferrer">Score-based generative modeling through SDEs</a>）：</b></p>
+    <ul>
+      <li><b>VP-SDE</b>（DDPM 的连续极限）：\(dx=-\tfrac12\beta(t)x\,dt+\sqrt{\beta(t)}\,dw\)。</li>
+      <li><b>VE-SDE</b>（NCSN 的连续极限）：\(dx=\sqrt{\tfrac{d\sigma^2(t)}{dt}}\,dw\)，只加噪不缩放，方差爆炸。</li>
+    </ul>
+    <p><b>Reverse-time SDE</b>（Anderson 1982）：</p>
+    $$dx=\big[f(x,t)-g(t)^2\nabla_x\log p_t(x)\big]dt+g(t)\,d\bar w,\quad t:T\to0.$$
+    <p>未知量只有 score，用网络 \(s_\theta(x,t)\) 替代即可采样。DDPM 的 ancestral sampling 可以看成它的一种离散化。</p>
+    <p><b>Probability-flow ODE 推导要点。</b>SDE 的边缘密度满足 Fokker–Planck 方程（\(g\) 与 \(x\) 无关时）：</p>
+    $$\partial_tp_t=-\nabla\cdot(f\,p_t)+\tfrac12g^2\Delta p_t.$$
+    <p>利用 \(\Delta p_t=\nabla\cdot(\nabla p_t)=\nabla\cdot(p_t\nabla\log p_t)\)，可改写为</p>
+    $$\partial_tp_t=-\nabla\cdot\Big(\big[f-\tfrac12g^2\nabla\log p_t\big]\,p_t\Big).$$
+    <p>这正是速度场 \(\tilde v=f-\tfrac12g^2\nabla\log p_t\) 下确定性流动的<b>连续性方程</b>。连续性方程相同 + 初始分布相同 ⇒ 每个时刻边缘相同。所以 ODE \(\frac{dx}{dt}=\tilde v(x,t)\) 与 SDE 的边缘一致，但单条轨迹是确定的。</p>
+    <p><b>ODE 视角的好处：</b>(1) 可以用高阶 ODE 求解器（Heun、DPM-Solver）大幅减少步数；(2) 噪声 \(x_T\) 与样本 \(x_0\) 一一对应，可做插值、编辑、反演（inversion）；(3) 通过瞬时变量替换公式算精确似然。缺点：确定性采样不能"纠错"，SDE 的随机项能把累积误差拉回正确分布，所以步数多时 SDE 采样有时质量更好。</p>
+    <div class="box why"><span class="lbl">直觉</span>Fokker–Planck 里的扩散项 \(\tfrac12g^2\Delta p\) 让概率"摊开"。同样的摊开效果也可以用一个确定性的、从高密度指向低密度的流 \(-\tfrac12g^2\nabla\log p\) 实现：粒子不随机游走，而是有序地"互相让开"。宏观上看不出区别。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>PF-ODE 的 score 系数是 \(\tfrac12g^2\)，reverse SDE 是 \(g^2\)，容易混淆。另外"ODE 和 SDE 的轨迹相同"是错的，只有<b>边缘分布</b>相同。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In the continuous-time limit, the forward noising process is an SDE with a drift and a diffusion coefficient. Anderson's result says the time reversal is another SDE whose drift involves the score, so if we learn the score we can sample by integrating backwards. Song and colleagues also showed there's a deterministic ODE, the probability-flow ODE, with drift f minus one half g squared times the score, that has exactly the same marginals at every time. You can see this from the Fokker–Planck equation: the diffusion term can be rewritten as transport along minus one half g squared times the score. The ODE gives deterministic, invertible sampling, fast higher-order solvers, and exact likelihoods.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>When would you prefer the SDE sampler over the ODE sampler?</b><details><summary>思路</summary><div class="inner">当 score 估计有误差时，随机项起到"Langevin 校正"的作用，把样本拉回高密度区；所以步数足够多时，随机采样质量常常略好。步数很少时 ODE（尤其是高阶求解器）更好，因为随机项需要小步长才准确。需要一一映射（编辑、反演、似然）时必须用 ODE。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-ddim">
+  <div class="concept-head"><span class="pri p1">★</span><h3>DDIM：同一个模型，更少的步数</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>DDIM 构造了一族非 Markov 的前向过程，它们的 \(q(x_t\mid x_0)\) 与 DDPM 相同，所以可以直接复用 DDPM 训练好的 \(\epsilon_\theta\)；令随机性 \(\eta=0\) 得到确定性采样，可以跳步（如 1000 → 50 步），本质上是 PF-ODE 的一种一阶离散化。</p><p class="en">DDIM reuses a DDPM-trained noise predictor with a non-Markovian process that has the same marginals; with eta equal to zero it is a deterministic, step-skipping sampler, essentially a discretization of the probability-flow ODE.</p></div>
+  <div class="deep">
+    <p><b>关键观察。</b>DDPM 的训练目标 \(L_{\text{simple}}\) 只依赖边缘 \(q(x_t\mid x_0)\)，不依赖联合分布 \(q(x_{1:T}\mid x_0)\)。所以任何与之边缘相同的前向过程都对应同一个训练好的模型，我们可以挑一个采样更快的。</p>
+    <p><b>更新公式</b>（从 \(t\) 跳到任意更早的 \(s\)，记 \(\hat x_0=\frac{x_t-\sqrt{1-\bar\alpha_t}\,\epsilon_\theta(x_t,t)}{\sqrt{\bar\alpha_t}}\)）：</p>
+    $$x_s=\sqrt{\bar\alpha_s}\,\hat x_0+\sqrt{1-\bar\alpha_s-\sigma^2}\;\epsilon_\theta(x_t,t)+\sigma z,\qquad \sigma=\eta\sqrt{\frac{1-\bar\alpha_s}{1-\bar\alpha_t}\Big(1-\frac{\bar\alpha_t}{\bar\alpha_s}\Big)}.$$
+    <p>读法：先用当前噪声估计"预测干净图" \(\hat x_0\)，再按 \(s\) 时刻的边缘公式"重新加噪"，加回去的噪声由预测的 \(\epsilon\)（确定部分）和新噪声 \(z\)（随机部分）组成。\(\eta=1\) 时随机部分的方差恰为 DDPM 后验方差 \(\tilde\beta\)（相邻步时），恢复 DDPM；\(\eta=0\) 时完全确定。</p>
+    <p><b>为什么是 ODE 的离散化？</b>令 \(\bar x=x/\sqrt{\bar\alpha}\)、\(\gamma=\sqrt{(1-\bar\alpha)/\bar\alpha}\)（噪声-信号比），\(\eta=0\) 的更新变为 \(\bar x_s=\bar x_t+(\gamma_s-\gamma_t)\,\epsilon_\theta\)，正是 ODE \(d\bar x/d\gamma=\epsilon_\theta\) 的 Euler 一步。在这个坐标下，如果 \(\epsilon_\theta\) 沿轨迹几乎不变，大步长也准确——这也预示了 §7 "直路径 → 少步数"的思想。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"DDIM 需要重新训练"——不需要，它只是换了采样器。"DDIM 步数越少越好"——步数很少时离散化误差明显（我们的一维实验中 10 步 DDIM 让标准差从 0.5 缩到约 0.36），所以才有 DPM-Solver 等高阶求解器和蒸馏方法。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>DDIM's key observation is that the DDPM loss only depends on the marginals q of x_t given x_0, not on the Markov chain. So you can define a non-Markovian forward process with the same marginals and reuse the same trained network. The update predicts x_0 from the current noise estimate and then re-noises it to the earlier timestep, and with eta equal to zero it's fully deterministic. That lets you skip steps, going from a thousand to around fifty, and in fact it's an Euler discretization of the probability-flow ODE in a rescaled coordinate.</p></div>
+</section>
+
+<section class="concept" id="c-guidance">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Classifier guidance 与 classifier-free guidance (CFG)</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Bayes：\(\nabla\log p(x\mid c)=\nabla\log p(x)+\nabla\log p(c\mid x)\)。Classifier guidance 用一个在噪声图上训练的分类器提供第二项并乘以 \(w\)；CFG 用同一个网络同时学条件和无条件（训练时以 10% 左右概率丢掉条件），采样时 \(\tilde\epsilon=\epsilon_\theta(x,\varnothing)+w\,[\epsilon_\theta(x,c)-\epsilon_\theta(x,\varnothing)]\)，\(w\gt1\) 时提高与条件的一致性、降低多样性。</p><p class="en">Guidance sharpens the conditional by adding a scaled gradient of log p(c|x); CFG gets that gradient for free as the difference between conditional and unconditional predictions of one network trained with condition dropout.</p></div>
+  <div class="deep">
+    <p><b>Classifier guidance（Dhariwal &amp; Nichol 2021）。</b>目标分布 \(\tilde p(x\mid c)\propto p(x)\,p(c\mid x)^{w}\)。其 score：</p>
+    $$\nabla_x\log\tilde p(x\mid c)=\nabla_x\log p(x)+w\,\nabla_x\log p_\phi(c\mid x_t,t).$$
+    <p>用 \(s=-\epsilon/\sqrt{1-\bar\alpha_t}\) 换成 ε 形式：\(\tilde\epsilon=\epsilon_\theta(x_t)-w\sqrt{1-\bar\alpha_t}\,\nabla_{x_t}\log p_\phi(c\mid x_t)\)。缺点：要在<b>每个噪声水平</b>上单独训练分类器；分类器梯度可能是"对抗性"的，即只骗过分类器而不提升真实质量。</p>
+    <p><b>CFG 推导（Ho &amp; Salimans 2022, <a href="https://arxiv.org/abs/2207.12598" target="_blank" rel="noreferrer">Classifier-Free Diffusion Guidance</a>）。</b>由 Bayes，\(\nabla\log p(c\mid x)=\nabla\log p(x\mid c)-\nabla\log p(x)\)，即"隐式分类器"可以由条件和无条件 score 之差得到，代入：</p>
+    $$\nabla\log\tilde p=\nabla\log p(x)+w\big[\nabla\log p(x\mid c)-\nabla\log p(x)\big]=(1-w)\nabla\log p(x)+w\,\nabla\log p(x\mid c).$$
+    <p>乘以 \(-\sqrt{1-\bar\alpha_t}\) 得到 ε 形式：</p>
+    $$\tilde\epsilon=\epsilon_\theta(x_t,\varnothing)+w\big[\epsilon_\theta(x_t,c)-\epsilon_\theta(x_t,\varnothing)\big]=(1-w)\,\epsilon_\theta(x_t,\varnothing)+w\,\epsilon_\theta(x_t,c).$$
+    <p>对应的目标分布 \(\tilde p\propto p(x\mid c)^w\,p(x)^{1-w}\)。\(w=1\)：普通条件采样；\(w=0\)：无条件；\(w\gt1\)：外推，远离无条件分布，样本更"典型"、更贴合 prompt、多样性降低，过大会过饱和。文本到图像常用 \(w\) 约 3–8（视模型和参数化而定）。</p>
+    <p><b>符号约定提醒：</b>原论文写作 \(\tilde\epsilon=(1+w')\epsilon_c-w'\epsilon_u\)，与上面的 \(w\) 关系是 \(w=1+w'\)。面试时先说明用哪种约定。</p>
+    <p><b>训练：</b>一个网络，条件 \(c\) 以概率 \(p_{\text{uncond}}\)（常见 0.1–0.2）被替换为空标记 \(\varnothing\)。采样时每步做两次前向（可以在 batch 维拼起来一次算）。</p>
+    <p><b>同样适用于 flow matching：</b>速度场也可以组合 \(\tilde v=v_u+w(v_c-v_u)\)，因为速度与 score 之间是仿射关系（见 §7）。本页 §9 的 torch 代码就是 RF + CFG。</p>
+    <div class="box why"><span class="lbl">直觉</span>\(\epsilon_c-\epsilon_u\) 指向"让图像更像条件 \(c\) 而不是任意图像"的方向。CFG 沿着这个方向多走几步。它和 LLM 里的 contrastive decoding（用强模型 logits 减弱模型 logits）是同一个思想：\(\log p_c+ (w-1)(\log p_c-\log p_u)\)。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) CFG 并不严格从 \(p(x\mid c)^wp(x)^{1-w}\) 采样：对每个噪声水平分别组合 score，得到的不是某个固定分布的加噪版本的 score，所以只是一个启发式的近似。(2) CFG 有成本：每步两次前向，推理开销翻倍（有工作把 guidance 蒸馏进模型）。(3) 忘了训练时做条件丢弃，就没有无条件分支可用。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>By Bayes' rule, the conditional score is the unconditional score plus the gradient of log p of c given x. Classifier guidance gets that second term from a classifier trained on noisy images and scales it up. Classifier-free guidance notices that the same gradient equals the conditional score minus the unconditional score, so we train one network with the condition randomly dropped, and at sampling time we extrapolate: unconditional prediction plus w times the difference. With w greater than one we trade diversity for prompt adherence and sample quality. It costs two forward passes per step, and it's a heuristic, since the combined scores aren't exactly the scores of a single diffused distribution.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does high guidance scale reduce diversity?</b><details><summary>思路</summary><div class="inner">目标 \(\propto p(x\mid c)\,p(c\mid x)^{w-1}\)：额外乘了一个隐式分类器的 \(w-1\) 次方，把概率质量集中到"分类器最确信是 \(c\)"的区域，即模式附近的典型样本；类似降低温度。过大时超出数据流形，出现过饱和和伪影。</div></details></li>
+    <li><b>Is there an LLM analogue of CFG?</b><details><summary>思路</summary><div class="inner">有：对 logits 做 \(\ell_u+w(\ell_c-\ell_u)\)，其中 \(\ell_u\) 是去掉 prompt（或部分 prompt）的 logits，被用于增强 prompt 遵循；contrastive decoding 用大小模型的差；以及 RL 中 \(\pi^*\propto\pi_{\text{ref}}\exp(r/\beta)\) 的"指数倾斜"形式也是同一结构。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-ldm">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Latent diffusion 与 DiT</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>先用 VAE 把图像压缩到低维潜空间（如 512×512×3 → 64×64×4，下采样 8 倍），在潜空间做 diffusion，再解码回像素；把感知压缩和语义生成分开，计算量大幅下降。DiT 把 U-Net 换成作用于 latent patch 的 Transformer，便于 scaling。</p><p class="en">Latent diffusion runs diffusion in a VAE's compressed latent space, separating perceptual compression from semantic generation; DiT swaps the U-Net for a transformer over latent patches.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>动机</b>（Rombach et al. 2022, <a href="https://arxiv.org/abs/2112.10752" target="_blank" rel="noreferrer">High-Resolution Image Synthesis with Latent Diffusion Models</a>）：像素空间里大部分比特是人眼不敏感的高频细节。用一个带感知损失和对抗损失训练的 autoencoder 负责这些细节，diffusion 只需要在压缩后的空间里建模语义结构。</li>
+      <li><b>条件注入：</b>文本 encoder（CLIP / T5）的输出通过 cross-attention 注入 U-Net；时间步通过嵌入加到特征上（或 adaptive normalization）。</li>
+      <li><b>DiT</b>（Peebles &amp; Xie, <a href="https://arxiv.org/abs/2212.09748" target="_blank" rel="noreferrer">Scalable Diffusion Models with Transformers</a>）：把 latent 切成 patch 作为 token，用标准 Transformer + adaLN-Zero 条件注入，显示出与计算量相关的清晰 scaling 行为。SD3 的 MM-DiT 让文本 token 和图像 token 各用一套权重、在 attention 中联合交互。</li>
+      <li><b>代价：</b>VAE 的重建质量是生成质量的上限（小字、人脸细节常受 VAE 限制）；潜空间通道数越多重建越好，但 diffusion 建模越难。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Latent diffusion first trains an autoencoder that compresses images by about eight times per side, and then runs diffusion in that latent space. The autoencoder handles imperceptible high-frequency detail, and the diffusion model focuses on semantics, which cuts compute dramatically. Text conditioning goes in through cross-attention. DiT replaces the U-Net with a plain transformer over latent patches, which scales more predictably, and most recent large image and video models follow that recipe.</p></div>
+</section>
+
+<section class="concept" id="c-vpred">
+  <div class="concept-head"><span class="pri p3">○</span><h3>v-prediction 与参数化之间的换算</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>记 \(\alpha_t=\sqrt{\bar\alpha_t}\)、\(\sigma_t=\sqrt{1-\bar\alpha_t}\)，\(v:=\alpha_t\epsilon-\sigma_tx_0\)；则 \(x_0=\alpha_tx_t-\sigma_tv\)，\(\epsilon=\sigma_tx_t+\alpha_tv\)。v-prediction 在高噪声和低噪声两端都数值稳定，并且在 \(\bar\alpha_T=0\) 时仍然有意义。</p><p class="en">v is alpha times epsilon minus sigma times x_0; it is well-conditioned at both ends of the schedule and is the natural target with zero terminal SNR.</p></div>
+  <div class="deep">
+    <p><b>验证：</b>\(\alpha_tx_t-\sigma_tv=\alpha_t(\alpha_tx_0+\sigma_t\epsilon)-\sigma_t(\alpha_t\epsilon-\sigma_tx_0)=(\alpha_t^2+\sigma_t^2)x_0=x_0\) ✓（因为 \(\alpha_t^2+\sigma_t^2=1\)）。</p>
+    <p><b>几何意义：</b>令 \(\alpha_t=\cos\phi\)、\(\sigma_t=\sin\phi\)，则 \(x_t=\cos\phi\,x_0+\sin\phi\,\epsilon\) 在 \((x_0,\epsilon)\) 平面上是一段圆弧，\(v=\frac{dx_t}{d\phi}\) 正好是沿圆弧的切向速度。所以 v-prediction 本身就是一种"速度预测"，与 flow matching 很接近；区别在于 RF 走直线而 VP 走圆弧。</p>
+    <p>来源：Salimans &amp; Ho, <a href="https://arxiv.org/abs/2202.00512" target="_blank" rel="noreferrer">Progressive Distillation for Fast Sampling of Diffusion Models</a>（v-prediction 在蒸馏到很少步数时尤其重要，因为此时网络经常在高噪声水平上被评估）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>With alpha squared plus sigma squared equal to one, define v as alpha times epsilon minus sigma times x_0. It's the time derivative of x_t along the circular arc between data and noise, so it's really a velocity. You can recover both x_0 and epsilon linearly from x_t and v. It's better conditioned than epsilon prediction at low SNR, which matters for few-step distillation and for zero-terminal-SNR schedules.</p></div>
+</section>
+
+<!-- ======================================================= §7 -->
+<h2 class="sec" id="s-fm"><span class="num">§7 · FLOW MATCHING &amp; RECTIFIED FLOW</span>Flow matching 与 rectified flow</h2>
+<p class="sec-intro">本章的核心。Flow matching 和 rectified flow 用一个更简单的视角重新理解 diffusion：<b>选一条从噪声到数据的插值路径，回归这条路径的速度，然后解 ODE</b>。不需要 SDE、score、方差 schedule 的推导。<b>记号：本节 \(x_0\sim\pi_0\) 是噪声（通常 \(\mathcal N(0,I)\)），\(x_1\sim\pi_1\) 是数据，\(t\) 从 0 走到 1</b>（与 §6 的 DDPM 方向相反）。Rectified flow 由 Liu, Gong &amp; Liu 提出（<a href="https://arxiv.org/abs/2209.03003" target="_blank" rel="noreferrer">Flow Straight and Fast</a>, ICLR 2023）；同期 Lipman et al. 提出 <a href="https://arxiv.org/abs/2210.02747" target="_blank" rel="noreferrer">Flow Matching</a>，Albergo &amp; Vanden-Eijnden 提出 <a href="https://arxiv.org/abs/2209.15571" target="_blank" rel="noreferrer">stochastic interpolants</a>，三者核心思想高度一致。</p>
+
+<section class="concept" id="c-velocity">
+  <div class="concept-head"><span class="pri p1">★</span><h3>速度场、连续性方程与"边缘速度"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>ODE \(\frac{dx}{dt}=v(x,t)\) 把 \(\pi_0\) 输运成 \(\pi_1\)，当且仅当边缘密度 \(p_t\) 满足连续性方程 \(\partial_tp_t+\nabla\cdot(p_tv)=0\)；给定任意插值 \(x_t=I(x_0,x_1,t)\)，取 \(v^*(x,t)=\mathbb{E}[\dot x_t\mid x_t=x]\)（条件速度的条件期望）就能让 ODE 的边缘与插值的边缘处处相同。</p><p class="en">A velocity field transports pi_0 to pi_1 if the marginals satisfy the continuity equation; the conditional expectation of the interpolation's velocity given x_t is exactly such a field.</p></div>
+  <div class="deep">
+    <p><b>连续性方程</b>就是概率质量守恒：某处密度的变化率 = 流入减流出。对任意光滑测试函数 \(\varphi\)：\(\frac{d}{dt}\mathbb{E}[\varphi(X_t)]=\mathbb{E}[\nabla\varphi(X_t)^\top v(X_t,t)]\)，分部积分即得 \(\partial_tp_t=-\nabla\cdot(p_tv)\)。</p>
+    <p><b>为什么 \(v^*=\mathbb{E}[\dot x_t\mid x_t]\) 正确？</b>插值过程 \(x_t\) 本身（每条样本走自己的路径）满足：</p>
+    $$\frac{d}{dt}\mathbb{E}[\varphi(x_t)]=\mathbb{E}[\nabla\varphi(x_t)^\top\dot x_t]=\mathbb{E}\big[\nabla\varphi(x_t)^\top\,\mathbb{E}[\dot x_t\mid x_t]\big]=\mathbb{E}[\nabla\varphi(x_t)^\top v^*(x_t,t)].$$
+    <p>所以插值的边缘 \(p_t\) 满足以 \(v^*\) 为速度的连续性方程。ODE \(dZ_t=v^*(Z_t,t)dt\)，\(Z_0\sim\pi_0\) 的边缘满足同一个方程、初值相同 ⇒ 每个时刻 \(Z_t\stackrel{d}{=}x_t\)，特别地 \(Z_1\sim\pi_1\)。这就是 rectified flow 论文中的<b>边缘保持</b>（marginal preserving）性质。</p>
+    <div class="box why"><span class="lbl">直觉</span>插值路径会互相交叉：同一个点 \(x\) 在时刻 \(t\) 可能有很多条路径经过，方向各不相同。ODE 在每个点只能有一个速度，于是取这些方向的<b>平均</b>。平均后，粒子不再交叉（ODE 解唯一），但路径会弯曲。整体的"人流密度"在每个时刻和原来一样，只是每个人具体走哪条路被重新安排了。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A velocity field defines an ODE that moves particles from noise to data, and the density evolves by the continuity equation, which is just conservation of mass. Now take any interpolation between a noise sample and a data sample. Many interpolation paths pass through the same point in different directions, so we define the velocity at that point as the conditional expectation of the path velocity. You can check that this field satisfies the same continuity equation as the interpolation, so the ODE reproduces the interpolation's marginals at every time, and in particular ends at the data distribution.</p></div>
+</section>
+
+<section class="concept" id="c-fm">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Conditional flow matching：为什么回归条件速度得到同样的梯度</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>边缘速度 \(u_t(x)\) 不可算，但 \(\mathcal L_{\text{CFM}}=\mathbb{E}\|v_\theta(x_t,t)-u_t(x_t\mid x_1)\|^2\) 与 \(\mathcal L_{\text{FM}}=\mathbb{E}\|v_\theta(x_t,t)-u_t(x_t)\|^2\) 只差一个与 \(\theta\) 无关的常数，因为 \(u_t(x)=\mathbb{E}[u_t(x_t\mid x_1)\mid x_t=x]\)，交叉项相等。于是只需要能采样 \(x_t\) 并写出条件速度，就能 simulation-free 地训练连续 flow。</p><p class="en">Regressing the tractable conditional velocity gives the same gradients as regressing the intractable marginal velocity, because the marginal is the conditional expectation of the conditional, so the cross terms match.</p></div>
+  <div class="deep">
+    <p><b>证明（与 §6 DSM 结构完全相同）。</b>两个损失展开：</p>
+    $$\begin{aligned}
+    \mathcal L_{\text{FM}}&=\mathbb{E}_{t,x_t}\big[\|v_\theta\|^2-2v_\theta^\top u_t(x_t)+\|u_t(x_t)\|^2\big],\\
+    \mathcal L_{\text{CFM}}&=\mathbb{E}_{t,x_1,x_t\mid x_1}\big[\|v_\theta\|^2-2v_\theta^\top u_t(x_t\mid x_1)+\|u_t(x_t\mid x_1)\|^2\big].
+    \end{aligned}$$
+    <p>第一项：\(v_\theta\) 只依赖 \(x_t\)，两边都是 \(\mathbb{E}_{x_t}\|v_\theta(x_t,t)\|^2\)。第三项与 \(\theta\) 无关。交叉项用塔式性质：</p>
+    $$\mathbb{E}_{x_1,x_t}\big[v_\theta(x_t,t)^\top u_t(x_t\mid x_1)\big]=\mathbb{E}_{x_t}\Big[v_\theta(x_t,t)^\top\,\underbrace{\mathbb{E}[u_t(x_t\mid x_1)\mid x_t]}_{=u_t(x_t)}\Big].$$
+    <p>所以 \(\mathcal L_{\text{CFM}}=\mathcal L_{\text{FM}}+C\)，\(\nabla_\theta\mathcal L_{\text{CFM}}=\nabla_\theta\mathcal L_{\text{FM}}\)。并且 MSE 回归的最优解就是条件期望：\(v_\theta^*(x,t)=\mathbb{E}[u_t(x_t\mid x_1)\mid x_t=x]=u_t(x)\)。</p>
+    <p><b>Lipman et al. 的高斯条件路径：</b>\(p_t(x\mid x_1)=\mathcal N(\mu_t(x_1),\sigma_t^2I)\)，条件流 \(\psi_t(x_0)=\sigma_tx_0+\mu_t(x_1)\)，条件速度 \(u_t(x\mid x_1)=\frac{\dot\sigma_t}{\sigma_t}(x-\mu_t)+\dot\mu_t\)。选 \(\mu_t=tx_1\)、\(\sigma_t=1-(1-\sigma_{\min})t\) 得到 "OT 路径"：\(u_t(x\mid x_1)=\frac{x_1-(1-\sigma_{\min})x}{1-(1-\sigma_{\min})t}\)。\(\sigma_{\min}=0\) 时沿 \(x_t=tx_1+(1-t)x_0\) 的条件速度就是 \(x_1-x_0\)，与 rectified flow 一致。</p>
+    <p><b>为什么"simulation-free"重要？</b>早期连续 normalizing flow（FFJORD）用最大似然训练，每一步训练都要解 ODE 并算散度，非常慢且不稳定。CFM 训练只需"采一对 \((x_0,x_1)\)、采 \(t\)、算插值、回归"，和 DDPM 的训练一样便宜。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"CFM 的损失可以降到 0"——不能。最优时损失等于 \(\mathbb{E}\,\mathrm{Var}[u_t(x_t\mid x_1)\mid x_t]\)，即路径交叉带来的不可约方差。我们的实验中 1-RF 的最终损失约 7.5（大部分是不可约方差），而 reflow 之后的 2-RF 降到 0.004，因为新的配对几乎不再交叉。所以 FM 的 loss 值不能直接拿来比较模型好坏。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The marginal velocity field is intractable because it's an average over all data points, but we can regress the conditional velocity instead, for example x1 minus x0 for straight paths. The two losses differ only by a constant: the squared-norm terms of the prediction are identical, and in the cross term we can replace the conditional target with its conditional expectation given x_t, which is the marginal velocity. So the gradients are the same, and the minimizer is exactly the marginal field. It's the same argument as denoising score matching, and it makes continuous flows simulation-free to train.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Does the CFM loss value tell you sample quality?</b><details><summary>思路</summary><div class="inner">不能直接比较。它包含一个依赖于配对方式（coupling）和路径的不可约常数。同一个 coupling 和路径下，损失越低越接近边缘速度；不同 coupling（如 independent vs reflow vs minibatch OT）之间的损失值不可比。</div></details></li>
+    <li><b>What is minibatch OT flow matching?</b><details><summary>思路</summary><div class="inner">在每个 batch 内用最优传输（如 Hungarian / Sinkhorn）把噪声和数据重新配对，而不是独立随机配对。配对后的路径交叉更少，边缘速度更直，少步采样效果更好。它和 reflow 目标相似（减少交叉），但不需要先训练一个模型；缺点是高维时 batch 内 OT 只是全局 OT 的粗略近似。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-rf">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Rectified flow：直线插值、reflow 与一步生成</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Rectified flow 取最简单的直线插值 \(x_t=t\,x_1+(1-t)\,x_0\)，训练 \(\min_\theta\int_0^1\mathbb{E}\|v_\theta(x_t,t)-(x_1-x_0)\|^2dt\)，再解 ODE 采样；用训练好的流生成新的配对 \((Z_0,Z_1)\) 再训练一次（reflow），路径变得更直、传输代价不增，最终可以 1 步或几步生成，也可以蒸馏成一步模型。</p><p class="en">Rectified flow regresses x1 minus x0 along straight-line interpolations; reflow retrains on the flow's own noise–sample pairs, which straightens trajectories so one or a few Euler steps suffice.</p></div>
+  <div class="deep">
+    <p><b>1-Rectified flow。</b>独立配对 \((x_0,x_1)\sim\pi_0\times\pi_1\)，直线插值，回归 \(x_1-x_0\)。最优速度 \(v^*(x,t)=\mathbb{E}[x_1-x_0\mid x_t=x]\)。由 §7 第一个概念，ODE \(dZ_t=v^*(Z_t,t)dt\) 的边缘与 \(x_t\) 相同。</p>
+    <p><b>"Rectify"的含义：</b>插值路径 \(x_t\) 是直的但会交叉；ODE 轨迹不交叉但可能弯曲。由 ODE 得到的配对 \((Z_0,Z_1)\) 是一个确定性耦合，论文证明：</p>
+    <ul>
+      <li><b>边缘保持：</b>\(Z_t\stackrel{d}{=}x_t\)，\(Z_1\sim\pi_1\)。</li>
+      <li><b>传输代价不增：</b>对任意凸代价 \(c\)，\(\mathbb{E}[c(Z_1-Z_0)]\le\mathbb{E}[c(x_1-x_0)]\)。证明要点：\(Z_1-Z_0=\int_0^1v^*(Z_t,t)dt\)，由 Jensen，\(c(\int v^*dt)\le\int c(v^*)dt\)；又 \(v^*\) 是条件期望，再用 Jensen \(c(v^*(x,t))\le\mathbb{E}[c(x_1-x_0)\mid x_t=x]\)；最后用 \(Z_t\stackrel{d}{=}x_t\) 换回对插值的期望。</li>
+    </ul>
+    <p><b>Reflow（k-rectified flow）。</b>用 1-RF 的 ODE 从噪声 \(Z_0\) 生成 \(Z_1\)，以 \((Z_0,Z_1)\) 作为新的配对，再训练一个 RF 得到 2-RF，可重复。每次 reflow 后路径交叉减少，<b>直线度</b></p>
+    $$S(Z)=\int_0^1\mathbb{E}\big\|(Z_1-Z_0)-v(Z_t,t)\big\|^2dt$$
+    <p>下降（\(S=0\) 意味着每条轨迹都是匀速直线）。论文给出的保证是：做 \(K\) 次 reflow，各次直线度之和有界，因此其中最小的直线度为 \(O(1/K)\)（上界约为 \(\mathbb{E}\|x_1-x_0\|^2/K\)）。直线轨迹上 Euler 一步就精确：\(Z_1=Z_0+v(Z_0,0)\)。</p>
+    <p><b>一步蒸馏：</b>reflow 后再训练一个一步网络 \(\hat T(z)\approx Z_1\)，用 \((Z_0,Z_1)\) 配对做回归（或加感知损失）。因为配对来自确定性 ODE，回归目标是一个函数而不是分布，不会出现"回归平均值导致模糊"的问题——这正是直接对独立配对做一步回归会失败的原因。<a href="https://arxiv.org/abs/2309.06380" target="_blank" rel="noreferrer">InstaFlow</a>（Liu et al. 2023）把 reflow + 蒸馏应用到 Stable Diffusion，得到一步文生图模型。</p>
+    <div class="box why"><span class="lbl">直觉：为什么直路径 = 少步数</span>ODE 求解器的局部误差来自轨迹的曲率：Euler 法假设一段时间内速度不变。直线匀速轨迹上速度处处不变，Euler 一步零误差。弯曲轨迹必须用很多小步追踪。所以"加速采样"可以从"让轨迹变直"入手，而不只是"设计更好的求解器"。我们的 numpy 实验中：1-RF 一步采样把所有样本都送到原点（MMD 1.07，0% 落在模式内）：\(t=0\) 时 \(x_t=x_0\) 与 \(x_1\) 独立，\(v^*(x,0)=\mathbb{E}[x_1]-x=-x\)，一步 Euler 正好落在数据均值，reflow 后 2-RF 一步 MMD 降到 0.0026、8 个模式全部覆盖。</div>
+    <p><b>Diffusion 是一种特殊路径。</b>一般插值 \(x_t=a_tx_1+b_tx_0\)：RF 取 \(a_t=t,b_t=1-t\)；VP diffusion（把时间方向翻过来后）取 \(a_t=\sqrt{\bar\alpha}\)、\(b_t=\sqrt{1-a_t^2}\)，满足 \(a_t^2+b_t^2=1\)，在 \((x_0,x_1)\) 平面上是圆弧。速度和 score 之间是仿射关系（\(x_0\) 为高斯时）：</p>
+    $$v(x,t)=\frac{\dot a_t}{a_t}x+b_t\Big(\frac{\dot a_t}{a_t}b_t-\dot b_t\Big)\nabla_x\log p_t(x),\qquad\text{RF: } v(x,t)=\frac{x}{t}+\frac{1-t}{t}\nabla_x\log p_t(x).$$
+    <p>（推导：\(\nabla\log p_t(x)=-\mathbb{E}[x_0\mid x_t=x]/b_t\)，再把 \(x_1=(x-b_tx_0)/a_t\) 代入 \(v=\mathbb{E}[\dot a_tx_1+\dot b_tx_0\mid x]\)。我们用一维高斯数值验证了 RF 的这个关系。）所以 ε-prediction、v-prediction、score、速度只是同一个对象的不同参数化，FM 训练出的模型同样可以做 CFG。区别在于：路径形状（影响 ODE 曲率和步数）和损失在不同 \(t\) 上的隐含权重。</p>
+    <p><b>工业界采用：</b>Stable Diffusion 3（Esser et al. 2024, <a href="https://arxiv.org/abs/2403.03206" target="_blank" rel="noreferrer">Scaling Rectified Flow Transformers for High-Resolution Image Synthesis</a>）使用 rectified flow 目标，并发现对 \(t\) 用 logit-normal 分布采样（偏重中间时间步）比均匀采样效果好；还对高分辨率做 timestep shift。</p>
+  </div>
+  <details class="deep"><summary>PyTorch：带 classifier-free guidance 的 rectified flow（训练 + Euler 采样）</summary><div class="inner">
+<pre><code class="language-python">import torch, torch.nn as nn
+
+class VelocityNet(nn.Module):
+    def __init__(self, d=2, n_cls=8, h=256):
+        super().__init__()
+        self.emb = nn.Embedding(n_cls + 1, h)       # last index = "null" label for CFG
+        self.null = n_cls
+        self.inp = nn.Linear(d + 1, h)
+        self.net = nn.Sequential(nn.SiLU(), nn.Linear(h, h), nn.SiLU(), nn.Linear(h, d))
+    def forward(self, x, t, y):
+        return self.net(self.inp(torch.cat([x, t], 1)) + self.emb(y))
+
+def rf_loss(model, x1, y, p_uncond=0.1):
+    x0 = torch.randn_like(x1)                       # noise
+    t = torch.rand(x1.size(0), 1)                   # t ~ U[0,1]  (SD3 uses logit-normal)
+    xt = t * x1 + (1 - t) * x0                      # straight-line interpolation
+    drop = torch.rand(y.shape) &lt; p_uncond           # label dropout -&gt; trains p(x) too
+    y = torch.where(drop, torch.full_like(y, model.null), y)
+    return ((model(xt, t, y) - (x1 - x0)) ** 2).sum(1).mean()
+
+@torch.no_grad()
+def sample(model, y, n_steps=16, w=2.0):
+    x = torch.randn(y.size(0), 2)
+    null = torch.full_like(y, model.null)
+    for i in range(n_steps):
+        t = torch.full((y.size(0), 1), i / n_steps)
+        v_c, v_u = model(x, t, y), model(x, t, null)
+        v = v_u + w * (v_c - v_u)                   # CFG on velocity (w=1: no guidance)
+        x = x + v / n_steps                         # Euler step
+    return x</code></pre>
+    <p>等价的 numpy 验证：用 8 个类条件高斯的<b>精确</b>条件 / 无条件速度场（闭式解）跑同样的 CFG + Euler 采样器，32 步、\(w=1\) 时 99.9% 的样本落在对应类中心半径 1 以内，\(w=0\)（无条件）只有约 13%（随机落到 8 个模式之一）。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) "RF 的 ODE 轨迹是直线"——1-RF 的<b>插值</b>是直线，ODE 轨迹一般是弯的；reflow 之后才趋于直线。(2) "reflow 会累积误差"——确实存在：每次 reflow 用的是模型生成的样本，第 \(k\) 次的 \(Z_1\) 分布带有前一模型的误差，所以实际中一般只做 1–2 次 reflow。我们的实验中 2-RF 多步采样的"在模式内比例"（约 90%）略低于 1-RF 64 步（约 94%），就是这种误差继承的体现。(3) 把方向搞反：本节 \(x_0\) 是噪声，\(v\) 指向数据；有些代码库（包括 SD3 的写法）用 \(t=0\) 为数据、\(t=1\) 为噪声，速度符号相反。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Rectified flow takes the simplest path: a straight line between a noise sample and a data sample, and trains a network to predict the constant velocity x1 minus x0 at random points along it. The learned ODE preserves the marginals, and because ODE trajectories can't cross, it rewires the coupling between noise and data; the paper shows this never increases any convex transport cost. Then you can reflow: generate noise–sample pairs with the trained flow and retrain on them. Each reflow makes trajectories straighter, and on a straight trajectory a single Euler step is exact, so you get one- or few-step generation, and you can distill the final coupling into a one-step model. Stable Diffusion 3 uses the rectified flow objective at scale.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why can't you just train a one-step model on random noise–data pairs?</b><details><summary>思路</summary><div class="inner">独立配对下，同一个 \(z\) 对应的 \(x\) 是整个数据分布，MSE 回归的最优解是 \(\mathbb{E}[x]\)——数据均值，所有样本塌成一团模糊。必须先有一个确定性的配对（ODE 产生的 \((Z_0,Z_1)\)），让 \(x\) 成为 \(z\) 的函数，回归才有意义。我们实验里 1-RF 一步采样 MMD 很大正是这个现象。</div></details></li>
+    <li><b>How does rectified flow relate to optimal transport?</b><details><summary>思路</summary><div class="inner">Reflow 单调降低所有凸代价，但不保证收敛到某个特定代价（如 \(L_2\)）的 OT 解，因为它同时对所有凸代价改进。Liu 的后续工作提出只针对 \(L_2\) 代价的变体（限制速度场为梯度场）以得到 \(L_2\) OT。直线度为 0 的耦合不一定是 OT 耦合，只是"直"的。</div></details></li>
+    <li><b>Why does SD3 sample timesteps from a logit-normal?</b><details><summary>思路</summary><div class="inner">\(t\) 在两端时预测任务很简单：\(t\approx0\) 时 \(x_t\approx\) 噪声，最优速度约等于 \(\mathbb E[x_1]-x_0\)；\(t\approx1\) 时接近数据，速度几乎由 \(x_t\) 决定。中间时间步最难、对样本质量影响最大，所以给它们更多训练权重。这和 diffusion 中"\(L_{\text{simple}}\) 降低低噪声权重"是同一类考虑。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-consistency">
+  <div class="concept-head"><span class="pri p3">○</span><h3>少步生成方法一览：蒸馏、consistency models</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>加速 diffusion 的四条路：更好的 ODE 求解器（DDIM、DPM-Solver、Heun）、让轨迹变直（reflow、OT 配对）、蒸馏（progressive distillation、对抗蒸馏）、直接学习 ODE 的"终点映射"（consistency models）。</p><p class="en">Fast sampling comes from better solvers, straighter paths, distillation, or directly learning the map from any point on a trajectory to its endpoint, as in consistency models.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Progressive distillation（Salimans &amp; Ho 2022）：</b>学生用 1 步模仿老师的 2 步，反复对半，1024 → 4 步。</li>
+      <li><b>Consistency models（Song et al. 2023, <a href="https://arxiv.org/abs/2303.01469" target="_blank" rel="noreferrer">Consistency Models</a>）：</b>学习 \(f_\theta(x_t,t)\)，把 PF-ODE 轨迹上任意一点映射到轨迹起点（数据端）。约束：边界条件 \(f_\theta(x,\epsilon)=x\)（通过 skip connection 参数化保证），自洽性 \(f_\theta(x_t,t)=f_\theta(x_{t'},t')\)（同一轨迹上的点）。训练方式：consistency distillation（用预训练 diffusion 的 ODE 求解器一步得到相邻点）或 consistency training（不用老师，用 \(x_0\) 加不同噪声近似）。支持一步生成，也可以多步"去噪-再加噪"提高质量。</li>
+      <li><b>对抗蒸馏：</b>在蒸馏损失外加判别器损失，让一步样本更清晰（GAN 的思想在这里复活）。</li>
+      <li><b>Reflow / InstaFlow：</b>见上，先拉直再蒸馏。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A consistency model learns a function that maps any point on a probability-flow ODE trajectory directly to its endpoint. It's constrained to be the identity at the smallest noise level, and trained so that two points on the same trajectory map to the same output, either by distilling from a pretrained diffusion model or training from scratch. That allows one-step generation, with optional extra steps to improve quality. It's one of several routes to fast sampling, alongside better ODE solvers, straightening the paths with reflow, and progressive or adversarial distillation.</p></div>
+</section>
+
+<!-- ======================================================= §8 -->
+<h2 class="sec" id="s-discrete"><span class="num">§8 · DISCRETE DIFFUSION</span>离散扩散与扩散语言模型</h2>
+<p class="sec-intro">LLM 面试中最可能出现的 diffusion 话题："你怎么看 diffusion language model？它能替代 AR 吗？"这一节给出足够的技术细节来回答。</p>
+
+<section class="concept" id="c-d3pm">
+  <div class="concept-head"><span class="pri p3">○</span><h3>D3PM：离散状态空间上的扩散</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把高斯噪声换成离散转移矩阵：\(q(x_t\mid x_{t-1})=\mathrm{Cat}(x_t;\,x_{t-1}Q_t)\)，因此 \(q(x_t\mid x_0)=\mathrm{Cat}(x_0\bar Q_t)\)，\(\bar Q_t=Q_1\cdots Q_t\)；常用均匀噪声或吸收态（[MASK]）噪声，吸收态在文本上效果最好。</p><p class="en">D3PM replaces Gaussian noise with categorical transition matrices; the absorbing-state, or mask, corruption works best for text.</p></div>
+  <div class="deep">
+    <p>Austin et al. 2021（<a href="https://arxiv.org/abs/2107.03006" target="_blank" rel="noreferrer">Structured Denoising Diffusion Models in Discrete State-Spaces</a>）。\(x\) 是 one-hot 行向量，\(Q_t\) 是 \(K\times K\) 转移矩阵：</p>
+    <ul>
+      <li><b>Uniform：</b>\(Q_t=(1-\beta_t)I+\beta_t\mathbf{1}\mathbf{1}^\top/K\)，以 \(\beta_t\) 概率替换成随机 token。</li>
+      <li><b>Absorbing（mask）：</b>以 \(\beta_t\) 概率变成 [MASK]，一旦被 mask 就保持。最终全是 [MASK]。这与 BERT 的 masked LM 有直接联系。</li>
+      <li><b>Discretized Gaussian / embedding 相似度：</b>适合有序数据（像素值）。</li>
+    </ul>
+    <p>反向过程同样用 ELBO 训练，后验 \(q(x_{t-1}\mid x_t,x_0)\) 对离散分布也有闭式解。D3PM 用 \(x_0\)-parameterization：网络预测 \(p_\theta(\tilde x_0\mid x_t)\)，再与后验组合。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>D3PM generalizes diffusion to discrete data by replacing Gaussian noise with a Markov transition matrix over the vocabulary, so the marginal at any time is a categorical given by the product of the matrices. Uniform noise replaces tokens with random ones, while absorbing noise turns tokens into a mask token that stays masked. The absorbing version works best for text and connects directly to masked language modeling.</p></div>
+</section>
+
+<section class="concept" id="c-mdlm">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Masked diffusion LM（MDLM）与 LLaDA；和 AR 的对比</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>MDLM 证明连续时间的吸收态扩散 ELBO 化简为<b>不同 mask 比例下 masked LM 交叉熵的加权平均</b>（线性 schedule 下权重为 \(1/t\)）；LLaDA 把它扩展到 8B 规模，从零预训练 + SFT，与同规模 AR 基线可比，并在逆向推理（reversal）任务上有优势。优点：并行解码、双向上下文、天然 infilling；缺点：没有标准 KV cache、多 token 并行解码时的独立性假设损失质量、通常需要固定或预设生成长度。</p><p class="en">Masked diffusion's ELBO reduces to a weighted average of masked-LM losses across masking rates; LLaDA scales this to 8B with competitive results, trading KV-cache efficiency and joint-token modeling for parallel, bidirectional generation.</p></div>
+  <div class="deep">
+    <p><b>MDLM（Sahoo et al. 2024, <a href="https://arxiv.org/abs/2406.07524" target="_blank" rel="noreferrer">Simple and Effective Masked Diffusion Language Models</a>）。</b>前向：每个 token 在时刻 \(t\) 以概率 \(1-\alpha_t\) 被 mask（各位置独立）。用"被 mask 的 token 预测原值、未 mask 的直接复制"这一参数化（SUBS），连续时间的负 ELBO 为</p>
+    $$\mathcal L_{\text{NELBO}}=\mathbb{E}_{t\sim U[0,1]}\ \mathbb{E}_{q(x_t\mid x_0)}\Big[\frac{-\alpha_t'}{1-\alpha_t}\sum_{\ell:\,x_t^\ell=[\text{M}]}-\log p_\theta(x_0^\ell\mid x_t)\Big].$$
+    <p>取 \(\alpha_t=1-t\)：权重为 \(1/t\)。直观上：\(t\) 是 mask 比例，比例小时每个 mask token 的预测更"珍贵"，所以权重大。这就是一个"随机 mask 比例的 BERT"加上合适的加权，使它成为似然下界、可以作为生成模型使用。</p>
+    <p><b>LLaDA（Nie et al. 2025, <a href="https://arxiv.org/abs/2502.09992" target="_blank" rel="noreferrer">Large Language Diffusion Models</a>）。</b>8B 参数的 masked diffusion 模型，从零预训练再 SFT，用 Transformer（不加 causal mask）预测被 mask 的 token，训练目标是上式的下界。报告结果：与作者自建的同规模 AR 基线 scaling 表现相当，in-context learning 与 LLaMA3 8B 有竞争力，SFT 后能多轮对话，并在逆向诗句补全上超过 GPT-4o（缓解 reversal curse）。采样：从全 [MASK] 开始，每步预测所有 mask 位置，保留一部分（如置信度最高的），其余重新 mask（low-confidence remasking），也可以分块从左到右（semi-autoregressive）。</p>
+    <p>相关：SEDD（Lou, Meng &amp; Ermon, <a href="https://arxiv.org/abs/2310.16834" target="_blank" rel="noreferrer">Discrete Diffusion Modeling by Estimating the Ratios of the Data Distribution</a>）把 score matching 推广到离散空间，学习概率比 \(p(y)/p(x)\)（"concrete score"）。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>维度</th><th>AR（causal LM）</th><th>Masked diffusion LM</th></tr></thead>
+      <tbody>
+        <tr><td>似然</td><td>精确</td><td>ELBO 下界（perplexity 是上界）</td></tr>
+        <tr><td>生成方式</td><td>严格从左到右，每步 1 token</td><td>任意顺序，每步可以解多个 token</td></tr>
+        <tr><td>上下文</td><td>单向</td><td>双向；天然支持 infilling、编辑</td></tr>
+        <tr><td>推理效率</td><td>KV cache，每步增量计算</td><td>双向注意力每步要重算整个序列（有近似缓存方案在研究中）；步数少时快，但质量下降</td></tr>
+        <tr><td>多 token 依赖</td><td>链式法则精确建模</td><td>同一步并行解出的 token 之间被当作条件独立，步数太少会产生不一致</td></tr>
+        <tr><td>长度</td><td>自然可变（EOS）</td><td>通常需要预设长度 / 分块</td></tr>
+        <tr><td>训练信号</td><td>每个位置都提供监督</td><td>每个样本只有被 mask 的位置提供监督，计算效率通常更低</td></tr>
+        <tr><td>RL / 对齐生态</td><td>成熟（token 级 log-prob 精确）</td><td>序列 log-prob 难算，RL 需要近似，仍在发展</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"Diffusion LM 一定比 AR 快"——不一定：它每步是全序列的双向前向，没有 KV cache；只有当每步解出多个 token 且质量可接受时才更快。"它就是 BERT"——训练损失形似 BERT，但 mask 比例在 \([0,1]\) 上随机、带 \(1/t\) 加权，使它成为合法的似然下界和生成模型；BERT 固定 15% mask，不能直接生成。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Masked diffusion language models corrupt text by masking each token independently with a probability that grows over time, and the reverse model predicts the masked tokens. MDLM showed the continuous-time ELBO is just a weighted average of masked-LM cross-entropies over random masking rates, with weight one over t for a linear schedule. LLaDA scaled this to eight billion parameters and got results competitive with similar-size autoregressive models, with an edge on reversal tasks. The appeal is parallel, bidirectional, any-order generation and easy infilling; the costs are no standard KV cache, an independence assumption when unmasking several tokens at once, a fixed generation length, and less mature RL tooling. I'd say it's promising but not yet a drop-in replacement for AR.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does unmasking many tokens per step hurt quality?</b><details><summary>思路</summary><div class="inner">网络对每个 mask 位置输出的是边缘分布 \(p(x^\ell\mid x_t)\)，同一步并行采样等于假设这些位置条件独立。例如 "New York" vs "San Francisco"：两个位置分别采样可能得到 "New Francisco"。步数越多，每步解的 token 越少，独立性假设的误差越小。这和 AR 的链式法则精确建模形成对比。</div></details></li>
+    <li><b>Why might diffusion LMs help with the reversal curse?</b><details><summary>思路</summary><div class="inner">AR 只学习从左到右的条件分布，"A 是 B"训练后不能自动推出"B 是 A"。Masked diffusion 在随机 mask 下训练，同一序列的各种条件方向都被学到（任意子集预测其余子集），所以对反向查询更对称。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ======================================================= §9 -->
+<h2 class="sec" id="s-code"><span class="num">§9 · HANDS-ON CODE</span>代码：numpy 从零实现 rectified flow</h2>
+<p class="sec-intro">纯 numpy、手写反向传播、CPU 上约 30 秒跑完。数据：8 个高斯组成的圆环（\(\pi_1\)），噪声 \(\pi_0=\mathcal N(0,I)\)。训练 1-RF，用 Euler 1/4/16/64 步采样；再做一次 reflow 得到 2-RF，对比少步采样质量与轨迹直线度。面试中被要求"手写 flow matching 训练循环"时，核心就是 <code>train_rf</code> 里的 6 行。</p>
+
+<section class="concept" id="c-code-rf">
+  <div class="concept-head"><span class="pri p1">★</span><h3>完整实现：训练、采样、reflow、指标</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RF 训练循环 = 采 \((x_0,x_1)\) → 采 \(t\sim U[0,1]\) → \(x_t=tx_1+(1-t)x_0\) → 回归 \(x_1-x_0\)；采样 = 从噪声出发做 Euler 积分 \(x\leftarrow x+\frac1n v(x,t)\)；reflow = 用 ODE 生成的配对重训。</p><p class="en">The whole training loop is: sample a noise–data pair and a time, interpolate, regress the difference; sampling is Euler integration from noise.</p></div>
+  <div class="deep">
+    <p><b>设计说明：</b></p>
+    <ul>
+      <li>速度网络：输入 \([x, t, \sin\pi t, \cos\pi t]\)（5 维）→ 128 → 128 → 2，ReLU，手写 Adam 和余弦学习率衰减。</li>
+      <li>反向传播：损失 \(L=\frac1B\sum_b\|\hat v_b-u_b\|^2\)，对输出的梯度为 \(\frac{2}{B}(\hat v-u)\)，然后逐层链式法则（和 <a href="m01-pytorch.html">01</a> 里的 micrograd 一样）。</li>
+      <li>指标：RBF 核 MMD（越小越好）；"in-mode%"= 落在某个模式中心 3σ 以内的样本比例（质量）；"modes"= 覆盖到的模式数（多样性，满分 8）；straightness = \(\mathbb{E}\int_0^1\|(Z_1-Z_0)-v(Z_t,t)\|^2dt\)（0 为完全直）。</li>
+    </ul>
+  </div>
+  <details class="deep" open><summary>rf_numpy.py（已运行通过，含断言）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(0)
+
+# ---------- data: 8 Gaussians on a circle (target pi_1); source pi_0 = N(0, I) ----------
+def sample_target(n):
+    k = rng.integers(0, 8, n)
+    ang = 2 * np.pi * k / 8
+    centers = 4.0 * np.stack([np.cos(ang), np.sin(ang)], 1)
+    return centers + 0.3 * rng.standard_normal((n, 2))
+
+def sample_source(n):
+    return rng.standard_normal((n, 2))
+
+# ---------- tiny MLP v_theta(x, t): [x, t-features] -&gt; 2, manual backprop ----------
+def feats(x, t):                      # x:(B,2) t:(B,1)
+    return np.concatenate([x, t, np.sin(np.pi * t), np.cos(np.pi * t)], 1)   # (B,5)
+
+class MLP:
+    def __init__(self, din=5, h=128, dout=2):
+        self.p = {
+            'W1': rng.standard_normal((din, h)) * np.sqrt(2 / din), 'b1': np.zeros(h),
+            'W2': rng.standard_normal((h, h)) * np.sqrt(2 / h),     'b2': np.zeros(h),
+            'W3': rng.standard_normal((h, dout)) * np.sqrt(1 / h),  'b3': np.zeros(dout)}
+        self.m = {k: np.zeros_like(v) for k, v in self.p.items()}
+        self.v = {k: np.zeros_like(v) for k, v in self.p.items()}
+        self.step_count = 0
+
+    def forward(self, z):
+        p = self.p
+        self.z = z
+        self.a1 = z @ p['W1'] + p['b1'];  self.h1 = np.maximum(self.a1, 0)   # ReLU
+        self.a2 = self.h1 @ p['W2'] + p['b2']; self.h2 = np.maximum(self.a2, 0)
+        return self.h2 @ p['W3'] + p['b3']
+
+    def backward(self, dout):           # dout = dL/d(output), shape (B,2)
+        p, g = self.p, {}
+        g['W3'] = self.h2.T @ dout;  g['b3'] = dout.sum(0)
+        dh2 = dout @ p['W3'].T;      da2 = dh2 * (self.a2 &gt; 0)
+        g['W2'] = self.h1.T @ da2;   g['b2'] = da2.sum(0)
+        dh1 = da2 @ p['W2'].T;       da1 = dh1 * (self.a1 &gt; 0)
+        g['W1'] = self.z.T @ da1;    g['b1'] = da1.sum(0)
+        return g
+
+    def adam(self, g, lr=1e-3, b1=0.9, b2=0.999, eps=1e-8):
+        self.step_count += 1
+        for k in self.p:
+            self.m[k] = b1 * self.m[k] + (1 - b1) * g[k]
+            self.v[k] = b2 * self.v[k] + (1 - b2) * g[k] ** 2
+            mh = self.m[k] / (1 - b1 ** self.step_count)
+            vh = self.v[k] / (1 - b2 ** self.step_count)
+            self.p[k] -= lr * mh / (np.sqrt(vh) + eps)
+
+    def __call__(self, x, t):
+        return self.forward(feats(x, t))
+
+def train_rf(model, pair_fn, steps=6000, B=512, lr=2e-3):
+    """Rectified-flow loss: E || v(x_t, t) - (x1 - x0) ||^2,  x_t = t x1 + (1-t) x0."""
+    losses = []
+    for it in range(steps):
+        x0, x1 = pair_fn(B)
+        t = rng.random((B, 1))
+        xt = t * x1 + (1 - t) * x0
+        target = x1 - x0
+        pred = model(xt, t)
+        diff = pred - target
+        loss = (diff ** 2).sum(1).mean()
+        g = model.backward(2 * diff / B)          # d/dpred of mean_b sum_d diff^2
+        cur_lr = lr * 0.5 * (1 + np.cos(np.pi * it / steps))   # cosine decay
+        model.adam(g, lr=cur_lr)
+        losses.append(loss)
+    return np.array(losses)
+
+def euler_sample(model, x0, n_steps):
+    x = x0.copy(); dt = 1.0 / n_steps
+    for i in range(n_steps):
+        t = np.full((len(x), 1), i * dt)
+        x = x + dt * model(x, t)
+    return x
+
+# ---------- metrics ----------
+def mmd_rbf(X, Y, sigma=1.0):
+    def k(A, B):
+        d = (A ** 2).sum(1)[:, None] + (B ** 2).sum(1)[None] - 2 * A @ B.T
+        return np.exp(-d / (2 * sigma ** 2))
+    return k(X, X).mean() + k(Y, Y).mean() - 2 * k(X, Y).mean()
+
+def mode_stats(X):
+    ang = 2 * np.pi * np.arange(8) / 8
+    C = 4.0 * np.stack([np.cos(ang), np.sin(ang)], 1)
+    d = np.sqrt(((X[:, None] - C[None]) ** 2).sum(-1))
+    near = d.min(1)
+    hq = near &lt; 3 * 0.3                       # within 3 sigma of some mode
+    covered = len(np.unique(d.argmin(1)[hq]))
+    return hq.mean(), covered
+
+def straightness(model, x0, n=64):
+    """E int_0^1 || (Z1 - Z0) - v(Z_t,t) ||^2 dt along the simulated ODE path (0 = perfectly straight)."""
+    x = x0.copy(); dt = 1.0 / n; traj_v = []
+    for i in range(n):
+        v = model(x, np.full((len(x), 1), i * dt)); traj_v.append(v); x = x + dt * v
+    disp = x - x0
+    return np.mean([((disp - v) ** 2).sum(1).mean() for v in traj_v])
+
+if __name__ == '__main__':
+    import time; t0 = time.time()
+    # 1-Rectified flow: independent coupling (x0, x1) ~ pi_0 x pi_1
+    rf1 = MLP()
+    L1 = train_rf(rf1, lambda B: (sample_source(B), sample_target(B)))
+    ref = sample_target(2000)
+    z = sample_source(2000)
+    rows = []
+    for name, m in [('1-RF', rf1)]:
+        for k in [1, 4, 16, 64]:
+            xs = euler_sample(m, z, k)
+            hq, cov = mode_stats(xs)
+            rows.append((name, k, mmd_rbf(xs, ref), hq, cov))
+    S1 = straightness(rf1, z[:1000])
+
+    # 2-Rectified flow (reflow): couple z with the ODE output of 1-RF, retrain on these pairs
+    Zp = sample_source(20000); Xp = euler_sample(rf1, Zp, 100)
+    def reflow_pairs(B):
+        idx = rng.integers(0, len(Zp), B); return Zp[idx], Xp[idx]
+    rf2 = MLP()
+    L2 = train_rf(rf2, reflow_pairs)
+    for k in [1, 4, 16, 64]:
+        xs = euler_sample(rf2, z, k)
+        hq, cov = mode_stats(xs)
+        rows.append(('2-RF', k, mmd_rbf(xs, ref), hq, cov))
+    S2 = straightness(rf2, z[:1000])
+
+    print(f"final loss 1-RF {L1[-500:].mean():.3f}   2-RF {L2[-500:].mean():.3f}")
+    print(f"{'model':6s} {'steps':&gt;5s} {'MMD':&gt;8s} {'in-mode%':&gt;9s} {'modes':&gt;6s}")
+    for r in rows:
+        print(f"{r[0]:6s} {r[1]:5d} {r[2]:8.4f} {100*r[3]:8.1f}% {r[4]:6d}")
+    print(f"straightness  1-RF {S1:.3f}   2-RF {S2:.3f}")
+    print(f"time {time.time()-t0:.1f}s")
+    # sanity asserts
+    d = dict(((r[0], r[1]), r) for r in rows)
+    assert d[('1-RF', 64)][2] &lt; d[('1-RF', 1)][2]          # more steps helps 1-RF
+    assert S2 &lt; S1                                         # reflow straightens
+    assert d[('2-RF', 1)][2] &lt; d[('1-RF', 1)][2]           # 1-step much better after reflow
+    assert d[('1-RF', 64)][4] == 8                         # all modes covered
+    print("OK")</code></pre>
+  </div></details>
+  <div class="deep">
+    <p><b>实际输出</b>（seed 0，CPU 约 27 秒）：</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>模型</th><th>Euler 步数</th><th>MMD ↓</th><th>in-mode % ↑</th><th>覆盖模式数（/8）</th></tr></thead>
+      <tbody>
+        <tr><td>1-RF</td><td>1</td><td>1.0739</td><td>0.0%</td><td>0</td></tr>
+        <tr><td>1-RF</td><td>4</td><td>0.0163</td><td>73.7%</td><td>8</td></tr>
+        <tr><td>1-RF</td><td>16</td><td>0.0019</td><td>92.6%</td><td>8</td></tr>
+        <tr><td>1-RF</td><td>64</td><td>0.0009</td><td>94.4%</td><td>8</td></tr>
+        <tr><td>2-RF（reflow）</td><td>1</td><td>0.0026</td><td>81.6%</td><td>8</td></tr>
+        <tr><td>2-RF</td><td>4</td><td>0.0018</td><td>85.3%</td><td>8</td></tr>
+        <tr><td>2-RF</td><td>16</td><td>0.0013</td><td>89.5%</td><td>8</td></tr>
+        <tr><td>2-RF</td><td>64</td><td>0.0011</td><td>90.5%</td><td>8</td></tr>
+      </tbody>
+    </table></div>
+    <p>直线度：1-RF 2.942 → 2-RF 0.003。最终训练损失：1-RF 7.48（大部分是路径交叉造成的不可约方差），2-RF 0.004。</p>
+    <p><b>怎么读这张表（面试时可以这样讲）：</b></p>
+    <ol>
+      <li><b>1-RF 一步完全失败。</b>\(t=0\) 时 \(x_t=x_0\) 与 \(x_1\) 独立，最优速度 \(v^*(x,0)=\mathbb{E}[x_1]-x=-x\)（数据均值为 0），一步 Euler 把所有点送到原点附近——正是"回归平均"导致的塌缩。</li>
+      <li><b>1-RF 步数增加，质量单调变好</b>，因为 ODE 轨迹是弯的，需要小步追踪。</li>
+      <li><b>Reflow 后一步就几乎和 1-RF 16 步一样好</b>（MMD 0.0026 vs 0.0019），直线度下降约 1000 倍。这就是"直路径 → 少步数"。</li>
+      <li><b>2-RF 多步时略差于 1-RF 64 步</b>：2-RF 的训练目标来自 1-RF 用 100 步生成的样本，继承了 1-RF 的误差；它的上限就是老师的分布。这是 reflow 的已知代价，所以实践中只做 1–2 次。</li>
+    </ol>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 采样时 \(t\) 用 \((i+1)/n\) 而训练时 \(t\in[0,1)\)：Euler 法应在区间左端点评估速度，\(t=i/n\)。(2) 忘了把 \(t\) 作为网络输入，或者只输入原始 \(t\) 而不加任何特征，小网络会拟合得很慢。(3) 训练和采样的方向不一致（训练用 \(x_1-x_0\)、采样却从 \(t=1\) 往回积分）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>On a toy eight-Gaussian ring, a one-step Euler sample from the first rectified flow collapses to the center, because at t equals zero the optimal velocity just points at the data mean. With more steps it gets good, since the learned trajectories are curved. After one round of reflow, the trajectories become almost perfectly straight, straightness drops by about a thousand times, and a single step is roughly as good as sixteen steps before. The catch is that the reflowed model inherits the errors of the teacher that generated its pairs, so its many-step quality is slightly worse.</p></div>
+</section>
+
+<section class="concept" id="c-code-torch">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>PyTorch 版本对照（白板写法）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>本页三段 PyTorch 代码分别是：VAE 损失（§3 重参数化）、DDPM/DDIM（§6 反向过程）、RF + CFG（§7）。白板上写 RF 只需要记住 4 行：<code>x0=randn_like(x1); t=rand(B,1); xt=t*x1+(1-t)*x0; loss=((model(xt,t)-(x1-x0))**2).mean()</code>。</p><p class="en">On a whiteboard, rectified flow training is four lines: sample noise, sample t, interpolate, and regress x1 minus x0.</p></div>
+  <div class="deep">
+    <p>与 DDPM 训练对比，几乎逐行对应：</p>
+    <div class="vs">
+      <div><div class="side-lbl">DDPM（ε-prediction）</div><pre><code class="language-python">t   = torch.randint(0, T, (B,))
+eps = torch.randn_like(x0)
+a   = abar[t].view(-1, 1)
+xt  = a.sqrt() * x0 + (1 - a).sqrt() * eps
+loss = ((model(xt, t) - eps) ** 2).mean()</code></pre></div>
+      <div><div class="side-lbl">RECTIFIED FLOW（velocity）</div><pre><code class="language-python">t   = torch.rand(B, 1)
+x0  = torch.randn_like(x1)          # noise
+xt  = t * x1 + (1 - t) * x0
+target = x1 - x0
+loss = ((model(xt, t) - target) ** 2).mean()</code></pre></div>
+    </div>
+    <p>注意两边 \(x_0\) 含义不同：左边是数据，右边是噪声。</p>
+    <p><b>验证说明：</b>当前环境没有 PyTorch，三段 torch 代码均保存为带断言的独立测试文件，逻辑通过等价的 numpy 实现验证：DDPM/DDIM 采样器用一维高斯的精确 ε 预测器（闭式解）检验输出分布；RF+CFG 采样器用 8 类条件高斯的精确速度场检验；VAE 的 KL 闭式解用 200 万样本 Monte Carlo 检验（误差约 \(10^{-3}\)）。</p>
+  </div>
+</section>
+
+<!-- ======================================================= §10 -->
+<h2 class="sec" id="s-ex"><span class="num">§10 · DERIVATION DRILLS</span>推导练习</h2>
+<p class="sec-intro">每道题先合上页面，在纸上（或白板上）完整推一遍，并用英文边写边讲。卡住再看提示。这些就是面试中最常见的 "derive X for me" 题。</p>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.1</b> · 难度 ★★ · ELBO</div>
+<p>用两种方法推导 VAE 的 ELBO，并说明 ELBO 与 \(\log p(x)\) 之间的差距是什么。什么时候取等？</p>
+<details><summary>提示</summary><div class="inner">方法一：在 \(\log\int p(x,z)dz\) 里乘除 \(q(z\mid x)\)，用 Jensen。方法二：从 \(\mathrm{KL}(q(z\mid x)\|p(z\mid x))\) 出发，用 \(p(z\mid x)=p(x,z)/p(x)\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">见 <a href="#c-elbo">ELBO 概念块</a>。结论：\(\log p(x)=\mathrm{ELBO}+\mathrm{KL}(q(z\mid x)\|p(z\mid x))\)，差距是近似后验与真实后验的 KL，当且仅当 \(q(z\mid x)=p(z\mid x)\) 时取等。ELBO \(=\mathbb E_q[\log p(x\mid z)]-\mathrm{KL}(q(z\mid x)\|p(z))\)。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.2</b> · 难度 ★★ · 高斯 KL</div>
+<p>推导 \(\mathrm{KL}(\mathcal N(\mu,\sigma^2)\|\mathcal N(0,1))\)，并推广到 \(\mathrm{KL}(\mathcal N(\mu_1,\sigma_1^2)\|\mathcal N(\mu_2,\sigma_2^2))\)。</p>
+<details><summary>提示</summary><div class="inner">写出两个对数密度，在 \(q\) 下取期望，用 \(\mathbb E_q[(z-\mu_1)^2]=\sigma_1^2\) 和 \(\mathbb E_q[(z-\mu_2)^2]=\sigma_1^2+(\mu_1-\mu_2)^2\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">$$\mathrm{KL}=\log\frac{\sigma_2}{\sigma_1}+\frac{\sigma_1^2+(\mu_1-\mu_2)^2}{2\sigma_2^2}-\frac12.$$ 推导：\(\mathbb E_q[\log q-\log p]=-\log\sigma_1-\frac12+\log\sigma_2+\frac{\sigma_1^2+(\mu_1-\mu_2)^2}{2\sigma_2^2}\)（\(\log\sqrt{2\pi}\) 抵消）。取 \(\mu_2=0,\sigma_2=1\) 得 \(\frac12(\mu^2+\sigma^2-1-\log\sigma^2)\)。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.3</b> · 难度 ★★ · DDPM 闭式解</div>
+<p>给定 \(q(x_t\mid x_{t-1})=\mathcal N(\sqrt{1-\beta_t}x_{t-1},\beta_tI)\)，证明 \(q(x_t\mid x_0)=\mathcal N(\sqrt{\bar\alpha_t}x_0,(1-\bar\alpha_t)I)\)。再说明为什么这对训练效率至关重要。</p>
+<details><summary>提示</summary><div class="inner">归纳法；两个独立零均值高斯之和的方差相加；\(\alpha_t(1-\bar\alpha_{t-1})+1-\alpha_t=1-\bar\alpha_t\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">见 <a href="#c-ddpm-forward">前向过程</a>。训练效率：每个训练样本只需随机抽一个 \(t\) 并一步加噪，无需模拟 \(t\) 步链；整个 ELBO 的各项可以用随机 \(t\) 无偏估计。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.4</b> · 难度 ★★★ · 后验与 ε 参数化</div>
+<p>推导 \(q(x_{t-1}\mid x_t,x_0)\) 的均值与方差，并把均值写成 \(x_t\) 和 \(\epsilon\) 的函数。由此说明为什么 ELBO 的每项化为 \(\|\epsilon-\epsilon_\theta\|^2\) 的加权。</p>
+<details><summary>提示</summary><div class="inner">Bayes 后配方：精度相加 \(1/\tilde\beta_t=\alpha_t/\beta_t+1/(1-\bar\alpha_{t-1})\)。然后代入 \(x_0=(x_t-\sqrt{1-\bar\alpha_t}\epsilon)/\sqrt{\bar\alpha_t}\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(\tilde\beta_t=\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\beta_t\)，\(\tilde\mu_t=\frac{1}{\sqrt{\alpha_t}}(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon)\)。网络用同样形式参数化 \(\mu_\theta\)，两个同方差高斯的 KL 为 \(\frac{1}{2\sigma_t^2}\|\tilde\mu_t-\mu_\theta\|^2=\frac{\beta_t^2}{2\sigma_t^2\alpha_t(1-\bar\alpha_t)}\|\epsilon-\epsilon_\theta\|^2\)。完整过程见 <a href="#c-ddpm-reverse">反向过程</a>。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.5</b> · 难度 ★★ · GAN 最优判别器</div>
+<p>推导固定 \(G\) 时的最优判别器，并证明此时生成器的目标等于 \(2\,\mathrm{JS}(p_{\text{data}}\|p_g)-\log4\)。</p>
+<details><summary>提示</summary><div class="inner">逐点最大化 \(a\log y+b\log(1-y)\)；代回时分子分母同乘 \(\tfrac12\)，引入 \(m=\tfrac12(p+q)\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">见 <a href="#c-gan-opt">GAN 概念块</a>。\(D^*=\frac{p_{\text{data}}}{p_{\text{data}}+p_g}\)，\(V=\mathrm{KL}(p_{\text{data}}\|m)+\mathrm{KL}(p_g\|m)-\log4=2\mathrm{JS}-\log4\)。我们用两个一维高斯数值积分验证：\(V(D^*)=-0.86183\)，\(2\mathrm{JS}-\log4=-0.86183\)。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.6</b> · 难度 ★★ · Classifier-free guidance</div>
+<p>从 \(\tilde p(x\mid c)\propto p(x)\,p(c\mid x)^w\) 出发，推导 CFG 的 ε 组合公式。说明 \(w=0,1,\gt1\) 分别对应什么。</p>
+<details><summary>提示</summary><div class="inner">取对数求梯度；用 Bayes 消去 \(\nabla\log p(c\mid x)\)；score 和 ε 之间是 \(s=-\epsilon/\sqrt{1-\bar\alpha_t}\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(\nabla\log\tilde p=(1-w)\nabla\log p(x)+w\nabla\log p(x\mid c)\) ⇒ \(\tilde\epsilon=\epsilon_u+w(\epsilon_c-\epsilon_u)\)。\(w=0\)：无条件；\(w=1\)：普通条件；\(w\gt1\)：外推，牺牲多样性换取一致性与质量。见 <a href="#c-guidance">guidance</a>。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.7</b> · 难度 ★★★ · CFM 梯度等价</div>
+<p>证明 \(\nabla_\theta\mathcal L_{\text{CFM}}=\nabla_\theta\mathcal L_{\text{FM}}\)，其中 \(u_t(x)=\mathbb E[u_t(x_t\mid x_1)\mid x_t=x]\)。最优时 \(\mathcal L_{\text{CFM}}\) 的值是多少？</p>
+<details><summary>提示</summary><div class="inner">展开平方；只有交叉项可能不同；对交叉项用塔式性质（先对 \(x_1\) 在给定 \(x_t\) 下取条件期望）。</div></details>
+<details><summary>参考答案</summary><div class="inner">见 <a href="#c-fm">CFM 概念块</a>。最优值 \(=\mathbb E_{t,x_t}\big[\mathrm{tr}\,\mathrm{Cov}(u_t(x_t\mid x_1)\mid x_t)\big]\)，即条件目标在给定 \(x_t\) 下的方差（路径交叉导致），一般不为 0。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.8</b> · 难度 ★★ · RF 损失与一维闭式速度</div>
+<p>设 \(\pi_0=\mathcal N(0,1)\)，\(\pi_1=\mathcal N(m,s^2)\)，独立配对，直线插值。(a) 写出 RF 损失；(b) 求最优速度场 \(v^*(x,t)\) 的闭式解；(c) 当 \(s=1\) 时，\(v^*\) 是什么？ODE 轨迹是直线吗？</p>
+<details><summary>提示</summary><div class="inner">\((x_t,\,x_1-x_0)\) 联合高斯。\(\mathbb E[D\mid x_t]=\mathbb E[D]+\frac{\mathrm{Cov}(D,x_t)}{\mathrm{Var}(x_t)}(x_t-\mathbb E x_t)\)，\(D=x_1-x_0\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+(a) \(\mathcal L=\mathbb E_{t,x_0,x_1}\|v_\theta(tx_1+(1-t)x_0,t)-(x_1-x_0)\|^2\)。<br>
+(b) \(\mathbb E[x_t]=tm\)，\(\mathrm{Var}(x_t)=t^2s^2+(1-t)^2\)，\(\mathrm{Cov}(D,x_t)=\mathrm{Cov}(x_1-x_0,tx_1+(1-t)x_0)=ts^2-(1-t)\)。所以
+$$v^*(x,t)=m+\frac{ts^2-(1-t)}{t^2s^2+(1-t)^2}\,(x-tm).$$
+(c) \(s=1\)：\(v^*=m+\frac{2t-1}{t^2+(1-t)^2}(x-tm)\)，速度依赖 \(x\) 和 \(t\)。验证：沿 \(Z_t=Z_0+tm\)（平移）有 \(x-tm=Z_0\)，\(v^*=m+\frac{2t-1}{2t^2-2t+1}Z_0\ne m\)（当 \(Z_0\ne0\)），所以 1-RF 轨迹<b>不是</b>直线。有趣的是，数值积分这个 ODE 会发现终点恰好是 \(Z_1=Z_0+m\)：一维中 ODE 映射是单调的，单调映射就是一维 OT 映射，所以<b>配对</b>已经是最优的，只是中间轨迹弯曲；reflow 一次后速度变成常数 \(m\)，轨迹变直。（\(t=0\) 时 \(v^*=m-x\)，对应"指向均值"。）这说明"边缘保持 + 配对正确"不等于"路径直"，直线度需要 reflow 来改善。我们用 400 万样本分箱估计验证了 (b) 的公式。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.9</b> · 难度 ★★★ · PF-ODE</div>
+<p>从 Fokker–Planck 方程出发，说明为什么 \(\frac{dx}{dt}=f(x,t)-\tfrac12g(t)^2\nabla\log p_t(x)\) 与 SDE \(dx=f\,dt+g\,dw\) 有相同的边缘分布。</p>
+<details><summary>提示</summary><div class="inner">\(\Delta p=\nabla\cdot(p\nabla\log p)\)，把扩散项合并进漂移项，得到连续性方程形式。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(\partial_tp=-\nabla\cdot(fp)+\tfrac12g^2\nabla\cdot(p\nabla\log p)=-\nabla\cdot\big((f-\tfrac12g^2\nabla\log p)p\big)\)，这是速度场 \(\tilde v=f-\tfrac12g^2\nabla\log p\) 下的连续性方程。ODE 的边缘满足同一 PDE、同一初值，由解的唯一性，边缘处处相同。见 <a href="#c-sde">SDE 概念块</a>。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.10</b> · 难度 ★★★ · Denoising score matching</div>
+<p>证明 DSM 目标与 explicit score matching 只差常数，并由此写出 DDPM 中 score 与 \(\epsilon_\theta\) 的关系。</p>
+<details><summary>提示</summary><div class="inner">关键恒等式 \(q(\tilde x)\nabla\log q(\tilde x)=\nabla q(\tilde x)=\int p(x)\nabla q(\tilde x\mid x)dx\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">见 <a href="#c-score">score matching 概念块</a>。\(\nabla_{x_t}\log q(x_t\mid x_0)=-\epsilon/\sqrt{1-\bar\alpha_t}\)，所以 \(s_\theta(x_t,t)=-\epsilon_\theta(x_t,t)/\sqrt{1-\bar\alpha_t}\)。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.11</b> · 难度 ★★★ · 速度与 score 的换算</div>
+<p>对插值 \(x_t=tx_1+(1-t)x_0\)，\(x_0\sim\mathcal N(0,I)\)，证明 \(v^*(x,t)=\frac{x}{t}+\frac{1-t}{t}\nabla\log p_t(x)\)。这说明了什么？</p>
+<details><summary>提示</summary><div class="inner">先证 \(\nabla\log p_t(x)=-\mathbb E[x_0\mid x_t=x]/(1-t)\)（给定 \(x_1\) 时 \(x_t\) 是方差 \((1-t)^2\) 的高斯，用 DSM 中同样的交换技巧）。再把 \(x_1=(x_t-(1-t)x_0)/t\) 代入 \(v^*=\mathbb E[x_1-x_0\mid x_t]\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(v^*=\mathbb E[x_1\mid x]-\mathbb E[x_0\mid x]=\frac{x-(1-t)\mathbb E[x_0\mid x]}{t}-\mathbb E[x_0\mid x]=\frac{x}{t}-\frac{\mathbb E[x_0\mid x]}{t}=\frac{x}{t}+\frac{1-t}{t}\nabla\log p_t(x)\)。说明：速度场与 score 只是同一信息的不同参数化，所以 FM 模型可以做 CFG、可以写成 SDE 采样，diffusion 和 RF 的区别主要在路径形状和损失权重。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.12</b> · 难度 ★★ · 重参数化 vs REINFORCE</div>
+<p>设 \(z\sim\mathcal N(\mu,1)\)，\(f(z)=z^2\)。分别用 score-function 和 pathwise 估计器写出 \(\nabla_\mu\mathbb E[f(z)]\) 的单样本估计，验证两者无偏，并比较方差。</p>
+<details><summary>提示</summary><div class="inner">真值 \(\mathbb E[z^2]=\mu^2+1\)，梯度 \(2\mu\)。score：\(\nabla_\mu\log q=z-\mu\)。pathwise：\(z=\mu+\epsilon\)，\(\nabla_\mu f=2z\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">Score-function：\(\hat g_1=z^2(z-\mu)=(\mu+\epsilon)^2\epsilon\)，期望 \(\mathbb E[(\mu^2+2\mu\epsilon+\epsilon^2)\epsilon]=2\mu\) ✓。Pathwise：\(\hat g_2=2(\mu+\epsilon)\)，期望 \(2\mu\) ✓。方差：\(\mathrm{Var}(\hat g_2)=4\)；\(\mathrm{Var}(\hat g_1)=\mathbb E[(\mu+\epsilon)^4\epsilon^2]-4\mu^2=(\mu^4+18\mu^2+15)-4\mu^2=\mu^4+14\mu^2+15\)（用 \(\mathbb E\epsilon^2=1,\mathbb E\epsilon^4=3,\mathbb E\epsilon^6=15\)），\(\mu=0\) 时已是 15，远大于 4，并随 \(|\mu|\) 增长（\(\mu=1.5\) 时约 51.6；我们用 400 万样本验证了两个方差公式）。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.13</b> · 难度 ★★ · DDIM 与 ODE</div>
+<p>证明 \(\eta=0\) 的 DDIM 更新在坐标 \(\bar x=x/\sqrt{\bar\alpha}\)、\(\gamma=\sqrt{(1-\bar\alpha)/\bar\alpha}\) 下是 \(d\bar x/d\gamma=\epsilon_\theta\) 的 Euler 步。</p>
+<details><summary>提示</summary><div class="inner">把 \(x_s=\sqrt{\bar\alpha_s}\hat x_0+\sqrt{1-\bar\alpha_s}\epsilon_\theta\) 两边除以 \(\sqrt{\bar\alpha_s}\)，再把 \(\hat x_0\) 展开。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(\bar x_s=\hat x_0+\gamma_s\epsilon_\theta\)，而 \(\hat x_0=\bar x_t-\gamma_t\epsilon_\theta\)，所以 \(\bar x_s=\bar x_t+(\gamma_s-\gamma_t)\epsilon_\theta(x_t,t)\)，即步长 \(\gamma_s-\gamma_t\) 的 Euler 步。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.14</b> · 难度 ★★ · 代码扩展</div>
+<p>修改 §9 的 <code>rf_numpy.py</code>：(a) 把 \(t\) 的采样改成 logit-normal（\(t=\sigma(u)\)，\(u\sim\mathcal N(0,1)\)），比较 4 步采样的 MMD；(b) 实现 Heun（二阶）采样器，比较同样的函数评估次数下与 Euler 的差别。</p>
+<details><summary>提示</summary><div class="inner">(a) <code>t = 1/(1+np.exp(-rng.standard_normal((B,1))))</code>。(b) Heun：\(\tilde x=x+h\,v(x,t)\)；\(x\leftarrow x+\frac h2[v(x,t)+v(\tilde x,t+h)]\)，每步 2 次评估，所以 Heun 2 步对 Euler 4 步。</div></details>
+<details><summary>参考答案</summary><div class="inner">开放题，没有唯一数值答案。预期现象：对弯曲的 1-RF 轨迹，Heun 在相同评估次数下通常优于 Euler；对 reflow 后的近直线轨迹，两者差别很小（直线上 Euler 已经精确）。logit-normal 把训练集中在中间 \(t\)，对这个简单 2D 问题影响不大，结论要多种子比较后再下。这正是面试中"如何设计一个干净的消融"的练习（见 <a href="m13-eval.html">13 评估</a>）。</div></details></div>
+
+<!-- ======================================================= cheat sheet -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET 一页速查</span>一页速查</h2>
+<p class="sec-intro">面试前一晚过一遍。每一行都要能脱稿说出来。</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>主题</th><th>必须记住</th></tr></thead>
+  <tbody>
+    <tr><td>ELBO</td><td>\(\log p(x)=\mathbb E_q[\log p(x\mid z)]-\mathrm{KL}(q(z\mid x)\|p(z))+\mathrm{KL}(q(z\mid x)\|p(z\mid x))\)</td></tr>
+    <tr><td>高斯 KL</td><td>\(\tfrac12\sum(\mu^2+\sigma^2-1-\log\sigma^2)\)</td></tr>
+    <tr><td>重参数化</td><td>\(z=\mu+\sigma\odot\epsilon\)；低方差，需连续可导；离散用 REINFORCE / Gumbel / straight-through</td></tr>
+    <tr><td>Posterior collapse</td><td>强 decoder 忽略 \(z\)，KL→0；KL annealing、free bits、弱化 decoder、VQ</td></tr>
+    <tr><td>GAN</td><td>\(D^*=\frac{p}{p+q}\)；\(V=2\mathrm{JS}-\log4\)；non-saturating \(-\log D(G(z))\)；WGAN：1-Lipschitz critic</td></tr>
+    <tr><td>Flow</td><td>\(\log p(x)=\log p_z(z)-\log|\det\partial f/\partial z|\)；coupling layer 三角 Jacobian</td></tr>
+    <tr><td>DDPM 前向</td><td>\(x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon\)，\(\bar\alpha_t=\prod(1-\beta_s)\)；线性 \(\beta\in[10^{-4},0.02]\)，\(T=1000\)</td></tr>
+    <tr><td>DDPM 反向</td><td>\(\mu_\theta=\frac{1}{\sqrt{\alpha_t}}(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon_\theta)\)；\(\tilde\beta_t=\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\beta_t\)；\(L_{\text{simple}}=\|\epsilon-\epsilon_\theta\|^2\)</td></tr>
+    <tr><td>Score</td><td>\(s_\theta=-\epsilon_\theta/\sqrt{1-\bar\alpha_t}\)；DSM：回归 \(-(\tilde x-x)/\sigma^2\)；Tweedie：\(\mathbb E[x\mid y]=y+\sigma^2\nabla\log p(y)\)</td></tr>
+    <tr><td>SDE / ODE</td><td>reverse SDE 漂移 \(f-g^2\nabla\log p\)；PF-ODE \(f-\tfrac12g^2\nabla\log p\)；边缘相同，轨迹不同</td></tr>
+    <tr><td>DDIM</td><td>\(\hat x_0\) → 重新加噪到 \(s\)；\(\eta=0\) 确定性；复用 DDPM 权重；PF-ODE 的 Euler 离散化</td></tr>
+    <tr><td>CFG</td><td>\(\tilde\epsilon=\epsilon_u+w(\epsilon_c-\epsilon_u)\)；训练时 ~10% 丢条件；目标 \(\propto p(x\mid c)^wp(x)^{1-w}\)（启发式）</td></tr>
+    <tr><td>v-prediction</td><td>\(v=\alpha\epsilon-\sigma x_0\)；\(x_0=\alpha x_t-\sigma v\)；两端稳定，配合 zero terminal SNR</td></tr>
+    <tr><td>CFM</td><td>\(\mathcal L_{\text{CFM}}=\mathcal L_{\text{FM}}+C\)；因为 \(u_t(x)=\mathbb E[u_t(x\mid x_1)\mid x_t=x]\)；与 DSM 同一套路</td></tr>
+    <tr><td>Rectified flow</td><td>\(x_t=tx_1+(1-t)x_0\)；loss \(\|v_\theta(x_t,t)-(x_1-x_0)\|^2\)；边缘保持；凸代价不增；reflow 拉直；直线上 Euler 1 步精确</td></tr>
+    <tr><td>速度 ↔ score（RF）</td><td>\(v=\frac{x}{t}+\frac{1-t}{t}\nabla\log p_t(x)\)</td></tr>
+    <tr><td>SD3</td><td>Rectified flow + MM-DiT；logit-normal 时间采样；分辨率相关 timestep shift</td></tr>
+    <tr><td>Latent diffusion</td><td>VAE 压缩 8×（每边），潜空间 diffusion，cross-attention 注入文本；DiT = latent patch Transformer</td></tr>
+    <tr><td>离散扩散</td><td>D3PM 转移矩阵；吸收态 [MASK] 最好；MDLM：NELBO = \(1/t\) 加权的 masked-LM CE；LLaDA 8B 与 AR 基线可比</td></tr>
+    <tr><td>少步生成</td><td>高阶求解器、reflow、progressive distillation、consistency models、对抗蒸馏</td></tr>
+  </tbody>
+</table></div>
+
+<h3 style="margin-top:28px">高频面试题清单</h3>
+<div class="table-wrap"><table>
+  <thead><tr><th>#</th><th>问题</th><th>去哪看</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Derive the ELBO. What is the gap?</td><td><a href="#c-elbo">ELBO</a></td></tr>
+    <tr><td>2</td><td>What is the reparameterization trick and why is it needed?</td><td><a href="#c-reparam">重参数化</a></td></tr>
+    <tr><td>3</td><td>Derive the KL between a Gaussian and the standard normal.</td><td><a href="#c-gausskl">高斯 KL</a></td></tr>
+    <tr><td>4</td><td>What is posterior collapse? How do you fix it?</td><td><a href="#c-collapse">collapse</a></td></tr>
+    <tr><td>5</td><td>Derive the optimal discriminator. What divergence does a GAN minimize?</td><td><a href="#c-gan-opt">GAN</a></td></tr>
+    <tr><td>6</td><td>Why are GANs hard to train? What is mode collapse?</td><td><a href="#c-gan-train">GAN 训练</a></td></tr>
+    <tr><td>7</td><td>Compare VAEs, GANs, flows, diffusion, and AR models.</td><td><a href="#c-landscape">全景</a></td></tr>
+    <tr><td>8</td><td>Derive q(x_t | x_0) for DDPM.</td><td><a href="#c-ddpm-forward">前向</a></td></tr>
+    <tr><td>9</td><td>Why does the diffusion loss reduce to predicting noise?</td><td><a href="#c-ddpm-reverse">反向</a></td></tr>
+    <tr><td>10</td><td>What is the connection between diffusion and score matching?</td><td><a href="#c-score">score</a></td></tr>
+    <tr><td>11</td><td>What is the probability-flow ODE? SDE vs ODE sampling?</td><td><a href="#c-sde">SDE</a></td></tr>
+    <tr><td>12</td><td>How does DDIM sample faster without retraining?</td><td><a href="#c-ddim">DDIM</a></td></tr>
+    <tr><td>13</td><td>Explain classifier-free guidance. Why does it reduce diversity?</td><td><a href="#c-guidance">CFG</a></td></tr>
+    <tr><td>14</td><td>What is flow matching? Why is the conditional loss valid?</td><td><a href="#c-fm">CFM</a></td></tr>
+    <tr><td>15</td><td>Explain rectified flow and reflow. Why do straight paths help?</td><td><a href="#c-rf">RF</a></td></tr>
+    <tr><td>16</td><td>How are diffusion and flow matching related?</td><td><a href="#c-rf">RF（特殊路径）</a></td></tr>
+    <tr><td>17</td><td>What is latent diffusion? What is DiT?</td><td><a href="#c-ldm">LDM</a></td></tr>
+    <tr><td>18</td><td>Can diffusion replace autoregressive LMs?</td><td><a href="#c-mdlm">MDLM / LLaDA</a></td></tr>
+    <tr><td>19</td><td>How would you get one-step generation?</td><td><a href="#c-consistency">少步生成</a>、<a href="#c-rf">RF</a></td></tr>
+    <tr><td>20</td><td>Write the training loop for flow matching.</td><td><a href="#c-code-rf">代码</a></td></tr>
+  </tbody>
+</table></div>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m12" data-title="模块 12 自测卡片"></div>
+<div class="footer-nav"><a href="m11-interp.html">← 11 可解释性</a><a href="m13-eval.html">13 评估与实验方法 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m12.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
