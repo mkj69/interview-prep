@@ -1,0 +1,2072 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · NumPy 与 PyTorch 手感 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m01">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 01 · Phase 1 · 重建基础</div>
+<h1 class="title">NumPy 与 PyTorch <em>手感</em></h1>
+<p class="lede">RS 面试里的 ML coding 轮，考的不是你记不记得某个 API 的拼写，而是你脑子里有没有一张清楚的"张量地图"：每个张量的 shape 是什么、它在内存里怎么摆、梯度怎么流、哪一行会静默出错。这一章把这张地图重新建起来。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完之后你应该能做到：
+<ul>
+<li>看到任何一行张量代码，<strong>立刻说出输出 shape</strong>，并知道它是 view 还是 copy；</li>
+<li>不查文档写出 <code>gather</code> 取 token log-prob、causal mask、pairwise distance、<code>einsum</code> 版 attention；</li>
+<li>讲清楚 autograd 的原理（计算图、叶子节点、梯度累加、<code>detach</code>/<code>no_grad</code>），并能从零写出 micrograd（约 70 行）；</li>
+<li>从空白文件写出一个标准训练循环和一个 ~100 行的字符级 tiny GPT；</li>
+<li>知道 fp16 / bf16 的区别、为什么 fp16 需要 loss scaling，以及训练不收敛 / 出 NaN 时的排查顺序。</li>
+</ul>
+<b>建议顺序。</b>§1–§4（张量本身）一口气读完，然后马上做 §10 的练习 1–5；再读 §5–§7，做练习 6–11；§8–§9 是面试"聊天题"的高发区，背 Say it；最后做 capstone。<br>
+<b>和其他模块的关系。</b>依赖 <a href="m00-python.html">00 Python</a> 的对象模型（名字绑定、可变性）；为 <a href="m03-dl-basics.html">03 深度学习基础</a>（手推反向传播）、<a href="m04-transformer.html">04 Transformer</a>（attention 代码）、<a href="m14-ml-coding.html">14 ML Coding 手写题</a> 打底；显存与混合精度在 <a href="m09-distributed.html">09 分布式训练</a> 深入。<br>
+<b>关于代码。</b>本页所有 PyTorch 代码都按 PyTorch 2.x 的 API 编写；纯 Python / NumPy 代码都已实际运行通过。建议你把每段代码复制到本地 notebook 里跑一遍，<strong>改一个参数、预测输出、再运行验证</strong>——这是恢复手感最快的方法。
+</div>
+
+<div class="box why"><span class="lbl">一张图记住整章</span>
+<p>一个 <code>torch.Tensor</code> = <strong>一块一维内存（storage）</strong> + <strong>怎么读它的说明书（shape / stride / offset / dtype / device）</strong> + <strong>（可选）它是怎么算出来的记录（grad_fn）</strong>。</p>
+<p>§1–§4 讲"说明书"：几乎所有 shape 操作都只改说明书、不搬数据；§5 讲数值；§6 讲"记录"如何变成梯度；§7–§9 讲如何把这些拼成能训练、能排错的系统。</p>
+</div>
+
+<h2 class="sec" id="s-memory"><span class="num">§1 · TENSOR MEMORY MODEL</span>张量的内存模型</h2>
+<p class="sec-intro">你学过 C，这一节对你其实最友好：PyTorch 张量本质上就是"一块连续数组 + 指针算术"。把这个模型想清楚，view / reshape / contiguous 这些面试常考的"坑"就全部变成显然的事。</p>
+
+<section class="concept" id="c-attrs">
+  <div class="concept-head"><span class="pri p1">★</span><h3>shape、dtype、device：每个张量的三个基本属性</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>写任何张量代码前先问三件事：形状是什么、数据类型是什么、在哪个设备上。90% 的报错都是这三者之一不匹配。</p><p class="en">Every tensor has a shape, a dtype and a device; most runtime errors are a mismatch in one of the three.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>属性</th><th>例子</th><th>面试里要注意的点</th></tr>
+      <tr><td><code>shape</code> / <code>size()</code></td><td><code>torch.Size([B, T, D])</code></td><td>养成习惯在每一行代码旁边注释 shape。LLM 代码里常用字母：B batch、T 序列长度、D/C 隐藏维、H 头数、V 词表大小。</td></tr>
+      <tr><td><code>dtype</code></td><td><code>float32</code>、<code>bfloat16</code>、<code>int64</code>、<code>bool</code></td><td>索引（token id、label）必须是整数（通常 <code>int64</code>/<code>long</code>）；参与梯度的必须是浮点；mask 用 <code>bool</code>。</td></tr>
+      <tr><td><code>device</code></td><td><code>cpu</code>、<code>cuda:0</code>、<code>mps</code></td><td>参与同一个运算的张量必须在同一设备上（0 维的 CPU 标量张量是例外）。</td></tr>
+      <tr><td><code>requires_grad</code></td><td><code>True</code> / <code>False</code></td><td>决定 autograd 是否追踪它（§6）。</td></tr>
+    </table>
+    <p>常用的创建函数：<code>torch.zeros/ones/empty(shape)</code>、<code>torch.full(shape, v)</code>、<code>torch.arange(n)</code>、<code>torch.randn</code>（标准正态）、<code>torch.rand</code>（[0,1) 均匀）、<code>torch.randint(lo, hi, shape)</code>、<code>torch.*_like(x)</code>（与 x 同 shape/dtype/device）、<code>torch.tensor(data)</code>（从 Python 数据<strong>复制</strong>）。</p>
+    <div class="box why"><span class="lbl">直觉</span>把张量想成 C 里的 <code>struct { float *data; int shape[N]; int stride[N]; int offset; }</code>：dtype 决定 <code>data</code> 指向什么类型，device 决定这块内存在 CPU 还是 GPU 显存里。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Whenever I write tensor code, I track three things for every tensor: its shape, its dtype, and its device. I literally annotate shapes in comments, like B by T by D, because most bugs in model code are shape bugs. Indices such as token ids need to be int64, anything that receives gradients needs to be floating point, and all operands of an op must live on the same device.</p></div>
+</section>
+
+<section class="concept" id="c-stride">
+  <div class="concept-head"><span class="pri p1">★</span><h3>storage + stride + offset：和 C 的指针算术一模一样</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>张量的数据存在一块一维 storage 里；元素 \((i_0, i_1, \dots)\) 的位置是 \(\text{offset} + \sum_k i_k \cdot \text{stride}_k\)。转置、切片、expand 都只改 stride/offset，不搬数据。</p><p class="en">A tensor is a view over a flat storage: element (i, j) lives at offset + i·stride[0] + j·stride[1], so transposes and slices are free metadata changes.</p></div>
+  <div class="deep">
+    <p>在 C 里，<code>int a[3][4]</code> 是 12 个连续的 int，<code>a[i][j]</code> 就是 <code>*(base + i*4 + j)</code>。这里的 4 和 1 就是 <strong>stride（步长）</strong>：第 0 维走一步要跳过 4 个元素，第 1 维走一步跳过 1 个元素。PyTorch 把这件事推广了：stride 可以是<strong>任意</strong>整数（甚至 0），于是同一块内存可以被"看成"很多种不同的张量。</p>
+    <div class="vs"><div><div class="side-lbl">C · 手动指针算术</div>
+<pre><code class="language-c">#include &lt;stdio.h&gt;
+
+int main(void) {
+    int storage[12];                      /* 一块连续内存 = PyTorch 的 storage */
+    for (int i = 0; i &lt; 12; i++) storage[i] = i;
+
+    /* 把它"看成" 3x4 矩阵：shape = {3, 4}, stride = {4, 1}, offset = 0 */
+    int shape[2] = {3, 4}, stride[2] = {4, 1}, offset = 0;
+    printf("x[2][1] = %d\n", storage[offset + 2 * stride[0] + 1 * stride[1]]);   /* 9 */
+
+    /* 转置 = 换一组 shape/stride，数据一个字节都不动 */
+    int tshape[2] = {4, 3}, tstride[2] = {1, 4};
+    printf("t[1][2] = %d\n", storage[offset + 1 * tstride[0] + 2 * tstride[1]]); /* 9 */
+    (void)shape; (void)tshape;
+    return 0;
+}</code></pre>
+    </div><div><div class="side-lbl">PYTORCH · 同样的模型</div>
+<pre><code class="language-python">import torch
+
+x = torch.arange(12).reshape(3, 4)       # int64，存在一块连续的 storage 里
+print(x.shape, x.dtype, x.device)        # torch.Size([3, 4]) torch.int64 cpu
+print(x.stride(), x.storage_offset())    # (4, 1) 0   —— 单位是"元素"，不是字节
+print(x.is_contiguous())                 # True
+
+# 元素 (i, j) 在 storage 中的下标 = offset + i*stride[0] + j*stride[1]
+i, j = 2, 1
+flat = x.flatten()
+assert x[i, j] == flat[x.storage_offset() + i * x.stride(0) + j * x.stride(1)]
+
+t = x.t()                                # 转置：不搬数据，只交换 shape 和 stride
+print(t.shape, t.stride())               # torch.Size([4, 3]) (1, 4)
+print(t.is_contiguous())                 # False
+print(t.data_ptr() == x.data_ptr())      # True：同一块内存
+
+s = x[1:, ::2]                           # 切片也是 view：只改 offset 和 stride
+print(s.stride(), s.storage_offset())    # (4, 2) 4
+
+e = torch.tensor([1, 2, 3]).expand(4, 3) # expand：新维度 stride = 0，"假装"重复
+print(e.stride())                        # (0, 1)</code></pre>
+    </div></div>
+    <p><strong>row-major（C 顺序）连续张量的 stride</strong> 是从右往左累乘 shape：shape \((d_0, d_1, d_2)\) → stride \((d_1 d_2,\ d_2,\ 1)\)。</p>
+    <table>
+      <tr><th>操作</th><th>新 shape</th><th>新 stride</th><th>搬数据吗</th></tr>
+      <tr><td><code>x</code>（3×4 连续）</td><td>(3, 4)</td><td>(4, 1)</td><td>—</td></tr>
+      <tr><td><code>x.t()</code> / <code>x.transpose(0,1)</code></td><td>(4, 3)</td><td>(1, 4)：交换</td><td>否</td></tr>
+      <tr><td><code>x[1:, ::2]</code></td><td>(2, 2)</td><td>(4, 2)，offset = 4</td><td>否</td></tr>
+      <tr><td><code>x.permute(...)</code></td><td>按顺序重排</td><td>按同样顺序重排</td><td>否</td></tr>
+      <tr><td><code>v.expand(4, 3)</code>（v 形状 (3,)）</td><td>(4, 3)</td><td>(0, 1)：stride 0 = 重复</td><td>否</td></tr>
+      <tr><td><code>x.contiguous()</code>（x 非连续时）</td><td>不变</td><td>重新变成 row-major</td><td><strong>是</strong></td></tr>
+    </table>
+    <p><strong>contiguous 的定义</strong>：stride 恰好等于"按当前 shape 的 row-major stride"（即按逻辑顺序遍历元素时，内存地址也是依次 +1）。转置后的张量逻辑上相邻的元素（同一行）在内存里相隔 4 个位置，所以不连续。</p>
+    <p>注意单位：PyTorch 的 <code>stride()</code> 以<strong>元素</strong>为单位；NumPy 的 <code>.strides</code> 以<strong>字节</strong>为单位（int64 的 3×4 数组是 <code>(32, 8)</code>）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"转置会复制一份矩阵"——不会，<code>.t()</code> 是 O(1) 的。真正可能复制的是之后的 <code>.contiguous()</code> 或 <code>.reshape()</code>。另外，因为 view 和原张量共享内存，<strong>修改 view 会改到原张量</strong>，这既是性能特性也是 bug 来源。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A PyTorch tensor is basically a flat storage buffer plus metadata: shape, strides and a storage offset. The address of element i, j is offset plus i times stride zero plus j times stride one, exactly like pointer arithmetic on a C array. That is why transpose, slicing, permute and expand are constant-time: they only rewrite the strides. A tensor is contiguous when its strides match the row-major layout of its current shape; after a transpose it no longer is.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What are the strides of a contiguous tensor of shape (2, 3, 4)? And after permute(2, 0, 1)?</b><details><summary>思路</summary><div class="inner">连续时 stride = (12, 4, 1)。<code>permute(2,0,1)</code> 后 shape = (4, 2, 3)，stride 按同样顺序取 = (1, 12, 4)，不连续。</div></details></li>
+    <li><b>Why does expand not allocate memory, and what goes wrong if you write into an expanded tensor?</b><details><summary>思路</summary><div class="inner">expand 把被扩展维度的 stride 设成 0，所有"副本"都指向同一个内存位置。原地写入时多个逻辑元素对应同一地址，结果不确定，所以 PyTorch 直接报错（"more than one element of the written-to tensor refers to a single memory location"），要先 <code>.clone()</code>。</div></details></li>
+    <li><b>Why should you care about contiguity for performance?</b><details><summary>思路</summary><div class="inner">很多 kernel（以及 <code>view</code>）要求连续内存；非连续张量的逐元素访问对缓存/合并访存（GPU coalescing）不友好。所以在热点路径上，转置后若要反复使用，有时显式 <code>.contiguous()</code> 一次反而更快；反之不必要的 <code>.contiguous()</code> 会多一次内存拷贝。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-view">
+  <div class="concept-head"><span class="pri p1">★</span><h3>view vs reshape vs transpose/permute，以及 .contiguous()</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>view</code> 只改说明书，要求 stride 兼容（通常是连续），否则报错；<code>reshape</code> 能 view 就 view，不能就复制；<code>transpose/permute</code> 交换维度且产生非连续张量。</p><p class="en">view never copies and fails on incompatible strides; reshape returns a view when possible and silently copies otherwise; transpose and permute just reorder strides.</p></div>
+  <div class="deep">
+    <p><strong>为什么 view 在 transpose 之后会失败？</strong>转置后的 (4, 3) 张量，逻辑顺序是 0, 4, 8, 1, 5, 9, …，而内存顺序是 0, 1, 2, …, 11。要把它 view 成长度 12 的一维张量，需要一个固定的 stride s 使得第 k 个元素在 <code>k*s</code>——但 0→4→8→1 的间隔是 4, 4, −7，不是等差数列，无法用一个 stride 表达。于是只能复制。</p>
+<pre><code class="language-python">import torch
+
+x = torch.arange(12).reshape(3, 4)
+t = x.t()                                # (4, 3)，stride (1, 4)，非连续
+try:
+    t.view(12)
+except RuntimeError as err:
+    print("view failed:", err)           # view size is not compatible with input tensor's size and stride ...
+r = t.reshape(12)                        # view 不行时，reshape 会悄悄复制一份
+print(r)                                 # tensor([ 0,  4,  8,  1,  5,  9,  2,  6, 10,  3,  7, 11])
+print(r.data_ptr() == x.data_ptr())      # False → 这是拷贝
+c = t.contiguous()                       # 按当前逻辑顺序重新排成连续内存（拷贝）
+print(c.stride(), c.view(12).shape)      # (3, 1) torch.Size([12])
+
+v = x.reshape(4, 3)                      # x 本来就连续 → reshape 返回 view
+v[0, 0] = 100
+print(x[0, 0].item())                    # 100：改 v 就是改 x
+
+# 多头注意力里最常见的 shape 变换
+B, T, H, Dh = 2, 5, 4, 8
+q = torch.randn(B, T, H * Dh)
+q = q.view(B, T, H, Dh).transpose(1, 2)                  # (B, H, T, Dh)，非连续
+out = q.transpose(1, 2).contiguous().view(B, T, H * Dh)  # 合并 head 前必须 contiguous（或用 reshape）
+assert out.shape == (B, T, H * Dh)</code></pre>
+    <table>
+      <tr><th></th><th><code>view</code></th><th><code>reshape</code></th><th><code>transpose</code>/<code>permute</code></th><th><code>flatten</code></th></tr>
+      <tr><td>改变什么</td><td>shape</td><td>shape</td><td>维度顺序</td><td>合并若干维</td></tr>
+      <tr><td>是否复制</td><td>从不（不兼容就报错）</td><td>必要时复制</td><td>从不</td><td>同 reshape</td></tr>
+      <tr><td>输出连续？</td><td>与输入一致</td><td>不保证</td><td>一般否</td><td>不保证</td></tr>
+      <tr><td>典型用途</td><td>拆/合 head 维（输入已连续）</td><td>不想关心连续性时</td><td>(B,T,H,Dh)↔(B,H,T,Dh)</td><td>送进 CE 前展平</td></tr>
+    </table>
+    <div class="box why"><span class="lbl">直觉</span><code>reshape</code> 和 <code>view</code> 都按<strong>逻辑上的 row-major 顺序</strong>重新排列元素；<code>transpose</code> 是<strong>真正交换轴</strong>。所以 <code>x.view(4, 3)</code> 和 <code>x.t()</code> 形状一样，内容完全不同——面试时常被拿来挖坑。</div>
+    <p>多头注意力里的标准写法：<code>q.view(B, T, H, Dh).transpose(1, 2)</code> 拆 head；合 head 时 <code>y.transpose(1, 2).contiguous().view(B, T, H*Dh)</code>，或直接 <code>reshape</code>。千万不要写 <code>q.view(B, H, T, Dh)</code>——形状对了，但把不同 token 的维度混在一起了。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 用 <code>view(B, H, T, Dh)</code> 代替 <code>view(B, T, H, Dh).transpose(1,2)</code>：不报错，但语义全错。(2) 以为 <code>reshape</code> 一定返回 view，然后靠"修改它会改原张量"做事——在非连续输入上这不成立。(3) 在 <code>transpose</code> 后直接 <code>view</code> 合并维度 → RuntimeError，提示你用 <code>.reshape(...)</code>。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>view only reinterprets the existing memory with a new shape, so it requires compatible strides and errors out otherwise, for example right after a transpose. reshape is the forgiving version: it returns a view when it can and makes a copy when it must. transpose and permute actually reorder the axes by swapping strides, which makes the result non-contiguous. In multi-head attention I split heads with view then transpose, and merge them with transpose, contiguous, view, or simply reshape.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>x has shape (2, 3). Are x.view(3, 2) and x.t() the same?</b><details><summary>思路</summary><div class="inner">形状相同，内容不同。x = [[0,1,2],[3,4,5]]：<code>view(3,2)</code> = [[0,1],[2,3],[4,5]]（按内存顺序重新切行），<code>x.t()</code> = [[0,3],[1,4],[2,5]]（真正的转置）。</div></details></li>
+    <li><b>How can you tell whether reshape copied?</b><details><summary>思路</summary><div class="inner">比较 <code>y.data_ptr() == x.data_ptr()</code>（或 <code>untyped_storage().data_ptr()</code>）。注意切片的 view 会有非零 offset，<code>data_ptr()</code> 可能不同但 storage 相同，此时比较 storage 指针更可靠。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-dtype">
+  <div class="concept-head"><span class="pri p1">★</span><h3>dtype 规则、.to()、设备不匹配、和 NumPy 共享内存</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>默认浮点是 float32、整数是 int64；<code>torch.from_numpy</code> 共享内存并继承 float64，<code>torch.tensor</code> 总是复制；<code>tensor.to()</code> 返回新张量，<code>module.to()</code> 原地修改。</p><p class="en">Default float is float32 and default int is int64; from_numpy shares memory and keeps float64, torch.tensor always copies; tensor.to returns a new tensor while module.to works in place.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import numpy as np
+import torch
+
+print(torch.tensor([1, 2]).dtype)            # torch.int64
+print(torch.tensor([1.0]).dtype)             # torch.float32（默认浮点 dtype）
+print(torch.tensor(np.array([1.0])).dtype)   # torch.float64 —— 继承了 numpy 的 float64！
+print((torch.tensor([3]) / 2).dtype)         # torch.float32：/ 永远是真除法
+print((torch.tensor([3]) // 2).dtype)        # torch.int64
+print((torch.tensor([3]) + 0.5).dtype)       # torch.float32：Python 标量不会把结果升成 float64
+
+a = np.zeros(3)
+t = torch.from_numpy(a)      # 共享内存（零拷贝），dtype 跟随 numpy：float64
+t[0] = 5
+print(a)                     # [5. 0. 0.]
+u = torch.tensor(a)          # torch.tensor(...) 总是复制
+u[1] = 7
+print(a)                     # [5. 0. 0.]：没变
+
+w = torch.ones(2, requires_grad=True)
+# w.numpy()  → RuntimeError: Can't call numpy() on Tensor that requires grad ...
+arr = w.detach().cpu().numpy()   # 标准写法：断开计算图 → 搬回 CPU → 转 numpy
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+z = torch.zeros(2)
+z2 = z.to(device, torch.bfloat16)   # tensor.to 返回新 tensor（若什么都没变则返回自身）
+model = torch.nn.Linear(2, 2)
+model.to(device)                    # module.to 原地修改所有参数，并返回 self</code></pre>
+    <h4>dtype 速查</h4>
+    <table>
+      <tr><th>dtype</th><th>字节</th><th>用途</th></tr>
+      <tr><td><code>float32</code>（<code>torch.float</code>）</td><td>4</td><td>默认；master weights、optimizer 状态</td></tr>
+      <tr><td><code>bfloat16</code> / <code>float16</code></td><td>2</td><td>混合精度训练与推理（§8）</td></tr>
+      <tr><td><code>float64</code></td><td>8</td><td>数值验证（gradcheck）；深度学习里很少用，GPU 上很慢</td></tr>
+      <tr><td><code>int64</code>（<code>torch.long</code>）</td><td>8</td><td>索引：token id、label、<code>gather</code> 的 index</td></tr>
+      <tr><td><code>bool</code></td><td>1</td><td>mask</td></tr>
+      <tr><td><code>int8</code> / <code>uint8</code></td><td>1</td><td>量化、图像像素</td></tr>
+    </table>
+    <h4>类型提升（type promotion）要点</h4>
+    <ul>
+      <li>张量和张量运算：取"更大"的类型（int + float → float；float32 + float64 → float64）。</li>
+      <li>张量和 <strong>Python 标量</strong>运算：标量只在"类别"更高时才提升（int 张量 + 0.5 → 默认浮点 float32），<strong>不会</strong>把 float32 升成 float64。</li>
+      <li><code>/</code> 永远是真除法（int/int → float），<code>//</code> 是 floor division。</li>
+      <li><code>@</code> / <code>matmul</code> 不做隐式提升：float32 @ float64 直接报错。</li>
+    </ul>
+    <h4>设备不匹配</h4>
+    <p>报错信息形如 "Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu"。最常见的原因：(1) 模型 <code>.to(device)</code> 了但输入没有；(2) 在 <code>forward</code> 里新建张量（如 <code>torch.arange(T)</code>、mask）没指定 <code>device=x.device</code>；(3) 把常量张量存成普通属性而不是 <code>register_buffer</code>，于是 <code>model.to()</code> 不会搬它（§7）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 从 NumPy 来的数据默认 float64，喂进 float32 的模型就报 dtype 错，记得 <code>.float()</code>。(2) <code>x.to(device)</code> 不是原地操作，必须写 <code>x = x.to(device)</code>；而 <code>model.to(device)</code> 是原地的。(3) <code>loss.item()</code>、<code>.cpu()</code>、<code>print(tensor)</code> 会触发 GPU→CPU 同步，在训练热循环里频繁调用会拖慢速度。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>PyTorch defaults to float32 for floating point and int64 for integers, and index tensors like token ids must be int64. torch.from_numpy shares memory with the NumPy array and keeps its float64 dtype, whereas torch.tensor always copies. Moving data is explicit: tensor.to returns a new tensor, while module.to moves the parameters in place. Device-mismatch errors usually come from creating a new tensor inside forward without passing device equals x dot device.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How do you convert a CUDA tensor that requires grad into a NumPy array?</b><details><summary>思路</summary><div class="inner"><code>t.detach().cpu().numpy()</code>：先断开计算图（否则 numpy() 报错），再搬到 CPU（NumPy 只能读 CPU 内存）。顺序上 detach 和 cpu 可以互换，但先 detach 可以避免 cpu() 这一步被 autograd 记录。</div></details></li>
+    <li><b>Why does nn.Embedding raise an error on a float index tensor?</b><details><summary>思路</summary><div class="inner">Embedding 本质是按整数下标查表（<code>weight[idx]</code>），浮点数不是合法下标；要求 Long 或 Int。常见原因是数据管道里用 <code>torch.tensor(list_of_floats)</code> 或从 NumPy float 数组构造。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-broadcast"><span class="num">§2 · BROADCASTING</span>广播</h2>
+<p class="sec-intro">广播让你不写循环就能把不同形状的张量放在一起运算，是"向量化思维"的核心。它也是最常见的<strong>静默 bug</strong> 来源：形状不对时它不报错，而是算出一个形状更大的错误结果。</p>
+
+<section class="concept" id="c-bcast-rules">
+  <div class="concept-head"><span class="pri p1">★</span><h3>广播规则与逐步推演</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>从最右边的维度开始对齐；每一对维度要么相等、要么其中一个是 1（或缺失）；结果取较大者。大小为 1 的维度被"虚拟复制"（stride 0），不占额外内存。</p><p class="en">Align shapes from the right; each pair of dims must be equal or one of them must be 1 or missing; size-1 dims are virtually stretched with stride zero.</p></div>
+  <div class="deep">
+    <p>规则的三步：</p>
+    <ol>
+      <li><strong>右对齐</strong>：把两个 shape 从最后一维开始对齐，短的那个在左边补 1。</li>
+      <li><strong>逐维检查</strong>：每一维要么相等，要么有一个是 1；否则报错。</li>
+      <li><strong>结果</strong>：每一维取 max。为 1 的那一方沿该维"复制"（实际上 stride = 0，见 §1 的 expand）。</li>
+    </ol>
+    <table>
+      <tr><th>A</th><th>B</th><th>右对齐后</th><th>结果</th></tr>
+      <tr><td>(8, 1, 6, 1)</td><td>(7, 1, 5)</td><td>(8,1,6,1) vs (1,7,1,5)</td><td>(8, 7, 6, 5)</td></tr>
+      <tr><td>(B, T, D)</td><td>(D,)</td><td>(B,T,D) vs (1,1,D)</td><td>(B, T, D)：加 bias</td></tr>
+      <tr><td>(B, T, D)</td><td>(B, T, 1)</td><td>—</td><td>(B, T, D)：除以每个 token 的 norm</td></tr>
+      <tr><td>(N, 1)</td><td>(M,)</td><td>(N,1) vs (1,M)</td><td>(N, M)：外积 / 两两比较</td></tr>
+      <tr><td>(3, 4)</td><td>(3,)</td><td>(3,4) vs (1,3)</td><td><strong>报错</strong>：4 ≠ 3</td></tr>
+      <tr><td>(B, H, T, T)</td><td>(T, T)</td><td>—</td><td>(B, H, T, T)：causal mask 直接广播</td></tr>
+    </table>
+<pre><code class="language-python">import torch
+
+a = torch.randn(8, 1, 6, 1)
+b = torch.randn(   7, 1, 5)
+print((a + b).shape)                 # torch.Size([8, 7, 6, 5])
+
+# 经典静默 bug：(B, 1) 和 (B,) 相减 → (B, B)
+B = 4
+pred = torch.randn(B, 1)             # 回归头 nn.Linear(d, 1) 的输出
+y = torch.randn(B)                   # 标签
+print((pred - y).shape)              # torch.Size([4, 4])   ← 不是 (4,)！
+loss_bad = ((pred - y) ** 2).mean()  # 能跑，数值看起来也"合理"，但完全错了
+loss_ok = ((pred.squeeze(-1) - y) ** 2).mean()
+# F.mse_loss(pred, y) 至少会给 UserWarning: Using a target size ... different to the input size
+
+# keepdim：按行归一化
+x = torch.rand(3, 5)
+p = x / x.sum(dim=1, keepdim=True)   # (3, 5) / (3, 1)  ✓
+assert torch.allclose(p.sum(1), torch.ones(3))
+# x / x.sum(dim=1)：(3, 5) / (3,) 末维 5 ≠ 3 → 报错；
+# 但如果 x 恰好是方阵 (3, 3)，就会"成功"地按列去除 → 静默错误</code></pre>
+    <div class="box why"><span class="lbl">直觉</span>把广播想成"自动帮你写了嵌套 for 循环，但循环体里对大小为 1 的维度总是取下标 0"。它在 C 里的等价物就是 <code>out[i][j] = a[i][0] + b[0][j]</code>。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为"右对齐"是"左对齐"。(3, 4) + (3,) 不会把 (3,) 当成列向量，而是当成行向量去对齐最后一维 4，所以报错；想要按行加，必须写 <code>b[:, None]</code>（即 (3, 1)）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Broadcasting aligns shapes from the rightmost dimension. Each pair of dimensions must either match or one of them must be one, and the missing leading dimensions are treated as one. Size-one dimensions are stretched virtually, with a stride of zero, so no memory is copied. For example, B by T by D plus a vector of size D adds a bias to every token, and N by one minus one by M gives an N by M matrix of pairwise differences.</p></div>
+</section>
+
+<section class="concept" id="c-bcast-bug">
+  <div class="concept-head"><span class="pri p1">★</span><h3>(B,) vs (B,1) 静默 bug 与 keepdim</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>pred</code> 形状 (B,1) 减去 <code>y</code> 形状 (B,) 得到 (B,B)，loss 能算、能下降、但完全错误。规约时用 <code>keepdim=True</code> 保留维度，方便再广播回去。</p><p class="en">Subtracting a (B,) target from a (B,1) prediction silently yields a (B,B) matrix; use keepdim=True on reductions you want to broadcast back.</p></div>
+  <div class="deep">
+    <p>这是回归任务里最经典的 bug：<code>nn.Linear(d, 1)</code> 输出 (B, 1)，标签是 (B,)。<code>pred - y</code> 按规则右对齐：(B,1) vs (1,B) → (B,B)。于是 loss 变成了"每个预测和<strong>所有</strong>标签的差的平方的平均"，模型最终会学到预测全体标签的均值。没有任何报错，训练曲线也在下降。</p>
+    <p>防御手段：</p>
+    <ul>
+      <li>在 loss 前 <code>assert pred.shape == y.shape</code>；</li>
+      <li>显式 <code>pred.squeeze(-1)</code>（写明维度！）或 <code>y.unsqueeze(-1)</code>；</li>
+      <li>用 <code>F.mse_loss</code>：形状不一致时至少会给出 UserWarning（但它仍然会广播计算，所以不能依赖它）。</li>
+    </ul>
+    <p><strong>keepdim</strong>：<code>x.sum(dim=1)</code> 把 (N, C) 变成 (N,)，再拿 (N, C) 去除它，会右对齐成 (1, N)——不是你想要的"每行除以本行和"。<code>keepdim=True</code> 得到 (N, 1)，广播语义正确。所有规约（<code>sum/mean/max/logsumexp/norm</code>）都支持 keepdim。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只在方阵上测试过。(3, 3) / (3,) 能跑通，但除的是列和而不是行和——这类 bug 在测试数据恰好是方阵（比如 B = T = 4 的小例子）时最容易漏掉。<strong>写测试时让每个维度取不同的数字</strong>（B=2, T=3, D=5），形状错误会立刻暴露。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The classic silent broadcasting bug is a regression head that outputs B by one, compared against targets of shape B. The subtraction broadcasts to a B by B matrix, the loss still decreases, and the model just learns the mean. I guard against it with shape asserts before every loss and by always squeezing a specific dimension. Similarly, I use keepdim equals true on reductions so the result broadcasts back along the right axis. And in tests I pick distinct sizes for every dimension, so shape mistakes cannot hide.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why is x.squeeze() without a dim argument dangerous?</b><details><summary>思路</summary><div class="inner">它会挤掉<strong>所有</strong>大小为 1 的维度。当 batch size 恰好为 1（推理、最后一个不完整 batch）时，batch 维也会被挤掉，后续代码的 shape 就全乱了。永远写 <code>squeeze(-1)</code> 这类带维度的版本。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-pairwise">
+  <div class="concept-head"><span class="pri p1">★</span><h3>外积与 pairwise 距离矩阵（不写循环）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>外积：<code>u[:, None] * v[None, :]</code>。两两平方距离：\(\|x_i - y_j\|^2 = \|x_i\|^2 - 2x_i^\top y_j + \|y_j\|^2\)，一次 matmul 搞定，显存 O(NM) 而不是 O(NMD)。</p><p class="en">Pairwise squared distances expand to ‖x‖² − 2x·y + ‖y‖², which turns the problem into one matmul plus two broadcasts.</p></div>
+  <div class="deep">
+    <p>这是 ML coding 面试里出现频率极高的一道"热身题"（kNN、k-means、对比学习的相似度矩阵、RBF kernel 都要用）。两种写法：</p>
+    <ol>
+      <li><strong>直接广播</strong>：<code>(X[:, None, :] - Y[None, :, :]) ** 2</code> 得到 (N, M, D) 再对 D 求和。好写好懂，但中间张量 O(NMD)，N=M=10⁴、D=10³ 时是 10¹¹ 个元素，直接 OOM。</li>
+      <li><strong>展开平方</strong>：\(\|x-y\|^2 = \|x\|^2 + \|y\|^2 - 2x^\top y\)，中间只有 (N, M)，主要计算是一次 \(XY^\top\) matmul，在 GPU 上非常快。</li>
+    </ol>
+<pre><code class="language-python">import torch
+
+def pairwise_sq_dist(X, Y):
+    """X: (N, D), Y: (M, D) -&gt; (N, M)，D[i, j] = ||X[i] - Y[j]||^2"""
+    x2 = (X * X).sum(-1, keepdim=True)        # (N, 1)
+    y2 = (Y * Y).sum(-1)                      # (M,)  → 广播成 (1, M)
+    d2 = x2 - 2 * X @ Y.T + y2                # (N, M)
+    return d2.clamp_min(0)                    # 浮点相消可能产生 -1e-7 这样的负数
+
+X, Y = torch.randn(5, 3), torch.randn(7, 3)
+naive = ((X[:, None, :] - Y[None, :, :]) ** 2).sum(-1)   # 中间张量 (N, M, D)：显存 O(NMD)
+assert torch.allclose(pairwise_sq_dist(X, Y), naive, atol=1e-5)
+assert torch.allclose(pairwise_sq_dist(X, Y).sqrt(), torch.cdist(X, Y), atol=1e-4)</code></pre>
+    <p>NumPy 版本（已运行验证，和双重循环结果一致）：</p>
+<pre><code class="language-python">import numpy as np
+
+def pairwise_l2(X, Y):
+    """X: (N, D), Y: (M, D) -&gt; (N, M) 欧氏距离，无 Python 循环。"""
+    x2 = (X ** 2).sum(axis=1, keepdims=True)      # (N, 1)
+    y2 = (Y ** 2).sum(axis=1)                     # (M,)
+    d2 = x2 - 2 * X @ Y.T + y2                    # ||x||^2 - 2 x·y + ||y||^2
+    return np.sqrt(np.maximum(d2, 0.0))           # 截掉浮点误差带来的负数
+
+rng = np.random.default_rng(0)
+X, Y = rng.normal(size=(50, 16)), rng.normal(size=(40, 16))
+loop = np.array([[np.linalg.norm(x - y) for y in Y] for x in X])
+assert np.allclose(pairwise_l2(X, Y), loop)
+assert np.allclose(np.diag(pairwise_l2(X, X)), 0, atol=1e-6)</code></pre>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 忘了 <code>clamp_min(0)</code>：浮点相消会让本应为 0 的对角线变成 −1e-7，开方后得到 NaN（而且 sqrt 在 0 处梯度为无穷，需要反传时可以加个小 eps）。(2) 对 y2 也用了 keepdim，得到 (M, 1)，结果广播成错误的形状——y2 必须是 (M,) 或 (1, M)。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For pairwise distances I avoid materializing the N by M by D difference tensor. I expand the square: the squared norm of x minus two x dot y plus the squared norm of y. The cross term is a single matrix multiply, X times Y transpose, and the two norm terms broadcast as an N by one column and a one by M row. I clamp at zero before the square root because floating-point cancellation can produce tiny negative values.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you compute a cosine similarity matrix?</b><details><summary>思路</summary><div class="inner">先 L2 归一化每一行：<code>Xn = X / X.norm(dim=-1, keepdim=True).clamp_min(eps)</code>，Y 同理，然后 <code>Xn @ Yn.T</code>。或 <code>F.normalize(X, dim=-1)</code>。这就是 CLIP / SimCLR 的 logits（再除以温度）。</div></details></li>
+    <li><b>The matrix doesn't fit in memory (N = M = 1e6). What now?</b><details><summary>思路</summary><div class="inner">分块（chunking）：对 X 按行分块，每块和 Y 算距离，只保留需要的结果（例如 top-k 最近邻，用 <code>torch.topk</code>），丢掉完整矩阵。更大规模用近似最近邻库（FAISS 之类）。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-index"><span class="num">§3 · INDEXING &amp; REARRANGING</span>索引与重排</h2>
+<p class="sec-intro">这一节的 API 是 LLM 代码的"基本词汇"：从 logits 里取出目标 token 的 log-prob（gather）、做 one-hot（scatter）、加 causal mask（masked_fill + triu）、拼接 batch（cat/stack）。每个都可能在 coding 轮被要求现场写出。</p>
+
+<section class="concept" id="c-view-copy">
+  <div class="concept-head"><span class="pri p1">★</span><h3>基础索引是 view，高级索引是 copy</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>整数和切片（<code>x[1]</code>、<code>x[2:5]</code>、<code>x[:, ::2]</code>）只改 stride/offset，返回 view；用整数张量/列表或布尔掩码索引（advanced indexing）会复制一份新数据。但索引<strong>赋值</strong>总是原地修改原张量。</p><p class="en">Basic indexing with ints and slices returns a view; advanced indexing with index tensors or boolean masks returns a copy, but indexed assignment always writes in place.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+x = torch.arange(10)
+s = x[2:5];        s[0] = -1;  print(x[2].item())   # -1：基础切片是 view
+x = torch.arange(10)
+f = x[[2, 3, 4]];  f[0] = -1;  print(x[2].item())   # 2：高级索引（整数列表/张量）是 copy
+m = x[x &gt; 5];      m[0] = -1;  print(x[6].item())   # 6：布尔掩码"读"也是 copy
+x[x &gt; 5] = 0                                        # 但"写"是原地的（走 __setitem__）
+print(x)                                            # tensor([0, 1, 2, 3, 4, 5, 0, 0, 0, 0])</code></pre>
+    <p>为什么高级索引必须复制？因为 <code>x[[0, 5, 2]]</code> 选出的元素在内存中的间隔是 5、−3，不能用一个固定 stride 描述（参考 §1 中 view 失败的原因）。布尔掩码同理，而且结果长度取决于数据（有几个 True），所以 <code>x[mask]</code> 总是返回一维张量。</p>
+    <table>
+      <tr><th>写法</th><th>类型</th><th>结果</th></tr>
+      <tr><td><code>x[0]</code>, <code>x[:, 1]</code>, <code>x[1:3]</code>, <code>x[..., None]</code></td><td>basic</td><td>view</td></tr>
+      <tr><td><code>x[idx_tensor]</code>, <code>x[[0, 2]]</code></td><td>advanced</td><td>copy</td></tr>
+      <tr><td><code>x[mask]</code>（mask 为 bool）</td><td>advanced</td><td>copy，一维</td></tr>
+      <tr><td><code>x[mask] = 0</code>, <code>x[idx] = v</code></td><td>赋值</td><td>原地修改 x</td></tr>
+      <tr><td><code>x[b_idx, t_idx, tgt]</code>（多个索引张量）</td><td>advanced</td><td>各索引张量先互相广播，结果形状 = 广播后的形状</td></tr>
+    </table>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span><code>x[mask][0] = 5</code> 不会修改 x：<code>x[mask]</code> 先产生了一个副本，你改的是副本。要原地修改请写成一次性的赋值 <code>x[mask] = ...</code>。（NumPy 也是同样的语义。）</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Basic indexing with integers and slices returns a view, because it only changes the offset and strides. Advanced indexing, with an index tensor or a boolean mask, has to return a copy since the selected elements can't be described by a single stride. Assignment through an index, like x of mask equals zero, is the exception: it always writes into the original tensor.</p></div>
+</section>
+
+<section class="concept" id="c-gather">
+  <div class="concept-head"><span class="pri p1">★</span><h3>gather：取出目标 token 的 log-prob</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>out = x.gather(dim, index)</code>：输出和 <code>index</code> 同形状，沿 <code>dim</code> 那一维用 index 的值作下标，其余维度用自己的位置。LLM 里：<code>logp.gather(-1, tgt.unsqueeze(-1)).squeeze(-1)</code> 得到 (B, T) 的 token log-prob。</p><p class="en">gather picks, along one dimension, the entries named by an index tensor of the same rank; it is how we extract per-token log-probs of the target tokens.</p></div>
+  <div class="deep">
+    <p>精确定义（以 3 维、<code>dim=2</code> 为例）：</p>
+    $$\text{out}[i][j][k] = \text{x}[i][j][\,\text{index}[i][j][k]\,]$$
+    <p>要点：(1) <code>index</code> 的维数必须和 <code>x</code> 相同（所以要 <code>unsqueeze(-1)</code> 把 (B,T) 变成 (B,T,1)）；(2) 输出 shape = index 的 shape；(3) index 必须是 int64。</p>
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+# 小例子：dim=1 时 out[i][j] = src[i][ index[i][j] ]
+src = torch.tensor([[10, 11, 12],
+                    [20, 21, 22]])
+idx = torch.tensor([[2, 0],
+                    [1, 1]])
+print(torch.gather(src, 1, idx))     # [[12, 10], [21, 21]]
+
+# LLM 里最常用：取出每个位置上"目标 token"的 log-prob
+B, T, V = 2, 3, 5
+logits = torch.randn(B, T, V)
+targets = torch.randint(0, V, (B, T))
+logp = logits.log_softmax(dim=-1)                                # (B, T, V)
+tok_logp = logp.gather(-1, targets.unsqueeze(-1)).squeeze(-1)    # (B, T)
+
+# 等价写法：高级索引（两个辅助下标广播成 (B, T)）
+b = torch.arange(B)[:, None]
+t = torch.arange(T)[None, :]
+assert torch.allclose(tok_logp, logp[b, t, targets])
+# 和 cross_entropy 的关系：CE = -mean(tok_logp)
+assert torch.allclose(-tok_logp.mean(),
+                      F.cross_entropy(logits.reshape(-1, V), targets.reshape(-1)))</code></pre>
+    <p>为什么这在 LLM 里无处不在：</p>
+    <ul>
+      <li><strong>交叉熵</strong>就是 \(-\frac{1}{N}\sum \log p_\theta(y_t \mid y_{&lt;t})\)，即 gather 之后取负均值；</li>
+      <li><strong>RLHF / DPO / GRPO</strong> 都需要每个 response token 的 log-prob \(\log\pi_\theta(a_t\mid s_t)\)，用于算 ratio、KL、序列 log-likelihood（见 <a href="m06-rl-posttraining.html">06</a>）；</li>
+      <li>NumPy 的对应函数是 <code>np.take_along_axis</code>。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>gather = "每一行都有自己的下标列表，按它去挑元素"。它是高级索引 <code>logp[b_idx, t_idx, tgt]</code> 的一种更简洁写法：辅助下标 <code>arange</code> 被隐含了。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 忘记 shift：语言模型位置 t 的 logits 预测的是 token t+1，所以要用 <code>logits[:, :-1]</code> 配 <code>input_ids[:, 1:]</code>。(2) 先 <code>softmax</code> 再 <code>log</code> 而不是用 <code>log_softmax</code>（§5 数值问题）。(3) 词表很大时（V ~ 15 万），<code>log_softmax</code> 会物化一个 (B, T, V) 的 fp32 张量，显存开销很大；可以用 \(\log p_y = z_y - \text{logsumexp}(z)\)，只 gather logits 再减去 logsumexp，并按 chunk 计算。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>To get per-token log-probabilities, I take log-softmax over the vocabulary, then gather along the last dimension with the target ids unsqueezed to B by T by one, and squeeze back to B by T. gather's output has the shape of the index tensor, and along the chosen dimension it reads the position given by the index. This is the building block for cross-entropy and for every policy-gradient or DPO loss, where we need log pi of the sampled tokens. I also remember to shift: logits at position t predict the token at t plus one.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How do you get the sequence log-likelihood of only the response tokens?</b><details><summary>思路</summary><div class="inner">用 response mask（prompt 和 padding 为 0）：<code>(tok_logp * mask).sum(-1)</code> 得到每条序列的 log-likelihood；token 平均用 <code>.sum() / mask.sum()</code>。见练习 10.3。</div></details></li>
+    <li><b>Can you avoid materializing the full log-softmax for a 150k vocab?</b><details><summary>思路</summary><div class="inner">可以：\(\log p_y = z_y - \operatorname{logsumexp}_v z_v\)。先 <code>logits.gather(-1, tgt[...,None])</code>，再减 <code>torch.logsumexp(logits, -1)</code>；logsumexp 内部仍需读全部 logits，但不用额外存一份 (B,T,V) 的 log-prob。进一步可以沿 T 分块计算，或使用融合的 cross-entropy kernel。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-scatter">
+  <div class="concept-head"><span class="pri p1">★</span><h3>scatter_ / scatter_add_ / index_add_：gather 的反方向</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>scatter_(dim, index, src)</code>：\(\text{out}[i][\text{index}[i][j]] = \text{src}[i][j]\)，用于 one-hot、按下标写入；有重复下标时用 <code>scatter_add_</code> 累加（直方图、按段求和）。</p><p class="en">scatter writes values to positions named by an index tensor — the inverse of gather; scatter_add accumulates when indices repeat.</p></div>
+  <div class="deep">
+    <p>对比 gather 和 scatter（<code>dim=1</code>）：</p>
+    $$\text{gather: } \text{out}[i][j] = \text{x}[i][\text{index}[i][j]] \qquad \text{scatter: } \text{out}[i][\text{index}[i][j]] = \text{src}[i][j]$$
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+# scatter_：dim=1 时 out[i][ index[i][j] ] = src —— gather 的"反方向"
+labels = torch.tensor([0, 2, 1])
+one_hot = torch.zeros(3, 4).scatter_(1, labels.unsqueeze(1), 1.0)
+assert torch.equal(one_hot, F.one_hot(labels, num_classes=4).float())
+
+# scatter_add_：重复索引会累加（普通 scatter_ 遇到重复索引时结果不确定）
+ids = torch.tensor([0, 1, 1, 3, 3, 3])
+counts = torch.zeros(5).scatter_add_(0, ids, torch.ones(6))
+print(counts)                         # tensor([1., 2., 0., 3., 0.])
+assert torch.equal(counts, torch.bincount(ids, minlength=5).float())
+
+# index_add_：按段求和（例如把 token 级的量汇总到样本级）
+vals = torch.tensor([1., 2., 3., 4., 5., 6.])
+print(torch.zeros(5).index_add_(0, ids, vals))   # tensor([ 1.,  5.,  0., 15.,  0.])</code></pre>
+    <p>用途：one-hot（<code>F.one_hot</code> 的底层逻辑）、MoE 里把 expert 输出写回 token 位置、GNN 的消息聚合、按样本汇总 token 级统计。<code>scatter_</code>（带下划线）是原地版本，<code>scatter</code> 返回新张量。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>用 <code>scatter_</code> 处理有重复下标的情况：多个值写同一位置，哪个"赢"是不确定的（GPU 上尤其如此）。需要累加就用 <code>scatter_add_</code> / <code>index_add_</code>，需要取最大等就用 <code>scatter_reduce_</code>。另外 <code>x[idx] += 1</code> 在 idx 有重复时也<strong>只加一次</strong>（NumPy 同理，需要 <code>np.add.at</code>）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>scatter is the inverse of gather: instead of reading from positions given by an index, it writes to them. A typical use is building a one-hot matrix by scattering ones at the label positions. When indices can repeat, plain scatter has undefined ordering, so I use scatter_add or index_add to accumulate, for example to count tokens or sum values per segment.</p></div>
+</section>
+
+<section class="concept" id="c-shape-ops">
+  <div class="concept-head"><span class="pri p1">★</span><h3>unsqueeze/squeeze、expand vs repeat、cat vs stack</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>unsqueeze/None</code> 加大小为 1 的维、<code>squeeze(dim)</code> 去掉它；<code>expand</code> 用 stride 0 虚拟复制（不占内存、不能写），<code>repeat</code> 真复制；<code>cat</code> 沿已有维拼接，<code>stack</code> 新建一维再拼。</p><p class="en">unsqueeze adds a size-1 axis; expand broadcasts without copying while repeat materializes; cat joins along an existing axis while stack creates a new one.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+q = torch.randn(1, 3, 1)
+print(q.squeeze().shape)        # torch.Size([3])        ← 危险：batch=1 时连 batch 维也被挤掉
+print(q.squeeze(-1).shape)      # torch.Size([1, 3])     ← 推荐：永远写明 dim
+print(q.unsqueeze(0).shape)     # torch.Size([1, 1, 3, 1])
+
+base = torch.randn(1, 3)
+e = base.expand(1000, 3)        # 不分配新内存，stride (0, 1)
+r = base.repeat(1000, 1)        # 真的复制 1000 份
+print(e.stride(), r.stride())   # (0, 1) (3, 1)
+# e.add_(1) → RuntimeError: more than one element of the written-to tensor refers to a single memory location
+
+a, b = torch.randn(2, 3), torch.randn(2, 3)
+print(torch.cat([a, b], dim=0).shape)     # torch.Size([4, 3])     沿已有维拼接
+print(torch.stack([a, b], dim=0).shape)   # torch.Size([2, 2, 3])  新建一维再拼</code></pre>
+    <table>
+      <tr><th>操作</th><th>输入</th><th>输出</th><th>内存</th></tr>
+      <tr><td><code>x.unsqueeze(1)</code> ≡ <code>x[:, None]</code></td><td>(B, D)</td><td>(B, 1, D)</td><td>view</td></tr>
+      <tr><td><code>x.expand(B, T, D)</code></td><td>(B, 1, D)</td><td>(B, T, D)</td><td>view，stride 0；-1 表示保持该维不变</td></tr>
+      <tr><td><code>x.repeat(1, T, 1)</code></td><td>(B, 1, D)</td><td>(B, T, D)</td><td>新内存 ×T</td></tr>
+      <tr><td><code>x.repeat_interleave(2, dim=1)</code></td><td>(B, H, D)</td><td>(B, 2H, D)</td><td>每个元素连续重复（GQA 复制 KV head 时用）</td></tr>
+      <tr><td><code>torch.cat([a, b], 0)</code></td><td>2 × (N, D)</td><td>(2N, D)</td><td>新内存</td></tr>
+      <tr><td><code>torch.stack([a, b], 0)</code></td><td>2 × (N, D)</td><td>(2, N, D)</td><td>新内存；要求形状完全相同</td></tr>
+    </table>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 循环里不断 <code>torch.cat</code> 增长张量是 O(n²) 的（每次都复制）；应把块收集到 list，最后 cat 一次。（自回归生成里每步 cat 一个 token 是可以接受的，因为 KV cache 才是大头。）(2) <code>repeat</code> 和 NumPy 的 <code>np.repeat</code> 语义不同：<code>torch.repeat</code> ≈ <code>np.tile</code>，<code>torch.repeat_interleave</code> ≈ <code>np.repeat</code>。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>unsqueeze inserts a size-one axis so a tensor can broadcast, and I always squeeze a named dimension rather than all of them. expand gives a broadcasted view with stride zero, so it costs no memory but can't be written to, whereas repeat actually copies the data. cat concatenates along an existing dimension, while stack adds a new dimension, which is how you'd build a batch from equally shaped examples.</p></div>
+</section>
+
+<section class="concept" id="c-mask">
+  <div class="concept-head"><span class="pri p1">★</span><h3>where、masked_fill 与 triu/tril 因果掩码</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>causal mask：<code>torch.triu(ones(T,T,bool), diagonal=1)</code> 标出"未来"位置，在 softmax <strong>之前</strong>用 <code>masked_fill(mask, -inf)</code> 填掉，softmax 后这些位置的权重恰好为 0。</p><p class="en">Build the causal mask with triu(diagonal=1) and fill those scores with minus infinity before the softmax so future positions get exactly zero weight.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+T = 4
+scores = torch.randn(T, T)                                            # (query, key)
+causal = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)   # True = 未来位置，要屏蔽
+print(causal.int())
+# tensor([[0, 1, 1, 1],
+#         [0, 0, 1, 1],
+#         [0, 0, 0, 1],
+#         [0, 0, 0, 0]])
+att = scores.masked_fill(causal, float("-inf")).softmax(dim=-1)
+assert torch.allclose(att.sum(-1), torch.ones(T))
+assert (att[causal] == 0).all()
+
+# 等价写法：tril 当作"允许看"的矩阵
+allowed = torch.tril(torch.ones(T, T, dtype=torch.bool))
+att2 = scores.masked_fill(~allowed, float("-inf")).softmax(-1)
+assert torch.allclose(att, att2)
+
+# 整行都被屏蔽 → softmax 得到 NaN（左 padding 的 query 很常见）
+print(torch.full((3,), float("-inf")).softmax(-1))   # tensor([nan, nan, nan])
+
+# where：逐元素的三目运算
+z = torch.tensor([-1., 2., -3.])
+print(torch.where(z &gt; 0, z, torch.zeros_like(z)))    # tensor([0., 2., 0.])</code></pre>
+    <ul>
+      <li><strong>为什么是 −inf 而不是 0？</strong>softmax 是 \(e^{s_j}/\sum_k e^{s_k}\)。把分数设为 0 意味着权重 \(e^0 = 1\)，仍然会关注未来 token；设为 −inf 才得到 \(e^{-\infty} = 0\)。在 softmax <strong>之后</strong>把权重置 0 也不对，因为剩下的权重不再归一化（除非重新归一化）。</li>
+      <li><strong>triu vs tril</strong>：<code>triu(diagonal=1)</code> = 严格上三角 = "要屏蔽的"；<code>tril()</code>（含对角线）= "允许看的"。两种约定都常见，读别人的代码时先确认 True 代表屏蔽还是允许——<code>F.scaled_dot_product_attention</code> 的布尔 <code>attn_mask</code> 中 True 表示<strong>允许</strong>参与 attention。</li>
+      <li><strong>fp16/bf16 下</strong>很多实现用 <code>torch.finfo(dtype).min</code> 代替 −inf，以避免整行都被屏蔽时出现 NaN（−inf − (−inf) = NaN）。</li>
+      <li><code>torch.where(cond, a, b)</code> 是逐元素三目运算（支持广播）；单参数 <code>torch.where(cond)</code> 返回 True 位置的下标（等同 <code>nonzero(as_tuple=True)</code>）。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) mask 的维度没对齐：分数是 (B, H, T, T)，padding mask 是 (B, T)，需要变成 (B, 1, 1, T) 才能沿 key 维广播；写成 (B, 1, T, 1) 就变成屏蔽 query 了。(2) 左 padding 的序列加上 causal mask 后，padding 位置的 query 行可能全是 −inf → NaN，进而通过后续层污染整个 batch（虽然这些位置的 loss 被 mask 掉了，NaN × 0 仍然是 NaN）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For causal attention I build a boolean upper-triangular mask with diagonal equals one, marking future keys, and call masked_fill with minus infinity on the scores before the softmax. Minus infinity matters: a zero score would still get weight e to the zero, which is one, while minus infinity gives exactly zero weight and the remaining weights still sum to one. Padding masks are combined by broadcasting a B by one by one by T key mask, and I watch out for rows that are fully masked, since they turn into NaNs.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why not just multiply the attention weights by the mask after softmax?</b><details><summary>思路</summary><div class="inner">那样每行的权重和不再是 1（未来位置原本分走的概率质量被丢掉），输出的尺度会随位置变化。要么在 softmax 前用 −inf，要么乘完再重新归一化（等价但多一步，且数值上不如前者）。</div></details></li>
+    <li><b>How do you combine a causal mask with a padding mask?</b><details><summary>思路</summary><div class="inner">都转成"允许"语义的 bool：<code>allowed = causal_tril[None, None] &amp; pad[:, None, None, :]</code>，形状广播成 (B, 1, T, T)；再 <code>scores.masked_fill(~allowed, -inf)</code>。见练习 10.4。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-einsum"><span class="num">§4 · EINSUM</span>einsum：用下标写张量运算</h2>
+<p class="sec-intro">einsum 是"把数学公式直接翻译成代码"的工具。读论文里的 \(\sum_d q_{bhqd} k_{bhkd}\) 时，你可以一字不差地写成 <code>einsum("bhqd,bhkd->bhqk")</code>。面试官喜欢它，因为它让 shape 一目了然。</p>
+
+<section class="concept" id="c-einsum">
+  <div class="concept-head"><span class="pri p1">★</span><h3>einsum 记法与六个必会例子</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每个输入维度起一个字母；出现在输出里的字母保留，<strong>没出现在输出里的字母被求和</strong>；两个输入共享的字母按元素对齐相乘。</p><p class="en">Label every axis with a letter; letters missing from the output are summed over, shared letters are multiplied elementwise.</p></div>
+  <div class="deep">
+    <p>以 <code>"ik,kj->ij"</code> 为例，它就是</p>
+    $$C_{ij} = \sum_k A_{ik} B_{kj}$$
+    <p>规则只有三条：(1) 逗号分隔各输入的下标；(2) <code>-&gt;</code> 后是输出下标；(3) 在输入里出现但不在输出里的下标（这里是 k）被求和。同一个字母在不同输入里的大小必须相同。</p>
+<pre><code class="language-python">import torch
+
+A, B = torch.randn(2, 3), torch.randn(3, 4)
+assert torch.allclose(torch.einsum("ik,kj-&gt;ij", A, B), A @ B)                  # matmul
+Ab, Bb = torch.randn(5, 2, 3), torch.randn(5, 3, 4)
+assert torch.allclose(torch.einsum("bik,bkj-&gt;bij", Ab, Bb), torch.bmm(Ab, Bb))  # bmm
+
+q = torch.randn(2, 4, 6, 8)    # (B, H, Tq, Dh)
+k = torch.randn(2, 4, 7, 8)    # (B, H, Tk, Dh)
+v = torch.randn(2, 4, 7, 8)
+scores = torch.einsum("bhqd,bhkd-&gt;bhqk", q, k) / 8 ** 0.5        # (B, H, Tq, Tk)
+assert torch.allclose(scores, q @ k.transpose(-2, -1) / 8 ** 0.5, atol=1e-5)
+out = torch.einsum("bhqk,bhkd-&gt;bhqd", scores.softmax(-1), v)      # (B, H, Tq, Dh)
+
+u, w = torch.randn(3), torch.randn(4)
+assert torch.allclose(torch.einsum("i,j-&gt;ij", u, w), torch.outer(u, w))        # outer
+M = torch.randn(4, 4)
+assert torch.allclose(torch.einsum("ii-&gt;", M), M.trace())                      # trace
+assert torch.allclose(torch.einsum("ii-&gt;i", M), M.diagonal())                  # 对角线
+assert torch.allclose(torch.einsum("ij-&gt;ji", A), A.T)                          # 转置
+assert torch.allclose(torch.einsum("ij-&gt;j", A), A.sum(0))                      # 按列求和
+x, W, y = torch.randn(5, 3), torch.randn(3, 4), torch.randn(5, 4)
+assert torch.allclose(torch.einsum("bi,ij,bj-&gt;b", x, W, y),
+                      ((x @ W) * y).sum(-1), atol=1e-5)                        # bilinear</code></pre>
+    <table>
+      <tr><th>einsum</th><th>等价写法</th><th>含义</th></tr>
+      <tr><td><code>ik,kj-&gt;ij</code></td><td><code>A @ B</code></td><td>矩阵乘</td></tr>
+      <tr><td><code>bik,bkj-&gt;bij</code></td><td><code>torch.bmm</code></td><td>batch 矩阵乘</td></tr>
+      <tr><td><code>bhqd,bhkd-&gt;bhqk</code></td><td><code>q @ k.transpose(-2,-1)</code></td><td>attention 分数</td></tr>
+      <tr><td><code>bhqk,bhkd-&gt;bhqd</code></td><td><code>p @ v</code></td><td>attention 加权求和</td></tr>
+      <tr><td><code>i,j-&gt;ij</code></td><td><code>torch.outer</code></td><td>外积</td></tr>
+      <tr><td><code>ii-&gt;</code> / <code>ii-&gt;i</code></td><td><code>trace</code> / <code>diagonal</code></td><td>迹 / 对角线</td></tr>
+      <tr><td><code>bi,ij,bj-&gt;b</code></td><td><code>((x @ W) * y).sum(-1)</code></td><td>双线性形式 \(x^\top W y\)（每个样本一个标量）</td></tr>
+      <tr><td><code>btd,de-&gt;bte</code></td><td><code>x @ W</code></td><td>对每个 token 做线性变换</td></tr>
+    </table>
+    <div class="box why"><span class="lbl">直觉</span>可以把 einsum 想成一个嵌套 for 循环：对所有字母循环，把各输入对应元素相乘，累加到输出的对应位置。<code>"bi,ij,bj->b"</code> 就是 <code>for b,i,j: out[b] += x[b,i]*W[i,j]*y[b,j]</code>。这也是检验你写的 einsum 对不对的最快方法。</div>
+    <p>工程注意：PyTorch 的 einsum 会把运算拆成若干次 matmul/bmm（多于两个操作数时，按从左到右的顺序收缩；如果安装了 <code>opt_einsum</code> 会自动优化收缩顺序），所以对于标准的两两乘法，性能与 <code>@</code> 基本一致。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 想要逐元素相乘却把字母从输出中漏掉了，导致被求和：<code>"ij,ij->ij"</code> 是逐元素乘，<code>"ij,ij->"</code> 是 Frobenius 内积。(2) 两个输入里同名字母的大小不同 → 报错；不同名字母的维度不会被对齐。(3) 输出字母的顺序就是输出的维度顺序，<code>"ij->ji"</code> 就是转置。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>einsum lets me write tensor contractions exactly as the math reads. Every axis gets a letter, letters that appear in the output are kept, and letters that only appear in the inputs are summed over. So attention scores are einsum b h q d comma b h k d arrow b h q k: we contract over the head dimension d and keep batch, head, query and key. I like it in interviews because the shapes are self-documenting, and under the hood it dispatches to batched matrix multiplies, so it's not slower.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Write grouped-query attention scores with einsum, where q has H heads and k has G groups.</b><details><summary>思路</summary><div class="inner">把 q reshape 成 (B, G, H/G, T, D)，记为 <code>bgrqd</code>；k 是 (B, G, T, D)，记为 <code>bgkd</code>。<code>torch.einsum("bgrqd,bgkd->bgrqk", q, k)</code>，这样不用显式复制 KV head。</div></details></li>
+    <li><b>What does einsum("bij,bjk->bik") compute and what's the FLOP count?</b><details><summary>思路</summary><div class="inner">batch matmul。每个输出元素做 j 次乘加，总 FLOPs ≈ 2·B·I·J·K（乘和加各算一次）。这个 "2mnk" 是 <a href="m04-transformer.html">04</a> 里 6ND 估算的基础。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-reduce"><span class="num">§5 · REDUCTIONS &amp; NUMERICS</span>规约与数值稳定</h2>
+<p class="sec-intro">求和、求最大值、softmax、交叉熵——几乎每个模型都会用到。这一节的重点是 <strong>dim 语义</strong> 和 <strong>数值稳定</strong>：为什么要减去最大值、为什么要用 <code>log_softmax</code> 而不是 <code>log(softmax)</code>、为什么 <code>cross_entropy</code> 要传 logits。</p>
+
+<section class="concept" id="c-reduce">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>dim 的含义：规约哪一维，哪一维就消失</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>x.sum(dim=k)</code> 沿第 k 维求和，结果中第 k 维消失（除非 keepdim）。<code>max(dim)</code> 返回 <code>(values, indices)</code> 二元组，<code>argmax</code> 只返回下标。</p><p class="en">Reducing over dim k removes that axis; max with a dim returns a values-indices pair.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+x = torch.tensor([[1., 5., 3.],
+                  [7., 2., 2.]])
+print(x.sum(dim=0))            # tensor([8., 7., 5.])   沿 dim 0 求和 → 这一维消失
+print(x.mean(dim=-1))          # tensor([3.0000, 3.6667])
+vals, idx = x.max(dim=1)       # 带 dim 的 max 返回 (values, indices)
+print(vals, idx)               # tensor([5., 7.]) tensor([1, 0])
+print(x.argmax(dim=1))         # tensor([1, 0])
+
+big = torch.tensor([1000., 1001., 1002.])
+print(torch.exp(big) / torch.exp(big).sum())   # tensor([nan, nan, nan])   inf / inf
+print(torch.softmax(big, dim=-1))              # tensor([0.0900, 0.2447, 0.6652])
+print(torch.logsumexp(big, dim=0))             # tensor(1002.4076)
+
+z = torch.tensor([0., -200.])
+print(torch.log(torch.softmax(z, -1)))         # tensor([0., -inf])   exp(-200) 在 fp32 下溢成 0
+print(torch.log_softmax(z, -1))                # tensor([   0., -200.])</code></pre>
+    <p>记忆方法：<code>dim</code> 指的是"被压扁的那一维"，而不是"保留的那一维"。对 (N, C) 的 logits，<code>softmax(dim=-1)</code> 是在每个样本的 C 个类别上归一化；<code>sum(dim=0)</code> 是把 N 个样本加起来。</p>
+    <ul>
+      <li><code>x.max()</code>（不带 dim）返回一个标量张量；<code>x.max(dim=1)</code> 返回命名元组 <code>(values, indices)</code>；<code>torch.maximum(a, b)</code> 是逐元素取大。</li>
+      <li><code>mean</code> 只对浮点张量有效（整数张量需要先 <code>.float()</code>）。</li>
+      <li><code>std</code>/<code>var</code> 默认是无偏估计（除以 N−1，参数 <code>correction=1</code>）；LayerNorm 用的是有偏方差（除以 N）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The dim argument names the axis that gets reduced away, so summing a B by C tensor over dim one gives a vector of size B. With dim, max returns both the values and the indices. I'm careful to softmax over the class or vocabulary dimension, which is almost always the last one.</p></div>
+</section>
+
+<section class="concept" id="c-lse">
+  <div class="concept-head"><span class="pri p1">★</span><h3>稳定 softmax、logsumexp、log_softmax vs log(softmax)</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>softmax 对加常数不变，所以先减最大值防止 \(e^{z}\) 溢出；\(\log\text{softmax}(z)_i = z_i - \text{logsumexp}(z)\)，直接算比先 softmax 再 log 稳定得多，后者在概率下溢为 0 时得到 −inf。</p><p class="en">Softmax is shift-invariant, so subtract the max; log_softmax computes z minus logsumexp directly and avoids taking the log of an underflowed zero.</p></div>
+  <div class="deep">
+    <p><strong>平移不变性</strong>：对任意常数 c，</p>
+    $$\text{softmax}(z - c)_i = \frac{e^{z_i - c}}{\sum_j e^{z_j - c}} = \frac{e^{-c} e^{z_i}}{e^{-c}\sum_j e^{z_j}} = \text{softmax}(z)_i$$
+    <p>取 \(c = \max_j z_j\)，则最大的指数项是 \(e^0 = 1\)，分母 \(\ge 1\)，不会上溢（\(e^{1000}\) 在 fp32 里是 inf，inf/inf = NaN）；其余项最多下溢成 0，无伤大雅。</p>
+    <p><strong>logsumexp</strong> 同理：</p>
+    $$\text{LSE}(z) = \log\sum_j e^{z_j} = m + \log\sum_j e^{z_j - m}, \quad m = \max_j z_j$$
+    <p>于是 \(\log\text{softmax}(z)_i = z_i - \text{LSE}(z)\)。如果先算 softmax，\(z = (0, -200)\) 时第二个概率 \(e^{-200} \approx 10^{-87}\) 在 fp32 里下溢为 0，<code>log</code> 之后变成 −inf，梯度也会出问题；而 <code>log_softmax</code> 直接给出 −200。</p>
+    <p>NumPy 实现（已运行验证）：</p>
+<pre><code class="language-python">import numpy as np
+
+def softmax(z, axis=-1):
+    z = z - z.max(axis=axis, keepdims=True)
+    e = np.exp(z)
+    return e / e.sum(axis=axis, keepdims=True)
+
+def log_softmax(z, axis=-1):
+    m = z.max(axis=axis, keepdims=True)
+    return z - m - np.log(np.exp(z - m).sum(axis=axis, keepdims=True))
+
+z = np.array([[1000., 1001., 1002.], [-1000., 0., 1000.]])
+p = softmax(z)
+assert np.all(np.isfinite(p)) and np.allclose(p.sum(-1), 1)
+assert np.allclose(np.exp(log_softmax(z)), p)
+assert np.allclose(softmax(np.array([1., 2., 3.])), softmax(np.array([101., 102., 103.])))</code></pre>
+    <div class="box why"><span class="lbl">直觉</span>LSE 是 max 的"平滑版本"：\(\max_j z_j \le \text{LSE}(z) \le \max_j z_j + \log n\)。温度 τ → 0 时 \(\tau\,\text{LSE}(z/\tau) \to \max z\)。它对 z 的梯度恰好是 softmax(z)。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) softmax 的 dim 写错（对 (B, T, V) 在 dim=1 上做 softmax 等于在时间维上归一化）——永远用 <code>dim=-1</code> 并检查 <code>sum(-1) ≈ 1</code>。(2) 在 bf16 下直接对 logits 做 softmax/CE：bf16 只有 8 位尾数，大词表的 logsumexp 精度很差，通常先 <code>.float()</code> 再算 loss。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Softmax is invariant to adding a constant to all logits, so the stable implementation subtracts the max first; then the largest exponent is e to the zero and nothing overflows. For log-probabilities I never compute log of softmax, because small probabilities underflow to zero and the log becomes minus infinity. Instead log-softmax is z minus logsumexp of z, and logsumexp itself is computed as the max plus the log of the sum of shifted exponentials.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What is the gradient of logsumexp?</b><details><summary>思路</summary><div class="inner">\(\partial\,\text{LSE}/\partial z_i = e^{z_i}/\sum_j e^{z_j} = \text{softmax}(z)_i\)。因此 CE 对 logits 的梯度 \(= \text{softmax}(z) - \text{onehot}(y)\)（推导见 <a href="m03-dl-basics.html">03</a>）。</div></details></li>
+    <li><b>How does temperature affect softmax?</b><details><summary>思路</summary><div class="inner">\(\text{softmax}(z/\tau)\)：τ &lt; 1 让分布更尖（τ→0 趋向 argmax / greedy），τ &gt; 1 更平（τ→∞ 趋向均匀）。采样解码和蒸馏都用到它。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-ce">
+  <div class="concept-head"><span class="pri p1">★</span><h3>F.cross_entropy：传 logits、类别维在 dim 1、ignore_index=-100</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>F.cross_entropy(logits, target)</code> 内部 = <code>log_softmax</code> + <code>nll_loss</code>，所以必须传<strong>未归一化的 logits</strong>；输入形状 (N, C) 或 (N, C, d…)，目标为 int64 类别下标；标签为 −100 的位置默认被忽略且不计入平均。</p><p class="en">cross_entropy fuses log_softmax and NLL, so it expects raw logits with classes on dim 1, integer targets, and skips targets equal to minus one hundred by default.</p></div>
+  <div class="deep">
+    <p>对单个样本，</p>
+    $$\ell(z, y) = -\log\frac{e^{z_y}}{\sum_c e^{z_c}} = -z_y + \text{LSE}(z)$$
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+logits = torch.tensor([[2.0, 0.5, -1.0]])      # (N=1, C=3)，未经 softmax
+target = torch.tensor([0])
+ce = F.cross_entropy(logits, target)
+manual = -(logits[0, 0] - torch.logsumexp(logits[0], dim=0))   # -log softmax(z)_y
+assert torch.allclose(ce, manual)
+wrong = F.cross_entropy(logits.softmax(-1), target)  # 错：把概率当 logits，又 softmax 了一次
+print(round(ce.item(), 4), round(wrong.item(), 4))   # 0.2413 0.7017
+
+# 语言模型：(B, T, V) 的 logits，(B, T) 的目标，padding 位置标 -100
+B, T, V = 2, 4, 10
+logits = torch.randn(B, T, V)
+targets = torch.tensor([[1, 2, -100, -100],
+                        [3, -100, -100, -100]])
+loss = F.cross_entropy(logits.view(-1, V), targets.view(-1))   # ignore_index 默认就是 -100
+keep = targets.view(-1) != -100
+assert torch.allclose(loss, F.cross_entropy(logits.view(-1, V)[keep], targets.view(-1)[keep]))
+# 不 flatten 也行，但类别维必须在 dim=1 → (B, V, T)
+assert torch.allclose(loss, F.cross_entropy(logits.transpose(1, 2), targets))</code></pre>
+    <ul>
+      <li><strong>传概率会怎样？</strong>不会报错，但相当于做了两次 softmax：概率在 [0,1] 里，再 softmax 一次后分布非常平，loss 被压在 ln C 附近，梯度很小，模型几乎学不动。上例中正确 loss 是 0.2413，误用得到 0.7017。</li>
+      <li><strong>形状</strong>：类别维必须在 dim 1。语言模型的 (B, T, V) 要么 <code>view(-1, V)</code> 配 <code>target.view(-1)</code>，要么 <code>transpose(1, 2)</code> 成 (B, V, T)。</li>
+      <li><strong>ignore_index=-100</strong>：默认值就是 −100，HuggingFace 的 label 约定也用 −100 标 prompt 和 padding。<code>reduction="mean"</code> 时只除以<strong>非忽略</strong>的 token 数。</li>
+      <li>其他参数：<code>label_smoothing</code>（把目标分布从 one-hot 变成 \((1-\epsilon)\,\text{onehot} + \epsilon/C\)）、<code>weight</code>（类别权重）、<code>reduction="none"</code>（返回逐元素 loss，自己 mask/加权）。</li>
+      <li>二分类用 <code>F.binary_cross_entropy_with_logits</code>（内部用稳定的 \(\text{softplus}(z) - yz\)），不要 sigmoid 后再 <code>binary_cross_entropy</code>。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 模型最后一层加了 <code>nn.Softmax</code>，然后再用 <code>CrossEntropyLoss</code>。(2) target 是 float 类型的 one-hot：新版 PyTorch 允许传类别概率作为 target（软标签），这时语义变了——确认你传的是 int64 下标。(3) 梯度累积 / 多卡时每个 micro-batch 的有效 token 数不同，"先 mean 再平均"不等于"全局 token mean"（见练习 10.10）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>F dot cross_entropy fuses log-softmax and negative log-likelihood, so it expects raw logits, not probabilities. If you pass probabilities you effectively apply softmax twice, which flattens the distribution and kills the gradients, and nothing errors out. The class dimension has to be dim one, so for a language model I flatten B by T by V into rows of V. Targets are int64 class indices, and positions labeled minus one hundred, like prompt and padding tokens, are ignored and excluded from the mean.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What should the initial loss of a freshly initialized language model be?</b><details><summary>思路</summary><div class="inner">如果初始化让 logits 接近 0（输出近似均匀分布），loss ≈ ln V。V = 50257 时约 10.8；V = 32000 时约 10.4。初始 loss 明显高于 ln V 说明初始化让模型"自信地错"，通常是输出层 scale 太大。这是 §9 的第一个 sanity check。</div></details></li>
+    <li><b>What's the relationship between cross-entropy, NLL and KL?</b><details><summary>思路</summary><div class="inner">对 one-hot 目标，CE = NLL = \(-\log p_y\)。一般地 \(H(p, q) = H(p) + \text{KL}(p\|q)\)，p 是数据分布、固定不变，所以最小化 CE 等价于最小化 \(\text{KL}(p_{data}\|q_\theta)\)（forward KL，见 <a href="m02-math-ml.html">02</a>）。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-autograd"><span class="num">§6 · AUTOGRAD</span>自动求导</h2>
+<p class="sec-intro">autograd 是 PyTorch 的灵魂，也是面试官最喜欢深挖的地方："<code>backward()</code> 到底做了什么？""为什么要 <code>zero_grad</code>？""<code>detach</code> 和 <code>no_grad</code> 有什么区别？"这一节从计算图讲起，最后用约 70 行纯 Python 实现一个完整的反向传播引擎。</p>
+
+<section class="concept" id="c-graph">
+  <div class="concept-head"><span class="pri p1">★</span><h3>计算图、叶子节点、requires_grad 与 .grad</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>forward 时 PyTorch 动态记录一张 DAG（每个结果张量的 <code>grad_fn</code> 指向产生它的运算）；<code>loss.backward()</code> 从 loss 出发按逆拓扑序应用链式法则，把梯度<strong>累加</strong>到 <code>requires_grad=True</code> 的叶子张量的 <code>.grad</code> 上。</p><p class="en">The forward pass records a dynamic graph; backward walks it in reverse topological order applying the chain rule and accumulates gradients into the .grad of leaf tensors.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+x = torch.tensor(2.0, requires_grad=True)    # 叶子节点（leaf）：用户创建、requires_grad=True
+w = torch.tensor(3.0, requires_grad=True)
+y = w * x + x ** 2                           # 非叶子：由运算产生，带 grad_fn
+print(x.is_leaf, y.is_leaf, y.grad_fn)       # True False &lt;AddBackward0 ...&gt;
+y.backward()                                 # y 是标量，可直接 backward
+print(x.grad, w.grad)                        # dy/dx = w + 2x = 7,  dy/dw = x = 2
+
+# 梯度是"累加"进 .grad 的，不是覆盖
+y = w * x + x ** 2
+y.backward()
+print(x.grad)                                # tensor(14.)  ← 7 + 7
+x.grad = None                                # 清零（optimizer.zero_grad() 默认就是设为 None）
+
+# 非标量输出要么先规约成标量，要么传入 gradient（即向量-雅可比积 VJP 里的向量）
+v = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
+out = v * 2
+out.backward(torch.ones_like(out))           # 等价于 out.sum().backward()
+print(v.grad)                                # tensor([2., 2., 2.])
+
+# 中间结果默认不保留 .grad；需要时调用 retain_grad()
+a = torch.tensor(1.0, requires_grad=True)
+h = a * 3
+h.retain_grad()
+(h ** 2).backward()
+print(h.grad, a.grad)                        # tensor(6.) tensor(18.)</code></pre>
+    <h4>关键概念</h4>
+    <ul>
+      <li><strong>叶子张量（leaf）</strong>：不是由追踪的运算产生的张量——用户直接创建的张量、模型参数（<code>nn.Parameter</code>）。只有 <code>requires_grad=True</code> 的叶子在 backward 后才会填充 <code>.grad</code>。中间结果默认不保留梯度（省内存），需要的话调用 <code>retain_grad()</code>。</li>
+      <li><strong>grad_fn</strong>：非叶子张量记录"我是怎么来的"（如 <code>MulBackward0</code>），它保存了 backward 需要的输入（如乘法要保存两个乘数）。这就是训练时<strong>激活值占显存</strong>的原因。</li>
+      <li><strong>动态图（define-by-run）</strong>：图在每次 forward 时重新构建，所以可以用普通 Python 的 if/for 控制流。backward 结束后默认释放图。</li>
+      <li><strong>标量才能直接 backward</strong>：对非标量 y，<code>y.backward(v)</code> 计算的是向量-雅可比积 \(v^\top J\)（VJP）。反向模式自动微分（reverse-mode AD）一次 backward 得到标量对所有参数的梯度，代价约为 forward 的 2 倍——这就是为什么深度学习用 reverse mode 而不是 forward mode（详见 <a href="m03-dl-basics.html">03</a>）。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>每个节点只需要知道自己的"局部导数"：上游传来 \(\partial L/\partial \text{out}\)，乘以 \(\partial \text{out}/\partial \text{in}\) 就得到 \(\partial L/\partial \text{in}\)，再往下传。一个张量被多处使用时（比如残差连接），来自各条路径的梯度相加——这正是多元链式法则 \(\frac{\partial L}{\partial x} = \sum_{\text{paths}} \cdots\)。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) <code>w = torch.randn(3, requires_grad=True).cuda()</code>：<code>.cuda()</code> 之后的 w 是一个<strong>非叶子</strong>张量，backward 后 <code>w.grad</code> 为 None。正确写法：<code>torch.randn(3, device="cuda", requires_grad=True)</code>。(2) 把整数张量设成 requires_grad → 报错，只有浮点（和复数）张量能求导。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>PyTorch builds the computation graph dynamically during the forward pass: every non-leaf tensor has a grad_fn that knows its inputs and how to compute its local vector-Jacobian product. Calling backward on a scalar loss traverses that graph in reverse topological order, applies the chain rule, and accumulates gradients into the grad field of leaf tensors that require grad, which are typically the parameters. The graph keeps the activations needed for backward, which is why training uses much more memory than inference, and it is freed after backward by default.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why is reverse mode used instead of forward mode?</b><details><summary>思路</summary><div class="inner">forward mode 一次只能算出所有输出对<strong>一个</strong>输入方向的导数（JVP），n 个参数需要 n 次；reverse mode 一次算出<strong>一个</strong>标量输出对所有输入的导数（VJP）。训练是"一个标量 loss，几十亿参数"，所以 reverse mode 只需一次 backward，代价约为 2× forward；代价是要保存中间激活。</div></details></li>
+    <li><b>What exactly is stored for backward in y = x.sigmoid()?</b><details><summary>思路</summary><div class="inner">sigmoid 的导数 \(\sigma'(x) = \sigma(x)(1-\sigma(x))\) 只依赖输出，所以保存的是输出 y（而不是 x）。这也是为什么原地修改 y 会让 backward 报错（见下一个概念）。不同算子保存的东西不同，这决定了激活显存和 activation checkpointing 的收益。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-accum">
+  <div class="concept-head"><span class="pri p1">★</span><h3>梯度累加：为什么要 zero_grad，以及如何有意地累积梯度</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>backward()</code> 是 <code>.grad += 新梯度</code> 而不是覆盖，所以每个 step 前要 <code>zero_grad()</code>；反过来，故意不清零、跑 k 个 micro-batch 再 step，就是 gradient accumulation（loss 要除以 k）。</p><p class="en">backward adds into .grad, so you zero gradients each step; skipping the zeroing on purpose for k micro-batches, with the loss divided by k, is gradient accumulation.</p></div>
+  <div class="deep">
+    <p>为什么设计成累加？(1) 一个参数被多处使用时，各处的梯度天然要相加；(2) 它让梯度累积（显存不够大 batch 时）变得免费。</p>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+torch.manual_seed(0)
+model = nn.Linear(10, 1)
+opt = torch.optim.SGD(model.parameters(), lr=0.1)
+X, Y = torch.randn(32, 10), torch.randn(32, 1)
+
+# 一次性用 32 个样本算梯度
+model.zero_grad()
+F.mse_loss(model(X), Y).backward()
+g_full = model.weight.grad.clone()
+
+# 梯度累积：4 个 micro-batch，每个 8 个样本；loss 要除以累积步数
+accum = 4
+model.zero_grad()
+for xb, yb in zip(X.chunk(accum), Y.chunk(accum)):
+    loss = F.mse_loss(model(xb), yb) / accum
+    loss.backward()            # 梯度在 .grad 里累加
+assert torch.allclose(model.weight.grad, g_full, atol=1e-6)
+opt.step()                     # 累积完才 step 一次
+opt.zero_grad()</code></pre>
+    <p>为什么要除以 k：每个 micro-batch 的 loss 是本 batch 的<strong>均值</strong>。k 个均值的梯度直接相加 = k 倍的大 batch 梯度。除以 k 后，累积梯度等于大 batch 均值 loss 的梯度（当每个 micro-batch 大小相同时完全相等；token 数不同时见练习 10.10）。</p>
+    <ul>
+      <li><code>optimizer.zero_grad(set_to_none=True)</code>（PyTorch 2.x 默认）把 <code>.grad</code> 设为 None 而不是填 0：省一次 memset，且优化器会跳过 grad 为 None 的参数。</li>
+      <li>梯度累积和真正的大 batch <strong>不完全</strong>等价的地方：BatchNorm 统计量按 micro-batch 计算；dropout 的随机性不同。对 LLM（LayerNorm、无 dropout）基本等价。</li>
+      <li>DDP 下做梯度累积，前 k−1 个 micro-batch 用 <code>with model.no_sync():</code> 跳过 all-reduce，只在最后一次同步（见 <a href="m09-distributed.html">09</a>）。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 忘记 zero_grad：梯度越积越大，表现为 loss 先降后剧烈震荡/发散，等价于一个不断变大的有效学习率加上奇怪的动量。(2) 累积时忘了把 loss 除以 k：等价于学习率放大 k 倍。(3) 把 <code>zero_grad</code> 放在 <code>backward</code> 和 <code>step</code> 之间——梯度刚算完就被清掉，参数永远不更新。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Calling backward adds into the grad buffers instead of overwriting them. That's needed when a parameter is used in several places, and it means you must zero the gradients before every optimizer step, or they keep growing. The same behavior makes gradient accumulation trivial: run k micro-batches, divide each loss by k, call backward each time, and step once. With equal-sized micro-batches that gives exactly the gradient of the big batch, except for things like batch norm statistics.</p></div>
+</section>
+
+<section class="concept" id="c-nograd">
+  <div class="concept-head"><span class="pri p1">★</span><h3>detach vs no_grad vs inference_mode，以及 stop-gradient 的用途</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>detach()</code> 作用于<strong>一个张量</strong>：返回共享数据但不在图上的新张量（stop-gradient）；<code>torch.no_grad()</code> 作用于<strong>一段代码</strong>：块内运算都不建图；<code>inference_mode()</code> 是更快更严格的 no_grad，产出的张量之后不能用于 autograd。</p><p class="en">detach cuts one tensor out of the graph; no_grad disables graph recording for a block; inference_mode is a stricter, faster no_grad for pure inference.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+w = torch.randn(3, requires_grad=True)
+
+y = (w * 2).detach()          # detach：同一块数据，但从图上断开（stop-gradient）
+print(y.requires_grad)        # False
+
+with torch.no_grad():         # no_grad：块内的运算不记录计算图（省显存、提速）
+    z = w * 2
+print(z.requires_grad)        # False
+
+with torch.inference_mode():  # inference_mode：更激进的 no_grad，产出的 tensor 之后不能参与 autograd
+    u = w * 2
+print(u.is_inference())       # True
+
+# stop-gradient 的典型用途：target 不该接收梯度
+pred = w.sum()
+target = (w ** 2).sum().detach()   # 例如 TD target、EMA teacher、PPO 里的 old log-prob
+loss = (pred - target) ** 2
+loss.backward()               # 梯度只流经 pred</code></pre>
+    <table>
+      <tr><th></th><th><code>x.detach()</code></th><th><code>with torch.no_grad()</code></th><th><code>with torch.inference_mode()</code></th></tr>
+      <tr><td>作用范围</td><td>单个张量</td><td>代码块</td><td>代码块</td></tr>
+      <tr><td>数据</td><td>与 x 共享内存</td><td>正常计算</td><td>正常计算</td></tr>
+      <tr><td>典型用途</td><td>stop-gradient（target、日志、转 numpy）</td><td>评估、参数手动更新、EMA 更新</td><td>部署 / 纯推理</td></tr>
+      <tr><td>输出能否再进 autograd</td><td>能（作为常量）</td><td>能（作为常量）</td><td><strong>不能</strong>（报错）</td></tr>
+    </table>
+    <p><strong>stop-gradient 在研究代码里的常见用途</strong>：</p>
+    <ul>
+      <li>RL：TD target \(r + \gamma V(s')\) 要 detach；PPO 的旧策略 log-prob、advantage 都是常量；GRPO/PPO 的 reference model 在 no_grad 下算 log-prob（见 <a href="m06-rl-posttraining.html">06</a>）。</li>
+      <li>自监督：BYOL / DINO 的 target 分支（EMA teacher）不接收梯度。</li>
+      <li>VQ-VAE 的 straight-through estimator：<code>z + (z_q - z).detach()</code>，forward 用量化值，backward 把梯度直接传给 z。</li>
+      <li>日志：<code>loss.item()</code> 或 <code>loss.detach()</code>，避免持有计算图。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 以为 <code>model.eval()</code> 会关闭梯度——不会！<code>eval()</code> 只切换 dropout/BN 的行为，梯度和计算图仍然会建立，评估时必须<strong>同时</strong>用 <code>no_grad</code>。(2) <code>detach()</code> 后原地修改返回的张量会改到原张量（共享内存），并可能破坏原图的 backward；需要独立副本就 <code>.detach().clone()</code>。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>detach operates on a single tensor: it returns a tensor that shares the same data but is cut out of the graph, which is how we implement stop-gradient, for example on a TD target or an EMA teacher. no_grad is a context manager that stops recording the graph for a whole block, which I use for evaluation and for manual parameter updates. inference_mode is a stricter and slightly faster version for pure inference; tensors created inside it can't be used in autograd later. And model dot eval is orthogonal: it changes dropout and batch norm behavior but doesn't disable gradients.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Implement a straight-through estimator for rounding.</b><details><summary>思路</summary><div class="inner"><code>y = x + (torch.round(x) - x).detach()</code>。forward 值等于 round(x)；backward 时 detach 部分是常量，所以 \(\partial y/\partial x = 1\)。</div></details></li>
+    <li><b>What's the difference between x.detach() and x.data?</b><details><summary>思路</summary><div class="inner">两者都返回共享数据、不追踪梯度的张量。区别是 <code>.data</code> 的修改<strong>不会</strong>被 autograd 的版本计数器检测到，可能导致静默的错误梯度；<code>detach()</code> 共享版本计数器，原地修改后若原图需要这个值会报错。现代代码应使用 <code>detach()</code>。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-inplace">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>原地操作的坑与 retain_graph</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>原地操作（带下划线的 <code>add_</code>、<code>x += 1</code>、<code>x[idx] = v</code>）如果改写了 backward 需要的值，backward 时会报 "modified by an inplace operation"；叶子参数不能在追踪状态下原地修改。图在 backward 后释放，要二次 backward 需 <code>retain_graph=True</code>。</p><p class="en">In-place ops that overwrite values saved for backward trigger a version-counter error; the graph is freed after backward unless retain_graph=True.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+# 1) 叶子张量不能原地修改（除非在 no_grad 里，比如优化器更新）
+w = torch.ones(3, requires_grad=True)
+try:
+    w.add_(1)
+except RuntimeError as err:
+    print("leaf:", err)        # a leaf Variable that requires grad is being used in an in-place operation.
+with torch.no_grad():
+    w -= 0.1 * torch.ones(3)   # 手写 SGD 更新就这样写
+
+# 2) 原地修改了 backward 需要的值 → backward 时报错（autograd 用 version counter 检测）
+a = torch.randn(3, requires_grad=True)
+b = a.sigmoid()                # sigmoid 的 backward 需要它的输出 b：σ' = b(1-b)
+b.mul_(2)                      # 原地改掉了 b
+try:
+    b.sum().backward()
+except RuntimeError as err:
+    print("version:", str(err)[:90])   # one of the variables needed for gradient computation has been modified by an inplace operation
+
+# 3) retain_graph：默认 backward 后释放图里保存的中间结果，第二次 backward 会报错
+x = torch.tensor(2.0, requires_grad=True)
+y = x.exp()
+y.backward(retain_graph=True)
+y.backward()                   # 因为上面保留了图，所以这次可以
+print(x.grad)                  # 2 * e^2 ≈ 14.78</code></pre>
+    <ul>
+      <li><strong>版本计数器</strong>：每个张量有一个 <code>_version</code>，每次原地修改 +1。保存给 backward 的张量会记下当时的版本；backward 时发现版本变了就报错。这是一种"安全检查"，能防止静默的错误梯度。</li>
+      <li><strong>为什么不鼓励原地操作</strong>：在现代 PyTorch 里它们省下的显存通常很少，却容易破坏 autograd。常见的安全用法：<code>nn.ReLU(inplace=True)</code>（ReLU 的 backward 只需要输出的符号）、优化器在 no_grad 下更新参数。</li>
+      <li><strong>retain_graph</strong>：需要对同一张图 backward 两次时用（例如两个 loss 分别 backward）。但通常更好的做法是 <code>(loss1 + loss2).backward()</code>，只遍历一次图。<code>create_graph=True</code> 则会为梯度本身建图，用于高阶导（如 gradient penalty、MAML）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In-place operations are risky with autograd. Each tensor has a version counter, and if an in-place op modifies a tensor that was saved for the backward pass, backward raises an error instead of silently computing a wrong gradient. Leaf parameters can't be modified in place while being tracked, which is why optimizers update them under no_grad. Separately, the graph's buffers are freed after backward, so a second backward through the same graph needs retain_graph equals true, though summing the losses and calling backward once is usually cleaner.</p></div>
+</section>
+
+<section class="concept" id="c-micrograd">
+  <div class="concept-head"><span class="pri p1">★</span><h3>从零实现：约 70 行的 micrograd</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每个 <code>Value</code> 存数据、梯度、父节点和一个 <code>_backward</code> 闭包；<code>backward()</code> 先做拓扑排序，把自己的梯度设为 1，再按逆序调用每个节点的 <code>_backward</code>，梯度用 <code>+=</code> 累加。</p><p class="en">Each node stores its value, gradient, parents and a closure for its local backward; backward topologically sorts the graph, seeds 1, and runs the closures in reverse, accumulating with plus-equals.</p></div>
+  <div class="deep">
+    <p>这是面试中"手写 autograd"的标准答案，结构来自 Karpathy 的 <a href="https://github.com/karpathy/micrograd" target="_blank" rel="noreferrer">micrograd</a>。下面的版本是纯 Python，已经运行通过三项测试：(1) 同一节点被使用两次时梯度正确累加；(2) 一个 tanh 神经元的梯度和有限差分一致；(3) 训练一个 3-4-1 的小 MLP，loss 从约 6.6 降到 &lt; 0.01。</p>
+<pre><code class="language-python">import math
+
+
+class Value:
+    """A scalar that remembers how it was computed, so it can backprop."""
+
+    def __init__(self, data, _children=(), _op=""):
+        self.data = data
+        self.grad = 0.0
+        self._backward = lambda: None   # how to push my grad to my children
+        self._prev = set(_children)
+        self._op = _op
+
+    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other), "+")
+
+        def _backward():
+            self.grad += out.grad          # d(a+b)/da = 1
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other), "*")
+
+        def _backward():
+            self.grad += other.data * out.grad   # d(ab)/da = b
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+
+    def __pow__(self, k):                 # k is a plain number
+        out = Value(self.data ** k, (self,), f"**{k}")
+
+        def _backward():
+            self.grad += k * self.data ** (k - 1) * out.grad
+        out._backward = _backward
+        return out
+
+    def tanh(self):
+        t = math.tanh(self.data)
+        out = Value(t, (self,), "tanh")
+
+        def _backward():
+            self.grad += (1 - t * t) * out.grad
+        out._backward = _backward
+        return out
+
+    def relu(self):
+        out = Value(self.data if self.data &gt; 0 else 0.0, (self,), "relu")
+
+        def _backward():
+            self.grad += (out.data &gt; 0) * out.grad
+        out._backward = _backward
+        return out
+
+    # convenience so that 2 * v, v - w, v / w, -v all work
+    def __radd__(self, other): return self + other
+    def __rmul__(self, other): return self * other
+    def __neg__(self): return self * -1
+    def __sub__(self, other): return self + (-other)
+    def __rsub__(self, other): return other + (-self)
+    def __truediv__(self, other): return self * other ** -1
+    def __rtruediv__(self, other): return Value(other) * self ** -1
+
+    def backward(self):
+        # 1) topological order: every node appears after all its inputs
+        topo, seen = [], set()
+
+        def build(v):
+            if v not in seen:
+                seen.add(v)
+                for child in v._prev:
+                    build(child)
+                topo.append(v)
+        build(self)
+        # 2) seed and sweep in reverse
+        self.grad = 1.0
+        for v in reversed(topo):
+            v._backward()
+
+    def __repr__(self):
+        return f"Value(data={self.data:.4f}, grad={self.grad:.4f})"
+
+
+if __name__ == "__main__":
+    # check 1: a node used twice (grad must accumulate)
+    a = Value(3.0)
+    b = a * a + a          # db/da = 2a + 1 = 7
+    b.backward()
+    assert abs(a.grad - 7.0) &lt; 1e-12, a.grad
+
+    # check 2: compare against finite differences on a small neuron
+    def f(x1, x2, w1, w2, bias):
+        return (x1 * w1 + x2 * w2 + bias).tanh()
+
+    vals = [2.0, 0.0, -3.0, 1.0, 6.8813735870195432]
+    vs = [Value(v) for v in vals]
+    out = f(*vs)
+    out.backward()
+    eps = 1e-6
+    for i in range(len(vals)):
+        up = vals.copy(); up[i] += eps
+        dn = vals.copy(); dn[i] -= eps
+        num = (f(*[Value(v) for v in up]).data - f(*[Value(v) for v in dn]).data) / (2 * eps)
+        assert abs(num - vs[i].grad) &lt; 1e-6, (i, num, vs[i].grad)
+    print("neuron out", out, [round(v.grad, 4) for v in vs])
+
+    # check 3: train a tiny 2-layer net with plain SGD
+    import random
+    random.seed(0)
+    xs = [[2.0, 3.0, -1.0], [3.0, -1.0, 0.5], [0.5, 1.0, 1.0], [1.0, 1.0, -1.0]]
+    ys = [1.0, -1.0, -1.0, 1.0]
+    H = 4
+    W1 = [[Value(random.uniform(-1, 1)) for _ in range(3)] for _ in range(H)]
+    b1 = [Value(0.0) for _ in range(H)]
+    W2 = [Value(random.uniform(-1, 1)) for _ in range(H)]
+    b2 = Value(0.0)
+    params = [p for row in W1 for p in row] + b1 + W2 + [b2]
+
+    def net(x):
+        h = [sum((w * xi for w, xi in zip(W1[j], x)), b1[j]).tanh() for j in range(H)]
+        return sum((w * hj for w, hj in zip(W2, h)), b2).tanh()
+
+    for step in range(100):
+        loss = sum(((net(x) - y) ** 2 for x, y in zip(xs, ys)), Value(0.0))
+        for p in params:
+            p.grad = 0.0           # zero_grad!
+        loss.backward()
+        for p in params:
+            p.data -= 0.1 * p.grad
+        if step % 25 == 0 or step == 99:
+            print(step, round(loss.data, 5))
+    assert loss.data &lt; 0.05
+    print("micrograd OK")</code></pre>
+    <h4>五个必须讲清楚的设计点</h4>
+    <ol>
+      <li><strong>闭包</strong>：<code>_backward</code> 捕获了 <code>self</code>、<code>other</code>、<code>out</code>，所以 backward 时知道把 <code>out.grad</code> 乘以什么、传给谁（和 <a href="m00-python.html">00</a> 里讲的闭包一致）。</li>
+      <li><strong><code>+=</code> 而不是 <code>=</code></strong>：<code>b = a*a + a</code> 中 a 出现三次，三份梯度要相加。用 <code>=</code> 会得到错误结果——这就是 PyTorch 梯度累加语义的来源。</li>
+      <li><strong>拓扑排序</strong>：保证处理一个节点时，所有用到它的下游节点都已经把梯度传给它了。DFS 后序遍历就是拓扑序，反过来遍历即可。</li>
+      <li><strong>seed = 1</strong>：\(\partial L/\partial L = 1\)。</li>
+      <li><strong>zero_grad</strong>：训练循环里每步把 <code>p.grad = 0</code>，否则梯度跨步累加。</li>
+    </ol>
+    <p>扩展练习（已测试）：加上 <code>exp</code>、<code>log</code>、<code>sigmoid</code>，并验证 softmax 交叉熵对 logits 的梯度等于 \(p - \text{onehot}(y)\)：</p>
+<pre><code class="language-python">import math
+from micrograd import Value   # 上面那个 Value 类
+
+def exp(self):
+    out = Value(math.exp(self.data), (self,), "exp")
+    def _backward():
+        self.grad += out.data * out.grad          # (e^x)' = e^x，直接复用 forward 的结果
+    out._backward = _backward
+    return out
+
+def log(self):
+    out = Value(math.log(self.data), (self,), "log")
+    def _backward():
+        self.grad += (1.0 / self.data) * out.grad # (ln x)' = 1/x
+    out._backward = _backward
+    return out
+
+def sigmoid(self):
+    s = 1.0 / (1.0 + math.exp(-self.data))
+    out = Value(s, (self,), "sigmoid")
+    def _backward():
+        self.grad += s * (1 - s) * out.grad       # σ' = σ(1-σ)
+    out._backward = _backward
+    return out
+
+Value.exp, Value.log, Value.sigmoid = exp, log, sigmoid
+
+# 测试：softmax 交叉熵对 logits 的梯度应等于 p - onehot(y)
+zs = [Value(1.0), Value(-0.5), Value(2.0)]
+y = 2
+m = max(z.data for z in zs)                       # 稳定化：减去常数不影响梯度
+exps = [(z - m).exp() for z in zs]
+total = sum(exps[1:], exps[0])
+loss = -((exps[y] / total).log())
+loss.backward()
+p = [e.data / total.data for e in exps]
+for i, z in enumerate(zs):
+    assert abs(z.grad - (p[i] - (i == y))) &lt; 1e-9, (i, z.grad)
+
+# 测试：sigmoid 和 exp 组合版本一致
+a = Value(0.3); b = Value(0.3)
+a.sigmoid().backward()
+(1 / (1 + (-b).exp())).backward()
+assert abs(a.grad - b.grad) &lt; 1e-12
+print("micrograd extension OK")</code></pre>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 递归 DFS 在很深的图（比如几千个节点的长链）上会碰到 Python 递归上限（默认 1000），可以改成显式栈的迭代版本。(2) 在 <code>__pow__</code> 里允许指数也是 Value 会让导数复杂得多（需要 \(\partial/\partial k = a^k \ln a\)），面试里限定为常数即可。(3) 忘了处理 <code>2 * v</code>（需要 <code>__rmul__</code>）和 <code>1 / v</code>（需要 <code>__rtruediv__</code>）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A minimal autograd engine needs just one class. Each Value stores its data, its gradient, its parent nodes, and a closure that knows how to push its own gradient to its parents using the local derivative. backward first builds a topological order with a depth-first search, sets the output's gradient to one, and then calls each node's closure in reverse order. The key detail is that gradients are accumulated with plus-equals, because a node can feed into several downstream nodes; that's exactly why PyTorch needs zero_grad.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you extend this from scalars to tensors?</b><details><summary>思路</summary><div class="inner">每个算子实现 VJP：例如 \(Y = XW\) 时 \(\bar X = \bar Y W^\top\)，\(\bar W = X^\top \bar Y\)；广播的反向是对被广播的维度求和（把梯度"规约"回原形状）。这就是 <a href="m03-dl-basics.html">03</a> 里手推 MLP 梯度的内容。</div></details></li>
+    <li><b>How would you verify your gradients?</b><details><summary>思路</summary><div class="inner">中心差分 \((f(x+\epsilon) - f(x-\epsilon))/2\epsilon\)，误差 \(O(\epsilon^2)\)；用 float64、ε ≈ 1e-6，比较相对误差。PyTorch 里有 <code>torch.autograd.gradcheck</code>（要求 double 输入）。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-module"><span class="num">§7 · NN.MODULE &amp; TRAINING LOOP</span>nn.Module 与训练循环</h2>
+<p class="sec-intro">面试中"写一个训练脚本"的题目，考的是你能否不假思索地写出正确的骨架：模块定义、数据加载、七步训练循环、评估模式。这一节把每一块拆开讲，最后给出一个完整可运行的例子。</p>
+
+<section class="concept" id="c-module">
+  <div class="concept-head"><span class="pri p1">★</span><h3>nn.Module：__init__ 注册、forward 计算、parameters 与 buffers</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在 <code>__init__</code> 里把子模块和 <code>nn.Parameter</code> 赋值给属性，它们会被自动注册（<code>parameters()</code>、<code>.to()</code>、<code>state_dict()</code> 都能找到）；非训练的状态用 <code>register_buffer</code>；调用 <code>model(x)</code> 而不是 <code>model.forward(x)</code>。</p><p class="en">Assigning submodules and nn.Parameters as attributes in __init__ registers them; non-trainable state goes in buffers; always call model(x) so hooks run.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+import torch.nn as nn
+
+class MLP(nn.Module):
+    def __init__(self, d_in, d_hidden, d_out, p_drop=0.1):
+        super().__init__()                         # 必须先调用，否则注册参数会报错
+        self.fc1 = nn.Linear(d_in, d_hidden)       # 子模块赋值给属性 → 自动注册其参数
+        self.fc2 = nn.Linear(d_hidden, d_out)
+        self.drop = nn.Dropout(p_drop)
+        self.scale = nn.Parameter(torch.ones(d_out))            # 可训练参数
+        self.register_buffer("step", torch.zeros((), dtype=torch.long))  # 非训练状态：随 .to() 搬运、存进 state_dict
+
+    def forward(self, x):                          # 调用 model(x)，不要直接调 model.forward(x)
+        h = self.drop(torch.relu(self.fc1(x)))
+        return self.fc2(h) * self.scale
+
+model = MLP(16, 64, 4)
+for name, p in model.named_parameters():      # 顺序：模块自己的参数在前，再按子模块注册顺序
+    print(name, tuple(p.shape))
+# scale (4,)
+# fc1.weight (64, 16)   ← nn.Linear 的 weight 形状是 (out, in)，计算 y = x @ W.T + b
+# fc1.bias (64,)
+# fc2.weight (4, 64)
+# fc2.bias (4,)
+n_params = sum(p.numel() for p in model.parameters())
+print(n_params)                                     # 1352 = (16*64+64) + (64*4+4) + 4
+assert n_params == 1352
+assert "step" in model.state_dict()                 # buffer 在 state_dict 里……
+assert all(n != "step" for n, _ in model.named_parameters())   # ……但不在 parameters() 里
+
+torch.save(model.state_dict(), "mlp.pt")            # 推荐：只存 state_dict
+model2 = MLP(16, 64, 4)
+model2.load_state_dict(torch.load("mlp.pt"))        # 先构造同结构模型，再加载
+model2.eval()                                       # 推理前切到 eval：关闭 dropout，BN 用 running stats</code></pre>
+    <h4>要点</h4>
+    <ul>
+      <li><strong><code>super().__init__()</code> 必须最先调用</strong>：它创建 <code>_parameters</code>、<code>_modules</code>、<code>_buffers</code> 这些字典；<code>nn.Module.__setattr__</code> 会拦截属性赋值，按类型放进对应字典。忘记调用会报 "cannot assign module before Module.__init__() call"。</li>
+      <li><strong>为什么用 <code>model(x)</code></strong>：<code>__call__</code> 会运行 forward 前后的 hooks，再调用 <code>forward</code>（和 <a href="m00-python.html">00</a> 里讲的 <code>__call__</code> 魔法方法相同）。</li>
+      <li><strong>Python list 里的子模块不会被注册</strong>：<code>self.layers = [nn.Linear(...) for _ in range(4)]</code> → 这些层的参数不在 <code>parameters()</code> 里，优化器不会更新它们，<code>.to(device)</code> 也不会搬运它们。要用 <code>nn.ModuleList</code> / <code>nn.ModuleDict</code> / <code>nn.Sequential</code>。</li>
+      <li><strong>buffer vs parameter vs 普通属性</strong>：</li>
+    </ul>
+    <table>
+      <tr><th></th><th>在 parameters() 里（被优化）</th><th>随 .to() 搬运</th><th>在 state_dict 里</th><th>例子</th></tr>
+      <tr><td><code>nn.Parameter</code></td><td>是</td><td>是</td><td>是</td><td>权重、bias、LayerNorm 的 γ/β</td></tr>
+      <tr><td><code>register_buffer(..., persistent=True)</code></td><td>否</td><td>是</td><td>是</td><td>BN 的 running_mean、step 计数</td></tr>
+      <tr><td><code>register_buffer(..., persistent=False)</code></td><td>否</td><td>是</td><td>否</td><td>causal mask、RoPE 的 cos/sin 缓存</td></tr>
+      <tr><td>普通张量属性</td><td>否</td><td><strong>否</strong></td><td>否</td><td>（通常是 bug：device mismatch 的来源）</td></tr>
+    </table>
+    <ul>
+      <li><strong>state_dict 保存/加载</strong>：推荐只保存 <code>state_dict</code>（一个有序的 名字→张量 字典），而不是 <code>torch.save(model)</code>（pickle 整个对象，依赖代码路径）。训练检查点通常还要保存 optimizer、scheduler、scaler 的 state_dict 和 step 数、RNG 状态。加载到不同设备用 <code>torch.load(path, map_location="cpu")</code>。<code>load_state_dict(strict=True)</code> 默认要求键完全一致，迁移部分权重时用 <code>strict=False</code> 并检查返回的 missing/unexpected keys。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 用 Python list 存层 → 参数不被优化，loss 降不下去也不报错。可以用 <code>sum(p.numel() for p in model.parameters())</code> 核对参数量来发现。(2) <code>nn.Linear</code> 的 weight 是 (out, in)，计算 \(y = xW^\top + b\)；手动加载权重或做 weight tying 时容易搞反。(3) 加载 <code>DataParallel</code>/DDP 保存的权重时，键前面多了 <code>module.</code> 前缀。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In an nn.Module, I call super init first, then assign submodules and nn.Parameters as attributes; Module's setattr registers them, so they show up in parameters, get moved by dot to, and get saved in the state dict. Lists of layers must be wrapped in nn.ModuleList, otherwise their parameters are invisible to the optimizer. State that isn't trained but should follow the model, like a causal mask or running statistics, goes into a buffer. I always call model of x rather than forward directly, so hooks run, and I save and load the state dict rather than pickling the whole model.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How do you freeze part of a model?</b><details><summary>思路</summary><div class="inner">对要冻结的参数设 <code>p.requires_grad_(False)</code>，并只把需要训练的参数传给优化器：<code>torch.optim.AdamW([p for p in model.parameters() if p.requires_grad])</code>。冻结的参数不会存梯度、也不需要 optimizer 状态，省显存。注意冻结的模块如果有 dropout/BN，还要决定它处于 train 还是 eval 模式。</div></details></li>
+    <li><b>How do you apply weight decay only to weight matrices, not to biases and norms?</b><details><summary>思路</summary><div class="inner">用参数组：遍历 <code>named_parameters()</code>，<code>p.ndim &gt;= 2</code> 的放进 <code>{"params": decay, "weight_decay": 0.1}</code>，其余（bias、LayerNorm 的 γ/β，以及按惯例的 embedding 有时也排除）放进 <code>weight_decay: 0.0</code> 的组。这是 GPT 类训练脚本的常见写法。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-mode">
+  <div class="concept-head"><span class="pri p1">★</span><h3>train() / eval()：只影响 dropout 和 BatchNorm</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>model.train()</code>/<code>model.eval()</code> 递归设置每个子模块的 <code>self.training</code> 标志：dropout 在 eval 时变成恒等映射，BatchNorm 在 eval 时用 running 统计量。它<strong>不</strong>影响梯度计算。</p><p class="en">train and eval only flip the training flag that dropout and batch norm read; gradients are controlled separately by no_grad.</p></div>
+  <div class="deep">
+    <ul>
+      <li><strong>Dropout</strong>：train 时以概率 p 把元素置 0，并把保留的元素乘以 \(1/(1-p)\)（inverted dropout，保证期望不变）；eval 时什么都不做。</li>
+      <li><strong>BatchNorm</strong>：train 时用当前 batch 的均值方差归一化并更新 running 统计量；eval 时用 running 统计量。忘记 eval() 会让推理结果依赖 batch 内其他样本，而且会污染 running 统计量。</li>
+      <li><strong>LayerNorm / RMSNorm</strong>：train 和 eval 行为相同（按样本自身统计）。现代 LLM 预训练通常不用 dropout，所以对很多 LLM 来说 train/eval 的数值差别很小——但养成习惯依然重要，面试官会看。</li>
+    </ul>
+    <p>评估的标准写法是 <code>model.eval()</code> + <code>with torch.no_grad():</code>（或 <code>@torch.no_grad()</code> 装饰器），结束后 <code>model.train()</code> 切回去。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>model dot train and model dot eval just set the training flag on every submodule. Dropout becomes the identity in eval mode, and batch norm switches from batch statistics to its running averages. They don't touch autograd, so for evaluation I combine eval with no_grad, and I switch back to train mode afterwards.</p></div>
+</section>
+
+<section class="concept" id="c-data">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Dataset、DataLoader 与 collate_fn（变长序列 padding）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p><code>Dataset</code> 实现 <code>__len__</code> 和 <code>__getitem__</code>（返回单个样本）；<code>DataLoader</code> 负责采样、分 batch、多进程加载；<code>collate_fn</code> 决定怎样把一组样本拼成 batch——变长序列需要在这里 padding 并生成 mask。</p><p class="en">A Dataset returns single examples, the DataLoader batches and shuffles them, and collate_fn turns a list of variable-length sequences into a padded tensor plus a mask.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+from torch.utils.data import Dataset, DataLoader
+
+class SeqDataset(Dataset):
+    def __init__(self, seqs):                # seqs: 变长的 token id 列表
+        self.seqs = seqs
+    def __len__(self):
+        return len(self.seqs)
+    def __getitem__(self, i):                # 返回单个样本
+        return torch.tensor(self.seqs[i], dtype=torch.long)
+
+PAD = 0
+def collate(batch):                          # batch: list of 1-D tensors，长度各不相同
+    lengths = torch.tensor([len(s) for s in batch])
+    L = int(lengths.max())
+    ids = torch.full((len(batch), L), PAD, dtype=torch.long)
+    for i, s in enumerate(batch):
+        ids[i, : len(s)] = s                 # 右 padding
+    mask = torch.arange(L)[None, :] &lt; lengths[:, None]   # (B, L) True = 真实 token
+    return ids, mask
+# 等价工具：torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=PAD)
+
+ds = SeqDataset([[5, 6, 7], [8, 9], [1, 2, 3, 4], [3]])
+dl = DataLoader(ds, batch_size=2, shuffle=False, collate_fn=collate)
+ids, mask = next(iter(dl))
+print(ids)    # tensor([[5, 6, 7], [8, 9, 0]])
+print(mask)   # tensor([[ True,  True,  True], [ True,  True, False]])</code></pre>
+    <ul>
+      <li>默认的 collate 会对样本做 <code>torch.stack</code>，要求形状完全相同；变长序列必须自定义 collate_fn。</li>
+      <li>常用参数：<code>batch_size</code>、<code>shuffle=True</code>（训练）、<code>num_workers</code>（多进程加载，&gt;0 时数据在子进程里准备）、<code>pin_memory=True</code>（加速 CPU→GPU 拷贝，配合 <code>.to(device, non_blocking=True)</code>）、<code>drop_last</code>。</li>
+      <li>右 padding 是训练时最常见的选择；<strong>批量生成</strong>时通常用<strong>左 padding</strong>，这样所有序列的"最后一个 token"对齐在同一列，新 token 可以直接拼在右边。</li>
+      <li>LLM 预训练常用 <strong>packing</strong>：把多个文档首尾相接切成固定长度，几乎没有 padding 浪费（细节见 <a href="m05-pretraining.html">05</a>）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A Dataset just implements len and getitem for single examples. The DataLoader handles shuffling, batching and parallel loading with worker processes. For variable-length sequences I write a collate function that pads every sequence to the longest one in the batch and returns an attention mask, and labels padded with minus one hundred so the loss ignores them. For training I pad on the right; for batched generation, left padding keeps the last tokens aligned.</p></div>
+</section>
+
+<section class="concept" id="c-loop">
+  <div class="concept-head"><span class="pri p1">★</span><h3>标准训练循环（完整可运行）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>七步：forward → loss → zero_grad → backward → clip → optimizer.step → scheduler.step；评估在 <code>eval()</code> + <code>no_grad</code> 下进行。</p><p class="en">Forward, loss, zero_grad, backward, clip, optimizer step, scheduler step; evaluate under eval mode and no_grad.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader
+
+torch.manual_seed(0)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# ---- 数据：两个高斯团的二分类 ----
+N = 2000
+X = torch.cat([torch.randn(N // 2, 2) + 2, torch.randn(N // 2, 2) - 2])
+y = torch.cat([torch.ones(N // 2), torch.zeros(N // 2)]).long()
+perm = torch.randperm(N)
+X, y = X[perm], y[perm]
+train_dl = DataLoader(TensorDataset(X[:1600], y[:1600]), batch_size=64, shuffle=True)
+val_dl = DataLoader(TensorDataset(X[1600:], y[1600:]), batch_size=256)
+
+# ---- 模型 / 优化器 / 调度器 ----
+model = nn.Sequential(nn.Linear(2, 32), nn.ReLU(), nn.Dropout(0.1), nn.Linear(32, 2)).to(device)
+opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=0.01)
+epochs = 5
+sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs * len(train_dl))
+
+@torch.no_grad()                      # 评估：不建图
+def evaluate():
+    model.eval()                      # 关闭 dropout
+    correct = total = 0
+    for xb, yb in val_dl:
+        xb, yb = xb.to(device), yb.to(device)
+        correct += (model(xb).argmax(-1) == yb).sum().item()
+        total += yb.numel()
+    model.train()                     # 别忘了切回来
+    return correct / total
+
+for epoch in range(epochs):
+    model.train()
+    for xb, yb in train_dl:
+        xb, yb = xb.to(device), yb.to(device)
+        logits = model(xb)                                   # 1. forward
+        loss = F.cross_entropy(logits, yb)                   # 2. loss（传 logits）
+        opt.zero_grad(set_to_none=True)                      # 3. 清梯度
+        loss.backward()                                      # 4. backward
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # 5. 梯度裁剪
+        opt.step()                                           # 6. 更新参数
+        sched.step()                                         # 7. 更新学习率（每个 step）
+    print(f"epoch {epoch}  loss {loss.item():.4f}  val_acc {evaluate():.3f}")
+assert evaluate() &gt; 0.95</code></pre>
+    <h4>每一步为什么这样排</h4>
+    <ol>
+      <li><strong>zero_grad 在 backward 之前</strong>任意位置都可以（很多代码放在循环开头）；关键是不能夹在 backward 和 step 之间。</li>
+      <li><strong>clip 在 backward 之后、step 之前</strong>：裁剪的是已算好的梯度。<code>clip_grad_norm_</code> 计算所有参数梯度拼起来的总 L2 范数，若超过阈值就整体等比缩小（方向不变），返回裁剪前的范数——这个值值得记录到日志，是训练稳定性的重要信号。</li>
+      <li><strong>scheduler.step() 在 optimizer.step() 之后</strong>：顺序反了 PyTorch 会给警告，并且会跳过第一个学习率值。LLM 训练一般按 step（而不是 epoch）调度。</li>
+      <li><strong>评估</strong>：<code>@torch.no_grad()</code> + <code>model.eval()</code>，结束后 <code>model.train()</code>；累计正确数和样本总数再相除，而不是对每个 batch 的准确率求平均（最后一个 batch 可能较小）。</li>
+    </ol>
+    <p>注：这段代码的 NumPy 等价版本（同样的数据、同样结构的 MLP、手写 backward）已在本地验证可以达到 &gt; 95% 验证准确率；PyTorch 版本本身需要你在本地运行确认。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 在 eval 后忘了切回 <code>train()</code>，之后的训练 dropout 失效。(2) <code>total_loss += loss</code>（应为 <code>loss.item()</code>）导致显存随步数增长。(3) 每一步都 <code>print(loss.item())</code> 引起 GPU 同步，降低吞吐，按间隔记录即可。(4) 在 <code>DataLoader</code> 的 <code>shuffle</code> 上，验证集不需要打乱。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>My training step is always the same seven lines: forward pass, compute the loss from logits, zero the gradients, backward, clip the global gradient norm, optimizer step, and scheduler step. Clipping goes between backward and step, and I log the pre-clip norm because spikes there are an early warning sign. Evaluation runs under model dot eval and no_grad, accumulates correct counts and totals rather than averaging per-batch accuracy, and switches back to train mode at the end.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Where does learning-rate warmup go in this loop, and why is it used?</b><details><summary>思路</summary><div class="inner">它是 scheduler 的一部分（如线性 warmup 若干步后 cosine 衰减，可用 <code>LambdaLR</code> 实现），每个 step 调用一次。原因：训练初期 Adam 的二阶矩估计不准、参数在高曲率区域，一开始用大学习率容易发散；warmup 让优化先稳定下来。细节见 <a href="m02-math-ml.html">02</a>。</div></details></li>
+    <li><b>What's the difference between clip_grad_norm_ and clip_grad_value_?</b><details><summary>思路</summary><div class="inner">norm 版把所有梯度当作一个大向量，总范数超过阈值时整体缩放，保持方向；value 版逐元素截断到 [−c, c]，会改变梯度方向。深度学习中几乎总是用 norm 版（LLM 常用阈值 1.0）。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-amp"><span class="num">§8 · MIXED PRECISION &amp; MEMORY</span>混合精度与显存</h2>
+<p class="sec-intro">现代大模型训练几乎都在 bf16 下进行。面试常问："fp16 和 bf16 有什么区别？""为什么 bf16 不需要 loss scaling？""训练时显存都花在哪里？"这些问题的答案都来自浮点数的位布局。</p>
+
+<section class="concept" id="c-formats">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>fp32 / fp16 / bf16 的位布局</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>fp32 = 1 符号 + 8 指数 + 23 尾数；fp16 = 1 + 5 + 10（精度较高但范围小，最大约 65504）；bf16 = 1 + 8 + 7（和 fp32 范围相同，精度很低）。深度学习更怕溢出/下溢，而不太怕精度粗，所以 bf16 更省心。</p><p class="en">fp16 trades range for precision with five exponent bits, while bf16 keeps fp32's eight exponent bits and range but only seven mantissa bits.</p></div>
+  <div class="deep">
+    <p>一个规格化浮点数的值是 \((-1)^s \times 1.m \times 2^{e - \text{bias}}\)：<strong>指数位数决定范围</strong>，<strong>尾数位数决定精度</strong>（相邻两个数的相对间距约为 \(2^{-\text{尾数位数}}\)）。</p>
+    <table>
+      <tr><th>格式</th><th>符号/指数/尾数</th><th>最大值</th><th>最小正规格化数</th><th>机器 ε（1 与下一个数的差）</th><th>十进制有效位</th></tr>
+      <tr><td>fp32</td><td>1 / 8 / 23</td><td>≈ 3.4 × 10³⁸</td><td>≈ 1.2 × 10⁻³⁸</td><td>\(2^{-23}\) ≈ 1.2 × 10⁻⁷</td><td>~7</td></tr>
+      <tr><td>fp16</td><td>1 / 5 / 10</td><td>65504</td><td>≈ 6.1 × 10⁻⁵（次正规数可到 ≈ 6 × 10⁻⁸）</td><td>\(2^{-10}\) ≈ 9.8 × 10⁻⁴</td><td>~3</td></tr>
+      <tr><td>bf16</td><td>1 / 8 / 7</td><td>≈ 3.4 × 10³⁸</td><td>≈ 1.2 × 10⁻³⁸</td><td>\(2^{-7}\) ≈ 7.8 × 10⁻³</td><td>~2–3</td></tr>
+    </table>
+    <p>这些数字可以用 <code>torch.finfo(torch.bfloat16)</code> 查到。几个直观的后果（本地用 NumPy 模拟验证过）：</p>
+    <ul>
+      <li>fp16 里 70000 会变成 inf，1e-8 会变成 0：<strong>大激活值溢出、小梯度下溢</strong>。</li>
+      <li>bf16 里 257 会舍入成 256，\(1 + 1/256\) 会舍入成 1：<strong>精度很粗</strong>，所以累加（求和、LayerNorm 统计量、softmax 分母、optimizer 更新）要用 fp32 做。</li>
+      <li>bf16 就是 fp32 的高 16 位，fp32↔bf16 转换非常便宜。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>梯度值常常小到 1e-6 甚至更小（深层网络、大 batch 平均之后），fp16 的最小正规格化数只有 6e-5，大量梯度直接变成 0 或失去精度——这就是 fp16 训练需要 loss scaling 的原因。bf16 的范围和 fp32 一样，这个问题基本不存在。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The exponent bits set the range and the mantissa bits set the precision. fp16 has five exponent bits and ten mantissa bits, so it is fairly precise but tops out around sixty-five thousand and underflows below roughly six times ten to the minus five, or about six times ten to the minus eight with subnormals. bf16 keeps fp32's eight exponent bits, so it has the same range, but only seven mantissa bits, roughly two to three significant digits. For training, range matters more than precision, which is why bf16 has become the default.</p></div>
+</section>
+
+<section class="concept" id="c-amp">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>autocast、GradScaler 与 master weights</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>混合精度 = 参数和优化器状态保存在 fp32（master weights），<code>autocast</code> 让 matmul/conv 在 fp16/bf16 下算、把 softmax/归约/loss 等敏感运算留在 fp32；fp16 额外需要 <code>GradScaler</code> 把 loss 放大 S 倍防止梯度下溢，bf16 不需要。</p><p class="en">Mixed precision keeps fp32 master weights, runs matmuls in half precision under autocast, and for fp16 adds a dynamic loss scaler to keep small gradients from underflowing; bf16 needs no scaler.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+device = "cuda"   # 这一段需要 GPU
+model = nn.Linear(1024, 1024).to(device)            # 参数（master weights）保持 fp32
+opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+scaler = torch.amp.GradScaler("cuda")               # 只有 fp16 需要；bf16 不需要
+
+x = torch.randn(64, 1024, device=device)
+target = torch.randn(64, 1024, device=device)
+
+for step in range(10):
+    with torch.autocast(device_type="cuda", dtype=torch.float16):
+        out = model(x)                              # matmul 在 fp16 下算
+        loss = F.mse_loss(out.float(), target)      # loss 用 fp32 更稳（autocast 本身也会把 mse_loss 等放到 fp32）
+    opt.zero_grad(set_to_none=True)
+    scaler.scale(loss).backward()                   # loss × S 再 backward，防止小梯度在 fp16 下溢为 0
+    scaler.unscale_(opt)                            # 裁剪前先除回 S，否则阈值不对
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    scaler.step(opt)                                # 若梯度含 inf/NaN 则跳过这一步
+    scaler.update()                                 # 动态调整 S：溢出就减半，长期没溢出就增大
+
+# bf16 版本：去掉 scaler 即可
+with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+    loss = F.mse_loss(model(x).float(), target)
+loss.backward()</code></pre>
+    <h4>loss scaling 的原理</h4>
+    <p>链式法则是线性的：把 loss 乘以 S，所有梯度都乘以 S，于是原本会下溢的小梯度被抬进 fp16 的表示范围。更新参数前再除以 S，结果和不缩放时一样。<strong>动态</strong> scaler 会在检测到 inf/NaN 梯度时跳过这一步并把 S 减半，连续若干步（默认 2000）没有溢出就把 S 加倍，自动找到"尽量大但不溢出"的 S。</p>
+    <h4>为什么需要 fp32 master weights</h4>
+    <p>参数更新量 \(\eta \cdot \Delta\) 常常比参数本身小好几个数量级。bf16 的 ε ≈ 0.0078：一个大小为 1 的权重加上 0.001 的更新，在 bf16 里结果还是 1——更新被"吞掉"了。所以参数主副本和 Adam 的 m、v 都保持 fp32，只在计算时转换成低精度。</p>
+    <h4>autocast 做了什么</h4>
+    <ul>
+      <li>它维护一个算子列表：matmul、linear、conv 等"受益于低精度"的算子转成 fp16/bf16；softmax、log_softmax、各种 loss、归约、norm 等"对精度敏感"的算子在 fp32 下算。</li>
+      <li>它不改变参数本身的 dtype（参数仍是 fp32，进入 matmul 时临时转换）。</li>
+      <li>backward 不需要放在 autocast 里：反向运算会自动使用与前向相同的 dtype。</li>
+    </ul>
+    <p>另一种做法是把整个模型直接转成 bf16（<code>model.to(torch.bfloat16)</code>），这在推理时很常见；训练时要小心，因为纯 bf16 的参数更新会遇到上面的精度问题（大规模训练框架通常仍保留 fp32 主副本，或使用专门的处理方式）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 用 fp16 + scaler 时，在 <code>scaler.unscale_(opt)</code> 之前做梯度裁剪：阈值作用在放大后的梯度上，结果不对。(2) 以为 bf16 "什么都不用管"：loss 计算、softmax、大的归约仍然要在 fp32；LayerNorm 的 eps 在 bf16 下可能失效。(3) 混合精度省的主要是激活显存和计算时间，<strong>不是</strong>参数/优化器显存（后者还多了一份半精度副本）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In mixed-precision training the master weights and optimizer states stay in fp32, and autocast runs the matmuls in fp16 or bf16 while keeping numerically sensitive ops like softmax, reductions and the loss in fp32. With fp16 we also need a gradient scaler: multiply the loss by a large factor so small gradients don't underflow, unscale before clipping and stepping, skip steps with infs, and adjust the scale dynamically. bf16 has the same exponent range as fp32, so underflow isn't a problem and no scaler is needed. We keep fp32 master weights because small updates would otherwise be rounded away.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What lives in GPU memory during training of an N-parameter model with Adam in mixed precision?</b><details><summary>思路</summary><div class="inner">经典估算（ZeRO 论文的口径）：fp16/bf16 参数 2N + 梯度 2N + fp32 master 参数 4N + Adam m 4N + v 4N = <strong>16N 字节</strong>，7B 模型约 112 GB，还没算激活。激活显存随 batch × 序列长度 × 层数增长，通常是长序列训练的主要瓶颈，可用 activation checkpointing 换算力。详细推导见 <a href="m09-distributed.html">09</a>。</div></details></li>
+    <li><b>Why is inference memory so much smaller?</b><details><summary>思路</summary><div class="inner">推理不需要梯度、优化器状态和为 backward 保存的激活：bf16 权重 2N 字节（7B ≈ 14 GB）加上 KV cache（见 <a href="m08-inference.html">08</a>）。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-debug"><span class="num">§9 · DEBUGGING CHECKLIST</span>排错清单</h2>
+<p class="sec-intro">"你的模型 loss 不下降，你怎么办？"是 RS 面试的经典开放题，考的是有没有系统化的排错习惯。这一节给出一个可以直接背下来的顺序，以及每一步对应的代码。</p>
+
+<section class="concept" id="c-overfit">
+  <div class="concept-head"><span class="pri p1">★</span><h3>第一步永远是：检查初始 loss + 过拟合一个 batch</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>初始 loss 应约等于 ln C（均匀预测）；然后拿一个小 batch 反复训练，loss 必须能降到接近 0。做不到，说明 bug 在模型/loss/优化器管线里，而不是数据量或超参。</p><p class="en">Check that the initial loss is about log C, then overfit a single small batch to near-zero loss; if you can't, the bug is in the pipeline, not in the data or hyperparameters.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# 1) 过拟合一个 batch：loss 应该能降到接近 0；降不下去说明管线有 bug
+torch.manual_seed(0)
+model = nn.Sequential(nn.Linear(20, 64), nn.ReLU(), nn.Linear(64, 5))
+opt = torch.optim.Adam(model.parameters(), lr=1e-2)
+xb, yb = torch.randn(16, 20), torch.randint(0, 5, (16,))
+for step in range(300):
+    loss = F.cross_entropy(model(xb), yb)
+    opt.zero_grad(); loss.backward(); opt.step()
+print(f"overfit loss {loss.item():.4f}")     # 远小于 0.01
+assert loss.item() &lt; 0.01
+
+# 2) 初始 loss 检查：C 类均匀预测时 CE ≈ ln C
+fresh = nn.Linear(20, 5)
+nn.init.zeros_(fresh.weight); nn.init.zeros_(fresh.bias)
+print(F.cross_entropy(fresh(xb), yb).item(), torch.log(torch.tensor(5.)).item())   # 1.6094 1.6094
+
+# 3) 形状断言：让错误在第一时间爆出来
+def attention_scores(q, k):
+    B, H, T, D = q.shape
+    assert k.shape == (B, H, T, D), f"k shape {tuple(k.shape)} != {(B, H, T, D)}"
+    return q @ k.transpose(-2, -1) / D ** 0.5
+
+# 4) 定位 NaN：anomaly 模式会在"backward 产出 NaN"的那个 op 处报错，并打印它 forward 时的调用栈（很慢，只在调试时开）
+with torch.autograd.detect_anomaly():
+    a = torch.tensor([0.0, 1.0], requires_grad=True)
+    try:
+        (a * torch.log(a)).sum().backward()   # forward: 0 * log 0 = 0 * (-inf) = NaN；backward 里 LogBackward 算 0/0
+    except RuntimeError as err:
+        print("anomaly:", str(err)[:60])      # Function 'LogBackward0' returned nan values in its 0th output.
+# 常见 NaN 来源：lr 太大 → 发散；log(0) / sqrt(0) 的梯度 / 除以 0；fp16 溢出；全 -inf 的 softmax 行
+
+# 5) 日志里用 .item()（或 .detach()），不要把带图的 loss 存进列表
+history = []
+history.append(loss.item())                  # ✓ Python float
+# history.append(loss)                       # ✗ 每个 loss 都拖着整张计算图 → 显存泄漏</code></pre>
+    <p>为什么过拟合一个 batch 这么有效：一个有足够容量的模型在 16 个样本上必然能记住标签。如果做不到，只可能是以下几类问题：梯度没有流到参数（detach、list 存层、requires_grad=False、忘了把参数传给优化器）、loss 写错（传了概率、标签错位、mask 全是 0）、优化器没生效（忘了 step、学习率是 0、zero_grad 位置错误）。（NumPy 等价实验：同结构 MLP、Adam lr=1e-2、300 步，5 个随机种子下 loss 都降到 1e-4 量级。）</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The first two checks I always run are: does the initial loss match what a uniform prediction would give, which is log of the number of classes, and can the model overfit a single small batch to nearly zero loss. If it can't memorize sixteen examples, the bug is in the pipeline: gradients not reaching the parameters, a wrong loss, or an optimizer that isn't actually stepping. Only after that passes do I look at data and hyperparameters.</p></div>
+</section>
+
+<section class="concept" id="c-notdecreasing">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Loss 不下降：按顺序排查</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>从最便宜、最常见的原因查起：数据和标签 → 形状和广播 → loss 输入（logits vs 概率）→ 梯度是否流动 → 学习率 → 模式切换 → 初始化和归一化。</p><p class="en">Go from cheap and common to expensive and rare: data and labels, shapes, loss inputs, gradient flow, learning rate, train/eval mode, then initialization.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>#</th><th>检查项</th><th>怎么查</th><th>典型 bug</th></tr>
+      <tr><td>1</td><td>数据和标签对得上吗</td><td>打印几个样本，人工看输入和标签；可视化一个 batch；检查标签分布</td><td>shuffle 时 X 和 y 打乱顺序不同；标签错位（LM 忘了 shift）；数据增强把标签破坏了</td></tr>
+      <tr><td>2</td><td>形状</td><td>每一层加 <code>assert x.shape == (...)</code>；测试用 B≠T≠D 的尺寸</td><td>(B,1) vs (B,) 广播成 (B,B)；softmax 维度错；view 代替 transpose</td></tr>
+      <tr><td>3</td><td>loss 的输入</td><td>看 loss 函数文档：要 logits 还是概率、要类别下标还是 one-hot</td><td>CE 前做了 softmax；BCE 前做了 sigmoid 又用了 <code>_with_logits</code></td></tr>
+      <tr><td>4</td><td>梯度是否流动</td><td>backward 后打印每个参数的 <code>p.grad is None</code> 和 <code>p.grad.norm()</code></td><td>中间有 <code>detach()</code>/<code>.item()</code>/<code>.numpy()</code>；层存在 list 里；参数没传给优化器</td></tr>
+      <tr><td>5</td><td>学习率</td><td>扫几个数量级（1e-5 … 1e-1）；看 update/param 比例（经验上约 1e-3 量级算正常）</td><td>太大 → 震荡/NaN；太小 → 几乎不动；warmup 写错导致 lr 一直是 0</td></tr>
+      <tr><td>6</td><td>训练循环骨架</td><td>对照七步顺序</td><td>没有 zero_grad；zero_grad 在 backward 和 step 之间；忘记 scheduler/step</td></tr>
+      <tr><td>7</td><td>train/eval 模式</td><td>打印 <code>model.training</code></td><td>评估后没切回 train；训练时模型处于 eval</td></tr>
+      <tr><td>8</td><td>初始化和归一化</td><td>看每层激活的均值/方差；看初始 loss</td><td>初始 loss 远大于 ln C；激活爆炸或全为 0（dead ReLU）</td></tr>
+      <tr><td>9</td><td>数据泄漏 / 评估问题</td><td>训练集和验证集去重；检查预处理是否用了全量数据的统计量</td><td>验证集好得离谱（泄漏）；验证集差但训练集好（过拟合或分布不一致）</td></tr>
+    </table>
+    <div class="box why"><span class="lbl">直觉</span>排错的原则是<strong>缩小问题规模</strong>：更小的数据（1 个 batch）、更小的模型、关掉花哨的东西（混合精度、数据增强、调度器、分布式），先让最简单的版本跑通，再一个一个加回来。每次只改一件事。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If the loss isn't going down, I go from the cheapest checks to the most expensive. First I look at actual batches to make sure inputs and labels line up. Then I assert shapes, check that the loss gets logits rather than probabilities, and verify after backward that every parameter has a non-zero gradient. Then I sweep the learning rate over a few orders of magnitude and check the loop order and train versus eval mode. Throughout, I simplify: one batch, small model, no mixed precision, and add complexity back one piece at a time.</p></div>
+</section>
+
+<section class="concept" id="c-nan">
+  <div class="concept-head"><span class="pri p1">★</span><h3>NaN / Inf 排查</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>NaN 的常见来源：学习率过大导致发散、log(0)/除以 0/sqrt(0) 的梯度、fp16 溢出、整行被 mask 的 softmax、坏数据。定位工具：在 forward 中检查 <code>torch.isfinite</code>、用 <code>torch.autograd.detect_anomaly()</code> 找到第一个产出 NaN 的 backward 算子。</p><p class="en">NaNs usually come from divergence, log or divide by zero, fp16 overflow, fully masked softmax rows or bad data; localize them with isfinite checks and anomaly detection.</p></div>
+  <div class="deep">
+    <ul>
+      <li><strong>先看是 loss 突然变 NaN 还是逐渐发散</strong>：逐渐变大再 NaN → 学习率/稳定性问题（降 lr、加 warmup、梯度裁剪）；某一步突然 NaN → 数值问题或某个坏 batch（记录该 batch 的索引，单独复现）。</li>
+      <li><strong>数值问题的修法</strong>：<code>log(x + eps)</code> 或 <code>log(x.clamp_min(eps))</code>；用 <code>log_softmax</code>、<code>logsumexp</code>、<code>BCEWithLogits</code> 这些稳定的融合算子；除法分母加 eps；全 mask 行特殊处理。</li>
+      <li><strong>fp16</strong>：激活值超过 65504 → inf → NaN。换 bf16，或检查 GradScaler 是否正常工作（scale 是否不断被减半）。</li>
+      <li><strong>定位</strong>：在 forward 里插 <code>assert torch.isfinite(x).all()</code>；用 forward hook 批量检查每层输出；<code>detect_anomaly()</code> 会让 backward 在第一个返回 NaN 的算子处报错并打印它在 forward 时的调用栈（很慢，只在调试时开）。</li>
+      <li><strong>注意 NaN × 0 = NaN</strong>：被 mask 掉的位置如果算出了 NaN，乘以 0 也去不掉，必须用 <code>torch.where</code> 或 <code>masked_fill</code> 替换。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For NaNs I first look at whether the loss diverged gradually, which points to the learning rate or instability, or blew up in a single step, which points to a numerical issue or a bad batch that I can save and replay. Common culprits are log of zero, division by zero, fp16 overflow, and softmax over a fully masked row. To localize, I add isfinite asserts or forward hooks per layer, and use autograd's anomaly detection, which reports the first backward op that produced a NaN together with its forward stack trace.</p></div>
+</section>
+
+<section class="concept" id="c-misc-bugs">
+  <div class="concept-head"><span class="pri p1">★</span><h3>其他高频 bug：设备、模式、梯度、logits、泄漏、.item()</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>八个最常见的 bug：设备不匹配、忘了 <code>eval()</code>、忘了 <code>zero_grad()</code>、概率当 logits、标签没 shift、数据泄漏、日志里存了带图的 loss、评估时没有 <code>no_grad</code>。</p><p class="en">The usual suspects: device mismatch, missing eval or zero_grad, probabilities passed as logits, unshifted labels, data leakage, logging tensors that hold the graph, and evaluation without no_grad.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>Bug</th><th>症状</th><th>修法</th></tr>
+      <tr><td>设备不匹配</td><td>RuntimeError: Expected all tensors to be on the same device</td><td>输入 <code>.to(device)</code>；forward 里新建张量用 <code>device=x.device</code>；常量用 buffer</td></tr>
+      <tr><td>忘了 <code>eval()</code></td><td>验证指标随机波动、比预期差；同一输入两次推理结果不同</td><td>评估前 <code>model.eval()</code>，评估后 <code>model.train()</code></td></tr>
+      <tr><td>忘了 <code>zero_grad()</code></td><td>loss 先降后震荡、发散</td><td>每步 <code>opt.zero_grad()</code></td></tr>
+      <tr><td>概率当 logits</td><td>loss 停在 ln C 附近、下降极慢</td><td>CE 直接吃 logits</td></tr>
+      <tr><td>LM 标签没 shift</td><td>loss 迅速降到接近 0，但生成全是乱码（模型在"抄"当前 token）</td><td><code>logits[:, :-1]</code> 对 <code>ids[:, 1:]</code></td></tr>
+      <tr><td>数据泄漏</td><td>验证集准确率好得不真实</td><td>按实体/时间切分；去重；只用训练集统计量做归一化</td></tr>
+      <tr><td>日志存带图的 tensor</td><td>显存随步数线性增长直到 OOM</td><td><code>loss.item()</code> 或 <code>loss.detach()</code></td></tr>
+      <tr><td>评估没 <code>no_grad</code></td><td>评估时显存暴涨/OOM</td><td><code>@torch.no_grad()</code></td></tr>
+    </table>
+    <p>关于 <code>.item()</code>：它把 0 维张量转成 Python 数字，同时<strong>强制 GPU 同步</strong>（CPU 要等 GPU 算完才能拿到值）。在每一步都调用会打断 CPU 和 GPU 的异步流水线，所以日志一般每 N 步记录一次，或者先在 GPU 上累加再定期 <code>.item()</code>。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Some bugs show up so often that I check them by reflex. Device mismatches usually come from tensors created inside forward. Forgetting eval makes validation noisy, forgetting zero_grad makes training unstable, and passing probabilities into cross-entropy makes the loss plateau near log C. If a language model's loss drops to almost zero suspiciously fast, the labels probably weren't shifted. And if memory grows every step, I'm probably storing loss tensors instead of loss dot item, which keeps every graph alive.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your training loss decreases but validation loss increases from the start. What do you check?</b><details><summary>思路</summary><div class="inner">(1) 训练和验证的预处理是否一致（tokenizer、归一化、模板）；(2) 验证时是否 eval() 和正确的 mask；(3) 分布是否不同；(4) 模型是否太大、数据太少（真正的过拟合：加正则、早停、更多数据）。从一开始就上升更像是 pipeline 不一致，而不是普通过拟合。</div></details></li>
+    <li><b>GPU utilization is low during training. Why?</b><details><summary>思路</summary><div class="inner">数据加载是瓶颈（增大 num_workers、pin_memory、预处理离线化）；频繁的 <code>.item()</code>/<code>print</code>/<code>.cpu()</code> 同步；batch 太小、kernel 太碎（考虑 <code>torch.compile</code>、融合算子）；用 profiler（<code>torch.profiler</code>）确认。</div></details></li>
+  </ol></div>
+</section>
+
+<h2 class="sec" id="s-ex"><span class="num">§10 · EXERCISES</span>练习</h2>
+<p class="sec-intro">练习方法：<strong>开一个空白文件，关掉 AI 补全，计时</strong>。先自己写，写完运行参考答案里的测试（assert），通不过再看提示。每题末尾给了目标用时；两天后把做错的题重做一遍。练习 1–5 对应 §1–§5，6–11 对应 §6–§9，最后是 capstone。</p>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.0</b> · 难度 ★ · 5 分钟 · 不写代码</div>
+<p>说出每一行的输出 shape，并判断是 view 还是 copy（或报错）。<code>x = torch.randn(2, 3, 4)</code>：
+(a) <code>x.transpose(0, 2)</code>；(b) <code>x.transpose(0, 2).view(-1)</code>；(c) <code>x.permute(1, 0, 2).reshape(3, 8)</code>；(d) <code>x[:, [0, 2]]</code>；(e) <code>x.sum(1, keepdim=True) - x</code>；(f) <code>x[..., None] * x[:, None]</code>；(g) <code>torch.stack([x, x], -1)</code>；(h) <code>x.mean(-1) + torch.randn(3)</code>。</p>
+<details><summary>参考答案</summary><div class="inner">
+<ol type="a">
+<li>(4, 3, 2)，view（非连续）。</li>
+<li>报错：转置后非连续，view 无法表达；改用 <code>reshape(-1)</code> 会复制。</li>
+<li>(3, 8)，permute 后非连续，reshape 会复制。</li>
+<li>(2, 2, 4)，高级索引 → copy。</li>
+<li>(2, 1, 4) − (2, 3, 4) → (2, 3, 4)，新张量。</li>
+<li><code>x[..., None]</code> 是 (2, 3, 4, 1)，<code>x[:, None]</code> 是 (2, 1, 3, 4)。右对齐逐维：(2,2)、(3,1)、(4,3)、(1,4) → 第三维 4 vs 3 不兼容 → <strong>报错</strong>。（如果想要每个位置的外积，应写 <code>x[..., :, None] * x[..., None, :]</code> 得到 (2, 3, 4, 4)。）</li>
+<li>(2, 3, 4, 2)，新张量。</li>
+<li><code>x.mean(-1)</code> 是 (2, 3)，加 (3,) → (2, 3)。</li>
+</ol></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.1</b> · 难度 ★ · 8 分钟</div>
+<p>不使用 <code>torch.softmax</code>，实现数值稳定的 <code>softmax(z, dim)</code> 和 <code>log_softmax(z, dim)</code>，要求对 <code>[1000, 1001, 1002]</code> 不产生 NaN，并且支持任意 dim。</p>
+<details><summary>提示</summary><div class="inner">减去 <code>z.max(dim, keepdim=True).values</code>（注意 max 返回元组）。log_softmax = z − logsumexp。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+def softmax(z: torch.Tensor, dim: int = -1) -&gt; torch.Tensor:
+    z = z - z.max(dim=dim, keepdim=True).values     # 平移不变性：减去最大值，最大的指数变成 e^0 = 1
+    e = z.exp()
+    return e / e.sum(dim=dim, keepdim=True)
+
+def log_softmax(z: torch.Tensor, dim: int = -1) -&gt; torch.Tensor:
+    m = z.max(dim=dim, keepdim=True).values
+    lse = m + (z - m).exp().sum(dim=dim, keepdim=True).log()   # logsumexp
+    return z - lse
+
+z = torch.tensor([[1000., 1001., 1002.], [-5., 0., 5.]])
+assert torch.allclose(softmax(z), torch.softmax(z, -1))
+assert torch.allclose(log_softmax(z), torch.log_softmax(z, -1))
+assert torch.allclose(softmax(z, dim=0), torch.softmax(z, 0))</code></pre>
+<p>复杂度 O(n)，一次求 max、一次求和。追问：为什么 keepdim 必不可少？（否则 (B, V) 减 (B,) 会右对齐报错或在方阵上静默出错。）</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.2</b> · 难度 ★★ · 10 分钟</div>
+<p>用 NumPy 实现 <code>pairwise_l2(X, Y)</code>：X 为 (N, D)，Y 为 (M, D)，返回 (N, M) 的欧氏距离矩阵，<strong>不允许 Python 循环</strong>，且中间张量不能是 O(NMD) 的。</p>
+<details><summary>提示</summary><div class="inner">\(\|x-y\|^2 = \|x\|^2 - 2x^\top y + \|y\|^2\)。注意 x2 用 keepdims 得到 (N,1)，y2 保持 (M,)。</div></details>
+<details><summary>参考答案（已运行）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+
+def pairwise_l2(X, Y):
+    """X: (N, D), Y: (M, D) -&gt; (N, M) 欧氏距离，无 Python 循环。"""
+    x2 = (X ** 2).sum(axis=1, keepdims=True)      # (N, 1)
+    y2 = (Y ** 2).sum(axis=1)                     # (M,)
+    d2 = x2 - 2 * X @ Y.T + y2                    # ||x||^2 - 2 x·y + ||y||^2
+    return np.sqrt(np.maximum(d2, 0.0))           # 截掉浮点误差带来的负数
+
+rng = np.random.default_rng(0)
+X, Y = rng.normal(size=(50, 16)), rng.normal(size=(40, 16))
+loop = np.array([[np.linalg.norm(x - y) for y in Y] for x in X])
+assert np.allclose(pairwise_l2(X, Y), loop)
+assert np.allclose(np.diag(pairwise_l2(X, X)), 0, atol=1e-6)</code></pre>
+<p>主要计算是一次 (N, D) × (D, M) 的 matmul，O(NMD) 时间、O(NM) 显存。</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.3</b> · 难度 ★★ · 12 分钟</div>
+<p>给定 <code>logits</code> (B, T, V)、<code>targets</code> (B, T)、<code>mask</code> (B, T, bool)，返回每条序列被 mask 选中的 token 的 log-prob 之和 (B,)，以及所有有效 token 的平均 log-prob。这正是 DPO / PPO 里计算 \(\log\pi_\theta(y\mid x)\) 的核心函数。</p>
+<details><summary>提示</summary><div class="inner"><code>log_softmax(-1)</code> → <code>gather(-1, targets.unsqueeze(-1)).squeeze(-1)</code> → 乘 mask → 求和；平均时除以 <code>mask.sum()</code>，用 <code>clamp_min(1)</code> 防止除以 0。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+def masked_token_logp(logits, targets, mask):
+    """
+    logits:  (B, T, V) float
+    targets: (B, T)    long
+    mask:    (B, T)    bool，True = 计入（例如 response token）
+    返回: 每条序列的 log-prob 之和 (B,) 和 全部有效 token 的平均 log-prob (标量)
+    """
+    logp = logits.log_softmax(-1)                                  # (B, T, V)
+    tok = logp.gather(-1, targets.unsqueeze(-1)).squeeze(-1)       # (B, T)
+    tok = tok * mask                                               # 屏蔽位置置 0
+    seq_logp = tok.sum(-1)                                         # (B,)
+    mean_logp = tok.sum() / mask.sum().clamp_min(1)                # 按 token 平均
+    return seq_logp, mean_logp
+
+torch.manual_seed(0)
+B, T, V = 2, 4, 7
+logits = torch.randn(B, T, V)
+targets = torch.randint(0, V, (B, T))
+mask = torch.tensor([[1, 1, 1, 0], [0, 1, 1, 1]], dtype=torch.bool)
+seq, mean = masked_token_logp(logits, targets, mask)
+ref = [sum(torch.log_softmax(logits[b, t], -1)[targets[b, t]].item()
+           for t in range(T) if mask[b, t]) for b in range(B)]
+assert torch.allclose(seq, torch.tensor(ref), atol=1e-5)
+assert torch.allclose(mean, seq.sum() / 6, atol=1e-6)</code></pre>
+<p>真实使用时，targets 通常是 <code>input_ids[:, 1:]</code>、logits 是 <code>logits[:, :-1]</code>（shift），mask 只覆盖 response 部分。</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.4</b> · 难度 ★★ · 12 分钟</div>
+<p>实现 <code>build_attn_mask(pad_mask)</code>：输入 (B, T) 的 bool padding mask（True = 真实 token，右 padding），输出 (B, 1, T, T) 的 bool 矩阵（True = 允许 attend），同时包含 causal 和 padding 约束。再用 <code>masked_fill</code> 写一个带 mask 的 attention，并验证：第二条序列的前 3 个位置的输出，等于把它截断成长度 3 单独计算的结果。</p>
+<details><summary>提示</summary><div class="inner">causal 用 <code>tril</code>（允许语义）；padding 只屏蔽 key 方向：<code>pad[:, None, None, :]</code>。两者用 <code>&amp;</code> 广播合并。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+def build_attn_mask(pad_mask: torch.Tensor) -&gt; torch.Tensor:
+    """pad_mask: (B, T) bool, True = 真实 token（右 padding）。
+    返回 (B, 1, T, T) bool, True = 允许 query i 看 key j。"""
+    B, T = pad_mask.shape
+    causal = torch.tril(torch.ones(T, T, dtype=torch.bool, device=pad_mask.device))  # (T, T)
+    key_ok = pad_mask[:, None, None, :]          # (B, 1, 1, T)：只屏蔽 key 方向
+    return causal[None, None] &amp; key_ok           # 广播成 (B, 1, T, T)
+
+def masked_attention(q, k, v, allowed):
+    """q, k, v: (B, H, T, D); allowed: (B, 1, T, T)"""
+    scores = q @ k.transpose(-2, -1) / q.size(-1) ** 0.5     # (B, H, T, T)
+    scores = scores.masked_fill(~allowed, float("-inf"))
+    return scores.softmax(-1) @ v
+
+torch.manual_seed(0)
+B, H, T, D = 2, 3, 5, 4
+pad = torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 0, 0]], dtype=torch.bool)
+q, k, v = (torch.randn(B, H, T, D) for _ in range(3))
+out = masked_attention(q, k, v, build_attn_mask(pad))
+assert not torch.isnan(out).any()   # 右 padding + causal：每行至少能看到第 0 个 token，不会出现全 -inf 行
+# 对照：把第二条序列截成前 3 个 token 单独算，结果应该一致
+out_short = masked_attention(q[1:, :, :3], k[1:, :, :3], v[1:, :, :3], build_attn_mask(pad[1:, :3]))
+assert torch.allclose(out[1:, :, :3], out_short, atol=1e-6)</code></pre>
+<p>为什么不屏蔽 query 方向？padding 位置作为 query 产生的输出无所谓（loss 会 mask 掉），而且如果屏蔽 query 方向，padding 行会全是 −inf → NaN。右 padding + causal 时每个 query 至少能看到位置 0，所以不会出现全屏蔽行；左 padding 时要额外处理。</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.5</b> · 难度 ★ · 5 分钟</div>
+<p>用 <code>scatter_</code> 实现任意 batch 形状的 one-hot 编码，并与 <code>F.one_hot</code> 对比。</p>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def one_hot(labels: torch.Tensor, num_classes: int) -&gt; torch.Tensor:
+    out = torch.zeros(*labels.shape, num_classes, device=labels.device)
+    return out.scatter_(-1, labels.unsqueeze(-1), 1.0)     # out[..., labels[...]] = 1
+
+labels = torch.tensor([[0, 3], [2, 1]])                     # 任意 batch 形状都可以
+assert torch.equal(one_hot(labels, 4), F.one_hot(labels, 4).float())</code></pre></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.6</b> · 难度 ★ · 8 分钟</div>
+<p>只用 <code>nn.Parameter</code> 实现 <code>MyLinear(in_features, out_features, bias=True)</code>，初始化和 <code>nn.Linear</code> 的默认分布一致（权重和偏置都是 \(U(-1/\sqrt{\text{in}}, 1/\sqrt{\text{in}})\)），并通过加载 state_dict 验证和 <code>nn.Linear</code> 输出一致。</p>
+<details><summary>提示</summary><div class="inner">weight 形状 (out, in)；forward 为 <code>x @ self.weight.T + self.bias</code>，支持任意前导维度。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import math
+import torch
+import torch.nn as nn
+
+class MyLinear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))   # (out, in)，和 nn.Linear 一致
+        self.bias = nn.Parameter(torch.empty(out_features)) if bias else None
+        bound = 1 / math.sqrt(in_features)            # nn.Linear 默认初始化的上界（U(-1/√in, 1/√in)）
+        nn.init.uniform_(self.weight, -bound, bound)
+        if self.bias is not None:
+            nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x):                              # x: (..., in) → (..., out)
+        y = x @ self.weight.T
+        return y + self.bias if self.bias is not None else y
+
+torch.manual_seed(0)
+mine, ref = MyLinear(8, 3), nn.Linear(8, 3)
+ref.load_state_dict(mine.state_dict())                 # 参数名一致（weight / bias）才能直接加载
+x = torch.randn(2, 5, 8)
+assert torch.allclose(mine(x), ref(x), atol=1e-6)
+assert len(list(mine.parameters())) == 2
+assert mine.weight.abs().max() &lt;= 1 / math.sqrt(8)</code></pre>
+<p>注：<code>nn.Linear</code> 的源码用 <code>kaiming_uniform_(a=√5)</code> 初始化权重，推出来的上界恰好是 \(1/\sqrt{\text{in}}\)；偏置用 \(U(\pm 1/\sqrt{\text{fan\_in}})\)。</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.7</b> · 难度 ★★ · 15 分钟</div>
+<p>只用 autograd（不用 <code>nn</code>、不用 <code>optim</code>）训练逻辑回归：手动创建 <code>w, b</code>，用数值稳定的 BCE-with-logits，手写 SGD 更新和梯度清零。最后用解析梯度 \(\nabla_w L = X^\top(\sigma(Xw+b) - y)/N\) 验证 autograd 的结果。</p>
+<details><summary>提示</summary><div class="inner">\(\text{BCE}(z, y) = \log(1+e^z) - yz = \text{softplus}(z) - yz\)。更新必须在 <code>torch.no_grad()</code> 里做（否则叶子张量原地修改会报错），更新后把 <code>.grad</code> 设成 None。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+torch.manual_seed(0)
+N, D = 500, 3
+w_true = torch.tensor([2.0, -3.0, 0.5])
+X = torch.randn(N, D)
+y = (X @ w_true + 0.3 * torch.randn(N) &gt; 0).float()
+
+w = torch.zeros(D, requires_grad=True)
+b = torch.zeros((), requires_grad=True)
+lr = 0.5
+for step in range(300):
+    z = X @ w + b                                     # logits (N,)
+    # BCE with logits，数值稳定写法：softplus(z) - y*z = log(1+e^z) - y z
+    loss = (torch.nn.functional.softplus(z) - y * z).mean()
+    loss.backward()
+    with torch.no_grad():                             # 参数更新不能进计算图
+        w -= lr * w.grad
+        b -= lr * b.grad
+    w.grad = None                                     # 手动清零，否则梯度会累加
+    b.grad = None
+acc = ((X @ w + b &gt; 0).float() == y).float().mean().item()
+print(f"loss {loss.item():.3f} acc {acc:.3f} w {w.detach().numpy().round(2)}")
+assert acc &gt; 0.9
+# 解析梯度对照：dL/dw = X^T (σ(z) - y) / N
+z = (X @ w + b).detach()
+g_manual = X.T @ (torch.sigmoid(z) - y) / N
+w2 = w.detach().clone().requires_grad_(True)
+(torch.nn.functional.softplus(X @ w2 + b.detach()) - y * (X @ w2 + b.detach())).mean().backward()
+assert torch.allclose(w2.grad, g_manual, atol=1e-6)</code></pre>
+<p>同样数据下的 NumPy 版本（手写梯度）准确率约 0.98，已运行验证；softplus 恒等式也已数值验证。</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.8</b> · 难度 ★★★ · 20 分钟</div>
+<p>从零实现 AdamW（解耦 weight decay、偏差修正），并与 <code>torch.optim.AdamW</code> 对比 20 步后的参数，要求误差 &lt; 1e-6。</p>
+<details><summary>提示</summary><div class="inner">
+$$m_t = \beta_1 m_{t-1} + (1-\beta_1)g_t,\quad v_t = \beta_2 v_{t-1} + (1-\beta_2)g_t^2$$
+$$\hat m_t = \frac{m_t}{1-\beta_1^t},\quad \hat v_t = \frac{v_t}{1-\beta_2^t},\quad \theta \leftarrow \theta - \eta\lambda\theta - \eta\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon}$$
+<p>weight decay 直接作用在参数上，不进入 m 和 v——这就是 AdamW 与 "Adam + L2 正则" 的区别（后者把 \(\lambda\theta\) 加进梯度，会被自适应分母缩放）。</p></div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+class MyAdamW:
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
+        self.params = [p for p in params]
+        self.lr, (self.b1, self.b2), self.eps, self.wd = lr, betas, eps, weight_decay
+        self.m = [torch.zeros_like(p) for p in self.params]   # 一阶矩（梯度的 EMA）
+        self.v = [torch.zeros_like(p) for p in self.params]   # 二阶矩（梯度平方的 EMA）
+        self.t = 0
+
+    @torch.no_grad()
+    def step(self):
+        self.t += 1
+        for p, m, v in zip(self.params, self.m, self.v):
+            if p.grad is None:
+                continue
+            g = p.grad
+            p.mul_(1 - self.lr * self.wd)                 # 解耦的 weight decay：直接缩参数，不经过 m/v
+            m.mul_(self.b1).add_(g, alpha=1 - self.b1)
+            v.mul_(self.b2).addcmul_(g, g, value=1 - self.b2)
+            m_hat = m / (1 - self.b1 ** self.t)           # 偏差修正：抵消 m, v 初始化为 0 带来的偏小
+            v_hat = v / (1 - self.b2 ** self.t)
+            p.addcdiv_(m_hat, v_hat.sqrt().add_(self.eps), value=-self.lr)
+
+    def zero_grad(self):
+        for p in self.params:
+            p.grad = None
+
+torch.manual_seed(0)
+w1 = torch.randn(5, 3, requires_grad=True)
+w2 = w1.detach().clone().requires_grad_(True)
+mine = MyAdamW([w1], lr=1e-2, weight_decay=0.1)
+ref = torch.optim.AdamW([w2], lr=1e-2, weight_decay=0.1)
+x = torch.randn(8, 5)
+for _ in range(20):
+    for w, opt in ((w1, mine), (w2, ref)):
+        opt.zero_grad()
+        (x @ w).pow(2).mean().backward()
+        opt.step()
+assert torch.allclose(w1, w2, atol=1e-6)</code></pre>
+<p>验证方式：这里的更新公式与 PyTorch 源码中的写法（先 \(\theta \mathrel{*}= 1-\eta\lambda\)，再 <code>step_size = lr / bc1</code>、<code>denom = sqrt(v)/sqrt(bc2) + eps</code>）在代数上等价；我用 NumPy 把两种写法各跑 20 步，参数差异 &lt; 1e-10。偏差修正的推导见 <a href="m02-math-ml.html">02</a>。</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.9</b> · 难度 ★★ · 12 分钟</div>
+<p>为 SFT 写一个 <code>collate_fn</code>：每个样本是 <code>(prompt_ids, response_ids)</code>，输出 <code>input_ids</code>、<code>labels</code>、<code>attention_mask</code>，三者形状都是 (B, L)；labels 在 prompt 和 padding 位置为 −100（只在 response 上算 loss）。</p>
+<details><summary>参考答案（逻辑已用 NumPy 等价实现验证）</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+def lm_collate(batch, pad_id=0):
+    """batch: list of (prompt_ids, response_ids)，都是 list[int]。
+    返回 input_ids (B, L), labels (B, L), attention_mask (B, L)；
+    labels 中 prompt 和 padding 位置为 -100，只在 response 上算 loss。"""
+    seqs = [p + r for p, r in batch]
+    L = max(len(s) for s in seqs)
+    B = len(seqs)
+    input_ids = torch.full((B, L), pad_id, dtype=torch.long)
+    labels = torch.full((B, L), -100, dtype=torch.long)
+    attn = torch.zeros(B, L, dtype=torch.bool)
+    for i, ((p, r), s) in enumerate(zip(batch, seqs)):
+        input_ids[i, : len(s)] = torch.tensor(s)
+        labels[i, len(p) : len(s)] = torch.tensor(r)
+        attn[i, : len(s)] = True
+    return input_ids, labels, attn
+# 训练时：logits = model(input_ids)；loss 用 logits[:, :-1] 预测 labels[:, 1:]（shift 一位）
+
+ids, labels, attn = lm_collate([([5, 6], [7, 8, 9]), ([1], [2])])
+assert ids.tolist() == [[5, 6, 7, 8, 9], [1, 2, 0, 0, 0]]
+assert labels.tolist() == [[-100, -100, 7, 8, 9], [-100, 2, -100, -100, -100]]
+assert attn.sum().item() == 7</code></pre></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.10</b> · 难度 ★★★ · 15 分钟</div>
+<p>梯度累积 + 变长序列：两个 micro-batch 的有效 token 数分别为 3 和 1。证明"每个 micro-batch 求 mean 再除以 2"的梯度<strong>不等于</strong>把它们拼起来求 token 平均的梯度，并写出正确做法。</p>
+<details><summary>提示</summary><div class="inner">朴素做法给第二个 batch 的那 1 个 token 权重 1/2，而第一个 batch 每个 token 只有 1/6；正确权重应该都是 1/4。先统计全局有效 token 数，再用 <code>reduction="sum"</code> 除以它。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+torch.manual_seed(0)
+V = 6
+W = torch.randn(4, V, requires_grad=True)
+# 两个 micro-batch，有效 token 数不同（3 个和 1 个）
+mbs = [(torch.randn(5, 4), torch.tensor([1, 2, 3, -100, -100])),
+       (torch.randn(5, 4), torch.tensor([4, -100, -100, -100, -100]))]
+
+def grad_of(loss_fn):
+    W.grad = None
+    loss_fn()
+    return W.grad.clone()
+
+# 目标：等价于"把两个 micro-batch 拼起来，对全部 4 个有效 token 求平均"
+X = torch.cat([m[0] for m in mbs]); Y = torch.cat([m[1] for m in mbs])
+g_target = grad_of(lambda: F.cross_entropy(X @ W, Y).backward())
+
+# 朴素做法：每个 micro-batch 求平均再除以 2 → 第二个 batch 的那 1 个 token 权重过大
+def naive():
+    for x, y in mbs:
+        (F.cross_entropy(x @ W, y) / len(mbs)).backward()
+g_naive = grad_of(naive)
+
+# 正确做法：先数全局有效 token 数，用 reduction="sum" 再除以它
+def correct():
+    n_tok = sum((y != -100).sum() for _, y in mbs)
+    for x, y in mbs:
+        (F.cross_entropy(x @ W, y, reduction="sum") / n_tok).backward()
+g_ok = grad_of(correct)
+
+assert torch.allclose(g_ok, g_target, atol=1e-6)
+assert not torch.allclose(g_naive, g_target, atol=1e-4)</code></pre>
+<p>NumPy 版本（手写 CE 梯度并用有限差分检验）已验证三者关系。多卡训练时还需要把 token 数在所有 rank 之间 all-reduce。这个问题曾在开源训练框架里真实出现过，是面试时很好的"细节题"。</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.11</b> · 难度 ★★ · 15 分钟</div>
+<p>找出下面训练/评估函数中的所有 bug，并改正。</p>
+<details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# 有 bug 的版本（不要照抄）
+def train_buggy(model, opt, loader, val_loader):
+    for x, y in loader:
+        probs = model(x).softmax(-1)
+        loss = F.cross_entropy(probs, y)          # bug 1：CE 应传 logits
+        loss.backward()                           # bug 2：从未 zero_grad → 梯度一直累加
+        opt.step()
+    acc = 0
+    for x, y in val_loader:                       # bug 3：没有 model.eval()，也没有 no_grad
+        acc += (model(x).argmax(-1) == y).float().mean()   # bug 4：acc 是带图的 tensor，且平均方式随最后一个 batch 大小而偏
+    return acc / len(val_loader)
+
+# 修正后
+def train_fixed(model, opt, loader, val_loader):
+    model.train()
+    for x, y in loader:
+        loss = F.cross_entropy(model(x), y)
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+    model.eval()
+    correct = total = 0
+    with torch.no_grad():
+        for x, y in val_loader:
+            correct += (model(x).argmax(-1) == y).sum().item()
+            total += y.numel()
+    model.train()
+    return correct / total
+
+torch.manual_seed(0)
+X = torch.randn(256, 4); Y = (X[:, 0] &gt; 0).long()
+loader = [(X[i:i + 32], Y[i:i + 32]) for i in range(0, 200, 32)]
+val = [(X[200:], Y[200:])]
+m = nn.Sequential(nn.Linear(4, 16), nn.ReLU(), nn.Dropout(0.2), nn.Linear(16, 2))
+o = torch.optim.SGD(m.parameters(), lr=0.5)
+for _ in range(20):
+    acc = train_fixed(m, o, loader, val)
+assert acc &gt; 0.9</code></pre>
+<p>四个 bug：CE 吃了概率；没有 zero_grad；评估没有 eval() 和 no_grad；准确率按 batch 平均且保留了计算图。</p></div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 10.12</b> · 难度 ★★★ · 25 分钟</div>
+<p>从空白文件写出 §6 的 micrograd <code>Value</code> 类（支持 +、*、**、tanh、relu、backward），然后扩展 <code>exp</code>、<code>log</code>、<code>sigmoid</code>，并验证 softmax 交叉熵对 logits 的梯度等于 \(p - \text{onehot}(y)\)。</p>
+<details><summary>提示</summary><div class="inner">每个运算：(1) 算 forward 值；(2) 创建 out，记录父节点；(3) 定义闭包 <code>_backward</code>，用 <code>+=</code> 把 <code>局部导数 × out.grad</code> 加到父节点。<code>backward()</code>：DFS 拓扑排序 → <code>self.grad = 1</code> → 逆序调用。</div></details>
+<details><summary>参考答案</summary><div class="inner"><p>见 <a href="#c-micrograd">§6 micrograd</a> 的两段代码（均已运行通过）。</p></div></details></div>
+
+<section class="concept" id="c-capstone">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Capstone：30 分钟写出 tiny GPT 训练脚本</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>约 100 行：字符级 tokenizer → <code>get_batch</code>（x 和右移一位的 y）→ causal self-attention → Pre-Norm block → embedding + 位置 embedding + blocks + LM head → AdamW 训练循环 → 采样生成。</p><p class="en">About a hundred lines: char tokenizer, shifted batches, causal attention, pre-norm blocks, embeddings and LM head, an AdamW loop and a sampling function.</p></div>
+  <div class="deep">
+    <p>这是本章所有知识的综合：shape 变换（§1）、广播 mask（§2–3）、attention 矩阵乘（§4）、cross_entropy（§5）、autograd 和训练循环（§6–7）、排错（§9：初始 loss 应约等于 ln V）。<strong>练习方法</strong>：先只看下面的骨架清单写一遍，卡住再看代码；能在 30 分钟内写出并让 loss 下降，就达到了面试要求。</p>
+    <ol>
+      <li>数据：<code>chars</code>、<code>stoi/itos</code>、<code>data</code> 张量、train/val 切分、<code>get_batch</code> 返回 (B, T) 的 x 和 y = x 右移一位。</li>
+      <li><code>CausalSelfAttention</code>：一个 <code>Linear(D, 3D)</code> 产生 qkv → 拆 head (B, H, T, Dh) → \(QK^\top/\sqrt{D_h}\) → causal mask → softmax → 乘 V → 合并 head → 输出投影。mask 用 <code>register_buffer</code>。</li>
+      <li><code>Block</code>：<code>x = x + attn(ln1(x)); x = x + mlp(ln2(x))</code>，MLP 宽度 4D。</li>
+      <li><code>TinyGPT</code>：token embedding + position embedding → blocks → final LayerNorm → LM head；有 targets 时返回 CE loss。</li>
+      <li>训练循环：AdamW、七步、定期在 val 上评估（eval + no_grad）。</li>
+      <li><code>generate</code>：截取最后 T 个 token → 取最后一个位置的 logits → 除以温度 → softmax → <code>multinomial</code> 采样 → 拼接。</li>
+    </ol>
+<pre><code class="language-python">import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+torch.manual_seed(0)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# ---------- 数据：字符级 ----------
+text = "hello world! this is a tiny char-level language model. " * 200
+chars = sorted(set(text))
+stoi = {c: i for i, c in enumerate(chars)}
+itos = {i: c for c, i in stoi.items()}
+data = torch.tensor([stoi[c] for c in text], dtype=torch.long)
+n = int(0.9 * len(data))
+train_data, val_data = data[:n], data[n:]
+V, T, B = len(chars), 32, 16          # 词表、上下文长度、batch
+D, H, L = 64, 4, 2                    # 宽度、头数、层数
+
+def get_batch(split):
+    src = train_data if split == "train" else val_data
+    ix = torch.randint(len(src) - T - 1, (B,))
+    x = torch.stack([src[i : i + T] for i in ix])            # (B, T)
+    y = torch.stack([src[i + 1 : i + T + 1] for i in ix])    # 目标 = 右移一位
+    return x.to(device), y.to(device)
+
+# ---------- 模型 ----------
+class CausalSelfAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.qkv = nn.Linear(D, 3 * D)
+        self.proj = nn.Linear(D, D)
+        self.register_buffer("mask", torch.tril(torch.ones(T, T, dtype=torch.bool)))
+
+    def forward(self, x):                                    # x: (B, t, D)
+        b, t, _ = x.shape
+        q, k, v = self.qkv(x).split(D, dim=-1)               # 各 (B, t, D)
+        q, k, v = (z.view(b, t, H, D // H).transpose(1, 2) for z in (q, k, v))  # (B, H, t, Dh)
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(D // H)  # (B, H, t, t)
+        att = att.masked_fill(~self.mask[:t, :t], float("-inf")).softmax(-1)
+        y = (att @ v).transpose(1, 2).contiguous().view(b, t, D)   # 合并 heads
+        return self.proj(y)
+
+class Block(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.ln1, self.ln2 = nn.LayerNorm(D), nn.LayerNorm(D)
+        self.attn = CausalSelfAttention()
+        self.mlp = nn.Sequential(nn.Linear(D, 4 * D), nn.GELU(), nn.Linear(4 * D, D))
+
+    def forward(self, x):
+        x = x + self.attn(self.ln1(x))                       # Pre-Norm + 残差
+        return x + self.mlp(self.ln2(x))
+
+class TinyGPT(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.tok = nn.Embedding(V, D)
+        self.pos = nn.Embedding(T, D)
+        self.blocks = nn.Sequential(*[Block() for _ in range(L)])
+        self.ln_f = nn.LayerNorm(D)
+        self.head = nn.Linear(D, V, bias=False)
+
+    def forward(self, idx, targets=None):                    # idx: (B, t)
+        t = idx.size(1)
+        x = self.tok(idx) + self.pos(torch.arange(t, device=idx.device))
+        logits = self.head(self.ln_f(self.blocks(x)))        # (B, t, V)
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, V), targets.view(-1))
+        return logits, loss
+
+    @torch.no_grad()
+    def generate(self, idx, n_new, temperature=1.0):
+        for _ in range(n_new):
+            logits, _ = self(idx[:, -T:])                    # 只保留最近 T 个 token
+            probs = (logits[:, -1] / temperature).softmax(-1)
+            idx = torch.cat([idx, torch.multinomial(probs, 1)], dim=1)
+        return idx
+
+# ---------- 训练 ----------
+model = TinyGPT().to(device)
+opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=0.01)
+print(f"params: {sum(p.numel() for p in model.parameters()):,}")
+_, loss0 = model(*get_batch("train"))
+print(f"init loss {loss0.item():.3f}  (ln V = {math.log(V):.3f})")
+for step in range(500):
+    x, y = get_batch("train")
+    _, loss = model(x, y)
+    opt.zero_grad(set_to_none=True)
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    opt.step()
+    if step % 100 == 0:
+        model.eval()
+        with torch.no_grad():
+            _, vl = model(*get_batch("val"))
+        model.train()
+        print(f"step {step:4d}  train {loss.item():.3f}  val {vl.item():.3f}")
+model.eval()
+start = torch.tensor([[stoi["h"]]], device=device)
+print("".join(itos[i] for i in model.generate(start, 60)[0].tolist()))
+assert loss.item() &lt; 0.5 * math.log(V)</code></pre>
+    <p>自检要点：初始 loss 应接近 ln V（这里 V = 22，ln V ≈ 3.09）；训练文本高度重复，所以 loss 应该能快速降到 ln V 的一半以下，生成的文本应能看出原句的片段。若 loss 卡在 ln V 附近，按 §9 的清单查（最常见：y 没有右移、mask 方向反了、head 拆分写成了 <code>view(B, H, T, Dh)</code>）。</p>
+    <p>进阶（对应 <a href="m04-transformer.html">04</a> 和 <a href="m14-ml-coding.html">14</a>）：把 LayerNorm 换成 RMSNorm、MLP 换成 SwiGLU、位置编码换成 RoPE、attention 换成 <code>F.scaled_dot_product_attention(q, k, v, is_causal=True)</code>、加入 weight tying（<code>self.head.weight = self.tok.weight</code>）、加入 KV cache 的增量生成。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) <code>generate</code> 时没有截断到最后 T 个 token，位置 embedding 越界报错。(2) <code>generate</code> 前没有 <code>model.eval()</code>（有 dropout 时影响结果）。(3) 位置 embedding 用 <code>torch.arange(t)</code> 却忘了 <code>device=</code>。(4) mask 用的是 <code>self.mask[:T, :T]</code> 而不是当前长度 <code>[:t, :t]</code>，生成初期序列短于 T 时形状不匹配。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A minimal GPT is token plus position embeddings, a stack of pre-norm blocks, a final layer norm and a linear head over the vocabulary. Each block adds causal self-attention and an MLP to the residual stream. In attention I project to Q, K and V, split into heads with view and transpose, compute Q K transpose over square root of the head dimension, mask the future with minus infinity, softmax, multiply by V and merge heads. Training is next-token prediction with cross-entropy on targets shifted by one, and the first sanity check is that the initial loss is about log of the vocabulary size.</p></div>
+</section>
+
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚看这一页就够了。</p>
+
+<h4>内存模型</h4>
+<table>
+  <tr><th>要记住的</th><th>内容</th></tr>
+  <tr><td>元素地址</td><td>\(\text{offset} + \sum_k i_k\,\text{stride}_k\)；连续 (d0,d1,d2) 的 stride = (d1·d2, d2, 1)；PyTorch stride 以元素计，NumPy 以字节计</td></tr>
+  <tr><td>不复制（view）</td><td>切片、<code>view</code>、<code>transpose</code>/<code>permute</code>/<code>.t()</code>、<code>expand</code>（stride 0）、<code>unsqueeze</code>/<code>squeeze</code>、<code>detach</code>、<code>from_numpy</code></td></tr>
+  <tr><td>复制</td><td>高级索引/布尔掩码读取、<code>repeat</code>、<code>cat</code>/<code>stack</code>、<code>.contiguous()</code>（非连续时）、<code>.clone()</code>、<code>torch.tensor(...)</code>、<code>reshape</code>（不兼容时）</td></tr>
+  <tr><td>view 失败</td><td>转置后 <code>view</code> → 用 <code>reshape</code> 或 <code>.contiguous().view</code></td></tr>
+  <tr><td>拆/合 head</td><td><code>x.view(B,T,H,Dh).transpose(1,2)</code> ↔ <code>y.transpose(1,2).contiguous().view(B,T,H*Dh)</code></td></tr>
+  <tr><td>dtype</td><td>默认 float32 / int64；索引必须 int64；<code>from_numpy</code> 继承 float64；<code>tensor.to</code> 返回新张量，<code>module.to</code> 原地</td></tr>
+</table>
+
+<h4>广播与索引</h4>
+<table>
+  <tr><td>广播规则</td><td>右对齐；每维相等或其一为 1；(B,1) − (B,) = (B,B) ⚠</td></tr>
+  <tr><td>归一化</td><td><code>x / x.sum(-1, keepdim=True)</code></td></tr>
+  <tr><td>pairwise 距离²</td><td><code>(X**2).sum(1,keepdim=True) - 2*X@Y.T + (Y**2).sum(1)</code>，再 <code>clamp_min(0)</code></td></tr>
+  <tr><td>gather</td><td><code>logp.gather(-1, tgt.unsqueeze(-1)).squeeze(-1)</code>；out[i][j][k] = x[i][j][idx[i][j][k]]</td></tr>
+  <tr><td>scatter</td><td><code>zeros(N,C).scatter_(1, y[:,None], 1.0)</code> = one-hot；重复下标用 <code>scatter_add_</code>/<code>index_add_</code></td></tr>
+  <tr><td>causal mask</td><td><code>triu(ones(T,T,bool), 1)</code> = 要屏蔽的；<code>scores.masked_fill(mask, -inf).softmax(-1)</code>；SDPA 的 bool mask 中 True = 允许</td></tr>
+  <tr><td>padding mask</td><td><code>pad[:, None, None, :]</code> → (B,1,1,T)，只屏蔽 key</td></tr>
+  <tr><td>einsum</td><td>attention <code>bhqd,bhkd-&gt;bhqk</code>；输出 <code>bhqk,bhkd-&gt;bhqd</code>；trace <code>ii-&gt;</code>；bilinear <code>bi,ij,bj-&gt;b</code></td></tr>
+</table>
+
+<h4>数值</h4>
+<table>
+  <tr><td>稳定 softmax</td><td>减去 max（平移不变）</td></tr>
+  <tr><td>logsumexp</td><td>\(m + \log\sum e^{z-m}\)；梯度 = softmax</td></tr>
+  <tr><td>log_softmax</td><td>\(z - \text{LSE}(z)\)；不要 <code>log(softmax)</code></td></tr>
+  <tr><td>cross_entropy</td><td>吃 logits；类别在 dim 1；target int64；<code>ignore_index=-100</code> 默认；初始 loss ≈ ln C（V=50257 → ≈10.8）</td></tr>
+  <tr><td>BCE</td><td><code>binary_cross_entropy_with_logits</code> = softplus(z) − yz</td></tr>
+</table>
+
+<h4>autograd 与训练</h4>
+<table>
+  <tr><td>.grad</td><td>只有 requires_grad 的叶子会填充；<strong>累加</strong>，所以每步 zero_grad</td></tr>
+  <tr><td>梯度累积</td><td>k 个 micro-batch，loss / k，最后 step 一次；变长序列按全局 token 数归一化</td></tr>
+  <tr><td>detach / no_grad / inference_mode</td><td>单个张量断图 / 代码块不建图 / 更严格的 no_grad；<code>eval()</code> ≠ 关梯度</td></tr>
+  <tr><td>原地操作</td><td>改写 backward 需要的值 → 版本计数器报错；叶子参数在 no_grad 下更新</td></tr>
+  <tr><td>七步循环</td><td>forward → loss → zero_grad → backward → clip_grad_norm_ → opt.step → sched.step</td></tr>
+  <tr><td>Module</td><td><code>super().__init__()</code> 先调用；层放 <code>ModuleList</code>；常量用 <code>register_buffer</code>；存 <code>state_dict</code></td></tr>
+  <tr><td>nn.Linear</td><td>weight (out, in)，y = xWᵀ + b；默认 U(±1/√in)</td></tr>
+</table>
+
+<h4>精度</h4>
+<table>
+  <tr><th>格式</th><th>S/E/M</th><th>最大值</th><th>ε</th><th>要点</th></tr>
+  <tr><td>fp32</td><td>1/8/23</td><td>3.4e38</td><td>1.2e-7</td><td>master weights、Adam m/v</td></tr>
+  <tr><td>fp16</td><td>1/5/10</td><td>65504</td><td>9.8e-4</td><td>需要 GradScaler；先 unscale_ 再 clip</td></tr>
+  <tr><td>bf16</td><td>1/8/7</td><td>3.4e38</td><td>7.8e-3</td><td>范围同 fp32，无需 scaler；累加用 fp32</td></tr>
+</table>
+<p>训练显存（混合精度 Adam）≈ <strong>16 字节/参数</strong> + 激活；推理 ≈ 2 字节/参数 + KV cache。</p>
+
+<h4>排错顺序</h4>
+<p>初始 loss ≈ ln C → 过拟合一个 batch → 看数据 → 形状断言 → logits vs 概率 → 每个参数的 grad 是否非零 → 学习率扫描 → 循环顺序 / train-eval → 初始化。NaN：lr、log(0)、除 0、fp16 溢出、全 mask 行、坏 batch；<code>detect_anomaly()</code> 定位。</p>
+
+<h3 id="s-faq" style="font:500 24px var(--serif);margin-top:40px">高频面试题清单</h3>
+<table>
+  <tr><th>#</th><th>问题（英文原样）</th><th>答案在</th></tr>
+  <tr><td>1</td><td>What's the difference between view and reshape? Why does view fail after transpose?</td><td><a href="#c-view">view vs reshape</a></td></tr>
+  <tr><td>2</td><td>What is a stride? What does contiguous mean?</td><td><a href="#c-stride">storage + stride</a></td></tr>
+  <tr><td>3</td><td>Does torch.from_numpy copy the data?</td><td><a href="#c-dtype">dtype 与共享内存</a></td></tr>
+  <tr><td>4</td><td>Explain broadcasting rules. What shape is (B,1) − (B,)?</td><td><a href="#c-bcast-rules">广播规则</a>、<a href="#c-bcast-bug">静默 bug</a></td></tr>
+  <tr><td>5</td><td>Compute a pairwise distance matrix without loops.</td><td><a href="#c-pairwise">pairwise</a>、练习 10.2</td></tr>
+  <tr><td>6</td><td>Is indexing a view or a copy?</td><td><a href="#c-view-copy">view vs copy</a></td></tr>
+  <tr><td>7</td><td>How do you get the log-prob of each target token?</td><td><a href="#c-gather">gather</a>、练习 10.3</td></tr>
+  <tr><td>8</td><td>Implement one-hot encoding. What is scatter_add for?</td><td><a href="#c-scatter">scatter</a>、练习 10.5</td></tr>
+  <tr><td>9</td><td>expand vs repeat? cat vs stack?</td><td><a href="#c-shape-ops">形状操作</a></td></tr>
+  <tr><td>10</td><td>How do you build a causal mask? Why −inf and not 0?</td><td><a href="#c-mask">mask</a>、练习 10.4</td></tr>
+  <tr><td>11</td><td>Write attention scores with einsum.</td><td><a href="#c-einsum">einsum</a></td></tr>
+  <tr><td>12</td><td>How do you implement a numerically stable softmax? Why log_softmax?</td><td><a href="#c-lse">logsumexp</a>、练习 10.1</td></tr>
+  <tr><td>13</td><td>Does cross_entropy take logits or probabilities? What is ignore_index?</td><td><a href="#c-ce">cross_entropy</a></td></tr>
+  <tr><td>14</td><td>What does loss.backward() actually do? What is a leaf tensor?</td><td><a href="#c-graph">计算图</a></td></tr>
+  <tr><td>15</td><td>Why do we call zero_grad? How does gradient accumulation work?</td><td><a href="#c-accum">梯度累加</a>、练习 10.10</td></tr>
+  <tr><td>16</td><td>detach vs no_grad vs inference_mode? Does eval() disable gradients?</td><td><a href="#c-nograd">detach / no_grad</a></td></tr>
+  <tr><td>17</td><td>Why do in-place operations sometimes break backward?</td><td><a href="#c-inplace">原地操作</a></td></tr>
+  <tr><td>18</td><td>Implement a minimal autograd engine.</td><td><a href="#c-micrograd">micrograd</a>、练习 10.12</td></tr>
+  <tr><td>19</td><td>What's the difference between a parameter and a buffer? Why use ModuleList?</td><td><a href="#c-module">nn.Module</a></td></tr>
+  <tr><td>20</td><td>What do train() and eval() change?</td><td><a href="#c-mode">train/eval</a></td></tr>
+  <tr><td>21</td><td>How do you batch variable-length sequences?</td><td><a href="#c-data">collate_fn</a>、练习 10.9</td></tr>
+  <tr><td>22</td><td>Write a training loop from scratch. Where does gradient clipping go?</td><td><a href="#c-loop">训练循环</a></td></tr>
+  <tr><td>23</td><td>fp16 vs bf16? Why doesn't bf16 need loss scaling?</td><td><a href="#c-formats">位布局</a>、<a href="#c-amp">autocast</a></td></tr>
+  <tr><td>24</td><td>Why keep fp32 master weights? What's in GPU memory during training?</td><td><a href="#c-amp">autocast / 显存</a></td></tr>
+  <tr><td>25</td><td>Your loss isn't decreasing. What do you do?</td><td><a href="#c-overfit">过拟合一个 batch</a>、<a href="#c-notdecreasing">排查顺序</a></td></tr>
+  <tr><td>26</td><td>Your loss becomes NaN. How do you debug it?</td><td><a href="#c-nan">NaN</a></td></tr>
+  <tr><td>27</td><td>Memory grows every step. Why?</td><td><a href="#c-misc-bugs">高频 bug</a></td></tr>
+  <tr><td>28</td><td>Implement AdamW from scratch. AdamW vs Adam + L2?</td><td>练习 10.8</td></tr>
+  <tr><td>29</td><td>Write a tiny GPT and train it.</td><td><a href="#c-capstone">capstone</a></td></tr>
+</table>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m01" data-title="模块 01 自测卡片"></div>
+<div class="footer-nav"><a href="m00-python.html">← 00 Python 快速重建</a><a href="m02-math-ml.html">02 数学与经典机器学习 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m01.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>

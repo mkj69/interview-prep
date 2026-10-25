@@ -31,7 +31,7 @@ window.MODULES = [
     title: '预训练',
     desc: 'Scaling laws、数据、训练稳定性、超参迁移、长上下文、退火与中期训练。',
     topics: 'Kaplan vs Chinchilla · 数据配比与去重 · loss spike · μP · 长上下文扩展 · annealing' },
-  { id: 'm06', num: '06', phase: 'p2', pri: 1, status: 'planned', file: 'modules/m06-rl-posttraining.html',
+  { id: 'm06', num: '06', phase: 'p2', pri: 1, status: 'ready', file: 'modules/m06-rl-posttraining.html',
     title: 'Post-training 与强化学习',
     desc: '主线方向，准备得最深。从 RL 基础到 RLHF、DPO 推导、GRPO 与可验证奖励 RL。',
     topics: '策略梯度推导 · baseline · GAE · PPO clip · Bradley-Terry · DPO 推导 · GRPO/DAPO · PRM vs ORM · pass@k 争论' },
