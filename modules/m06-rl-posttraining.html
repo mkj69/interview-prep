@@ -1,0 +1,1534 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · Post-training 与强化学习 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m06">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 06 · Phase 2 · LLM 核心知识</div>
+<h1 class="title">Post-training 与<em>强化学习</em></h1>
+<p class="lede">从 MDP 和 Bellman 方程出发，一路推到策略梯度、PPO、RLHF、DPO，再到 GRPO / DAPO 与可验证奖励 RL（RLVR）。这是你的主线方向，面试官会默认你能<b>在白板上完整推导</b>，并且能讨论 2025–2026 年的最新争论。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完后你应该能做到：(1) 不看资料推出 policy gradient theorem、baseline 无偏性、GAE、DPO、KL 正则下的最优策略；(2) 说清 PPO 的每一项 loss 在做什么，以及 RLHF 里为什么有四个模型；(3) 写出 GRPO 的完整目标并解释 Dr. GRPO、DAPO 各修了什么；(4) 面对"reward 在涨但质量在降""entropy 在第 200 步崩了"这类场景题，能给出有条理的排查思路。<br><br>
+<b>建议顺序：</b>如果 RL 基础薄弱，严格按 §1 → §2 → §3 读，每节读完马上做 §11 里对应的推导练习。§4–§6 是 LLM 对齐的"经典三件套"（SFT / RM+PPO / DPO）。§7 是现在最热的部分，面试最常追问。§9 代码要亲手敲一遍。<br>
+<b>和其他模块的关系：</b>KL 散度、重要性采样的数学基础在 <a href="m02-math-ml.html">02</a>；log_softmax / gather 的张量操作在 <a href="m01-pytorch.html">01</a>；推理模型、测试时计算、pass@k 估计器在 <a href="m07-reasoning.html">07</a>；RL loss 的手写练习在 <a href="m14-ml-coding.html">14</a>；agent 的多轮 RL 在 <a href="m10-agents.html">10</a>。</div>
+
+<!-- ===================================================== §1 -->
+<h2 class="sec" id="s-rl"><span class="num">§1 · RL FOUNDATIONS</span>RL 基础</h2>
+<p class="sec-intro">LLM 的 RL 用到的数学其实不多：MDP、价值函数、Bellman 方程、策略梯度。但面试官会从最基础的定义开始问，所以每个定义都要能脱口而出，并且知道它在 LLM 里对应什么。</p>
+
+<section class="concept" id="c-mdp">
+  <div class="concept-head"><span class="pri p1">★</span><h3>MDP、策略与回报</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RL 问题 = 在 MDP \((\mathcal S,\mathcal A,P,r,\gamma)\) 里找一个策略 \(\pi(a|s)\)，最大化期望折扣回报 \(J(\pi)=\mathbb E_\pi[\sum_t \gamma^t r_t]\)。</p><p class="en">RL = find a policy that maximizes expected (discounted) return in an MDP.</p></div>
+  <div class="deep">
+    <p><b>马尔可夫决策过程（MDP）</b>由五元组定义：</p>
+    <ul>
+      <li>\(\mathcal S\)：状态空间；\(\mathcal A\)：动作空间。</li>
+      <li>\(P(s'|s,a)\)：转移概率。<b>马尔可夫性</b>：下一状态只依赖当前状态和动作，不依赖更早的历史。</li>
+      <li>\(r(s,a)\)：即时奖励（有时写成 \(r(s,a,s')\)）。</li>
+      <li>\(\gamma\in[0,1]\)：折扣因子。\(\gamma\lt 1\) 保证无限长任务回报有界，也表达"近的奖励更重要"。有限长任务（例如 LLM 生成，最多 T 个 token）常取 \(\gamma=1\)。</li>
+    </ul>
+    <p><b>策略</b> \(\pi_\theta(a|s)\)：给定状态输出动作分布。LLM 本身就是一个策略：状态是 prompt + 已生成的 token，动作是下一个 token。</p>
+    <p><b>轨迹</b> \(\tau=(s_0,a_0,r_0,s_1,a_1,r_1,\dots)\)，其概率为</p>
+    $$p_\theta(\tau)=\rho_0(s_0)\prod_{t} \pi_\theta(a_t|s_t)\,P(s_{t+1}|s_t,a_t).$$
+    <p><b>回报（return）</b> \(G_t=\sum_{k\ge 0}\gamma^k r_{t+k}\)：从 t 时刻开始的累积折扣奖励。注意区分 <b>reward</b>（一步的）和 <b>return</b>（累积的）——面试时混用会被追问。</p>
+    <p><b>目标</b>：\(J(\theta)=\mathbb E_{\tau\sim p_\theta}[G_0]\)。</p>
+    <div class="box why"><span class="lbl">直觉</span>RL 和监督学习最大的区别：(1) 没有"正确答案"标签，只有标量奖励；(2) 数据分布由当前策略自己产生（你采样什么就学什么），所以数据分布随训练变化；(3) 奖励可能延迟，需要做 <b>credit assignment</b>（哪一步该为结果负责）。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把 <code>reward</code> 和 <code>return</code>、<code>value</code> 混为一谈。reward 是环境给的一步信号；return 是一条具体轨迹的累积奖励（随机变量）；value 是 return 的<b>期望</b>。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>An MDP is defined by states, actions, transition dynamics, a reward function and a discount factor, with the Markov property that the next state depends only on the current state and action. A policy maps states to action distributions, and the goal is to maximize expected return — the discounted sum of future rewards. For a language model, the state is the prompt plus the tokens generated so far, the action is the next token, and the transition is deterministic: you just append the token.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why do we need a discount factor? What happens with γ = 1?</b><details><summary>思路</summary><div class="inner">数学上：无限长任务里 \(\gamma\lt1\) 让回报有界；也起到降低方差的作用（远处奖励噪声大，打折后影响变小），代价是引入偏差（优化的不再是真正的无折扣目标）。\(\gamma=1\) 在有限长 episodic 任务中完全可行——LLM RLHF 里通常 \(\gamma=1\)，因为回答长度有上限。</div></details></li>
+    <li><b>Is text generation really Markov?</b><details><summary>思路</summary><div class="inner">如果把"状态"定义为完整前缀（prompt + 所有已生成 token），那么它是马尔可夫的，而且转移是<b>确定性</b>的（拼接 token）。这是一个"状态包含全部历史"的平凡构造，所以 LLM 的 MDP 很特殊：没有环境随机性，所有随机性来自策略本身。多轮 agent 场景中环境（工具输出、用户）会引入真实随机性。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-value">
+  <div class="concept-head"><span class="pri p1">★</span><h3>价值函数 V、Q 与优势 A</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(V^\pi(s)\) 是从 s 出发按 π 走的期望回报；\(Q^\pi(s,a)\) 是先做 a 再按 π 走的期望回报；优势 \(A^\pi=Q^\pi-V^\pi\) 衡量"这个动作比平均好多少"。</p><p class="en">Advantage = how much better an action is than the policy's average action in that state.</p></div>
+  <div class="deep">
+    $$V^\pi(s)=\mathbb E_\pi\Big[\sum_{k\ge0}\gamma^k r_{t+k}\,\Big|\,s_t=s\Big],\qquad Q^\pi(s,a)=\mathbb E_\pi\Big[\sum_{k\ge0}\gamma^k r_{t+k}\,\Big|\,s_t=s,a_t=a\Big]$$
+    $$V^\pi(s)=\mathbb E_{a\sim\pi(\cdot|s)}[Q^\pi(s,a)],\qquad A^\pi(s,a)=Q^\pi(s,a)-V^\pi(s),\qquad \mathbb E_{a\sim\pi}[A^\pi(s,a)]=0.$$
+    <p>最后一个等式很重要：<b>优势在策略下的期望为 0</b>。所以优势天然有正有负——正的动作被鼓励，负的被抑制。这正是 baseline 和 GRPO 组内归一化背后的思想。</p>
+    <p><b>TD error 是优势的无偏估计（给定真实 V）</b>：\(\delta_t=r_t+\gamma V^\pi(s_{t+1})-V^\pi(s_t)\)，且 \(\mathbb E[\delta_t|s_t,a_t]=Q^\pi(s_t,a_t)-V^\pi(s_t)=A^\pi(s_t,a_t)\)。这是 GAE 的出发点。</p>
+    <div class="table-wrap"><table>
+      <tr><th>量</th><th>依赖</th><th>LLM 里对应</th></tr>
+      <tr><td>\(V(s)\)</td><td>状态</td><td>"从这个前缀开始，期望最终拿多少分"——PPO 的 critic / value head 预测的就是它</td></tr>
+      <tr><td>\(Q(s,a)\)</td><td>状态+动作</td><td>"在这个前缀后接这个 token，期望拿多少分"</td></tr>
+      <tr><td>\(A(s,a)\)</td><td>状态+动作</td><td>这个 token 比平均好多少；GRPO 用"本回答分数 − 组内平均分"近似整条回答的优势</td></tr>
+    </table></div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The state value V of s is the expected return starting from s and following the policy; the action value Q of s and a is the expected return if I first take action a and then follow the policy. The advantage is Q minus V, so it tells me how much better this particular action is than the policy's average behaviour in that state. Its expectation under the policy is zero, which is exactly why subtracting a baseline works. In practice the TD error, r plus gamma V of the next state minus V of the current state, is a one-step estimate of the advantage.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why do we prefer optimizing with the advantage rather than with Q or the raw return?</b><details><summary>思路</summary><div class="inner">梯度估计里的权重如果是 return 或 Q，它们通常都是正的、量级大，所有动作都会被"推高"，只是推的程度不同——方差极大。减去 V 后变成以 0 为中心，只有"好于平均"的动作被推高，方差小得多，而期望梯度不变（baseline 无偏性，见 §2）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-bellman">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Bellman 期望方程与最优方程</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>价值 = 即时奖励 + 折扣后的下一状态价值。期望方程描述给定 π 的价值；最优方程把对 π 的期望换成对动作取 max。</p><p class="en">Value equals immediate reward plus discounted value of the next state; the optimality version replaces the policy average with a max.</p></div>
+  <div class="deep">
+    <p><b>推导（期望方程）</b>：利用 \(G_t=r_t+\gamma G_{t+1}\) 和全期望公式：</p>
+    $$\begin{aligned}
+    V^\pi(s)&=\mathbb E_\pi[r_t+\gamma G_{t+1}\mid s_t=s]\\
+    &=\sum_a\pi(a|s)\Big[r(s,a)+\gamma\sum_{s'}P(s'|s,a)\,\mathbb E_\pi[G_{t+1}\mid s_{t+1}=s']\Big]\\
+    &=\sum_a\pi(a|s)\Big[r(s,a)+\gamma\sum_{s'}P(s'|s,a)V^\pi(s')\Big].
+    \end{aligned}$$
+    <p>第二步用到了马尔可夫性：给定 \(s_{t+1}=s'\)，未来回报与更早的历史无关。同理</p>
+    $$Q^\pi(s,a)=r(s,a)+\gamma\sum_{s'}P(s'|s,a)\sum_{a'}\pi(a'|s')Q^\pi(s',a').$$
+    <p><b>最优方程</b>：定义 \(V^*(s)=\max_\pi V^\pi(s)\)，\(Q^*(s,a)=\max_\pi Q^\pi(s,a)\)。最优策略在每个状态选使 \(Q^*\) 最大的动作，所以</p>
+    $$V^*(s)=\max_a Q^*(s,a),\qquad Q^*(s,a)=r(s,a)+\gamma\sum_{s'}P(s'|s,a)\max_{a'}Q^*(s',a').$$
+    <p><b>为什么有唯一解</b>：Bellman 算子 \(\mathcal T\) 是 \(\gamma\)-压缩映射（在 sup 范数下 \(\|\mathcal TV-\mathcal TU\|_\infty\le\gamma\|V-U\|_\infty\)），由 Banach 不动点定理有唯一不动点，且反复迭代收敛——这就是 value iteration。</p>
+    <div class="box why"><span class="lbl">直觉</span>期望方程是<b>线性</b>的（给定 π 可以直接解线性方程组 \(V=r_\pi+\gamma P_\pi V\)，即 \(V=(I-\gamma P_\pi)^{-1}r_\pi\)）；最优方程因为有 max 是<b>非线性</b>的，只能迭代求解。Q-learning 就是最优方程的随机近似。</div>
+  </div>
+  <details class="deep"><summary>压缩性证明（一行）</summary><div class="inner">
+    <p>对任意 \(V,U\)：\(|(\mathcal T V)(s)-(\mathcal T U)(s)|=\gamma\big|\max_a\sum_{s'}P V(s')-\max_a\sum_{s'}PU(s')\big|\le\gamma\max_a\sum_{s'}P(s'|s,a)|V(s')-U(s')|\le\gamma\|V-U\|_\infty\)。用到了 \(|\max f-\max g|\le\max|f-g|\)。</p>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The Bellman expectation equation says the value of a state equals the expected immediate reward plus the discounted value of the next state, averaging over the policy's actions and the transition dynamics. It follows directly from writing the return recursively, G_t equals r_t plus gamma G_{t+1}, and using the Markov property. The optimality equation replaces the average over actions with a max. Because the Bellman operator is a gamma-contraction, it has a unique fixed point, and iterating it converges — that's value iteration.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What's the difference between value iteration and policy iteration?</b><details><summary>思路</summary><div class="inner">Policy iteration：交替做 policy evaluation（解期望方程得 \(V^\pi\)）和 policy improvement（\(\pi'(s)=\arg\max_a Q^\pi(s,a)\)，由 policy improvement theorem 保证 \(V^{\pi'}\ge V^\pi\)）。Value iteration：直接迭代最优方程，相当于每次只做一步 evaluation 就 improve。两者都需要已知模型 P。</div></details></li>
+    <li><b>Why is Q-learning off-policy while SARSA is on-policy?</b><details><summary>思路</summary><div class="inner">Q-learning 的目标 \(r+\gamma\max_{a'}Q(s',a')\) 用的是 greedy 策略的下一个动作，与实际采样用的行为策略无关；SARSA 的目标 \(r+\gamma Q(s',a')\) 用的是行为策略实际采样到的 \(a'\)，所以学的是行为策略自己的 Q。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-dpmctd">
+  <div class="concept-head"><span class="pri p1">★</span><h3>DP vs Monte Carlo vs TD</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>DP 需要模型、做全宽度期望；MC 用完整回报，无偏但高方差；TD 用一步奖励 + 估计值做 bootstrap，低方差但有偏。GAE 的 λ 就在 MC 与 TD 之间插值。</p><p class="en">MC is unbiased but high-variance; TD bootstraps — lower variance but biased; λ interpolates.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th></th><th>需要模型 P？</th><th>Bootstrap？</th><th>目标（估计 V(s_t)）</th><th>偏差 / 方差</th></tr>
+      <tr><td>DP</td><td>是</td><td>是</td><td>\(\sum_a\pi\sum_{s'}P[r+\gamma V(s')]\)</td><td>精确期望，无采样噪声</td></tr>
+      <tr><td>Monte Carlo</td><td>否</td><td>否</td><td>\(G_t\)（完整回报）</td><td>无偏，高方差；需要 episode 结束</td></tr>
+      <tr><td>TD(0)</td><td>否</td><td>是</td><td>\(r_t+\gamma V(s_{t+1})\)</td><td>有偏（V 不准时），低方差；可在线更新</td></tr>
+      <tr><td>n-step / TD(λ)</td><td>否</td><td>部分</td><td>n 步回报 / 指数加权平均</td><td>介于两者之间</td></tr>
+    </table></div>
+    <p><b>为什么 MC 方差大</b>：\(G_t\) 是很多随机奖励与随机动作的和，每一步的随机性都累加进来。<b>为什么 TD 有偏</b>：它用自己的估计 \(V(s_{t+1})\) 做目标，如果这个估计错，目标就错（"用猜测更新猜测"）。</p>
+    <p><b>在 LLM RL 里</b>：奖励通常只在序列末尾给（稀疏、延迟），中间 token 奖励为 0（除了 KL 惩罚）。GRPO/RLOO 等方法本质上是 <b>MC</b>：用整条回答的最终分数作为每个 token 的回报。PPO + GAE 则用 value head 做 bootstrap，λ 常取 0.95 或 1.0。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Dynamic programming assumes a known model and computes exact expectations. Monte Carlo methods wait until the episode ends and use the full sampled return, which is unbiased but high-variance. TD methods bootstrap: they use the immediate reward plus the current estimate of the next state's value, which reduces variance but introduces bias when the value estimate is wrong. GAE and TD-lambda interpolate between the two. Critic-free LLM methods like GRPO are essentially Monte Carlo, because they use the final sequence-level reward for every token.</p></div>
+</section>
+
+<section class="concept" id="c-taxonomy">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Value-based vs policy-based、on- vs off-policy、探索</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Value-based 学 Q 再取 argmax（DQN）；policy-based 直接对策略参数做梯度上升（REINFORCE、PPO）；actor-critic 两者都学。On-policy 只能用当前策略采的数据；off-policy 可以用别的策略的数据（需修正）。</p><p class="en">LLM RL is almost always policy-based (or actor-critic) and approximately on-policy.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Value-based</b>（Q-learning、DQN）：学 \(Q^*\)，策略是 \(\arg\max_a Q\)。动作空间大时 argmax 本身困难；LLM 的动作空间是 vocab（~10⁵），序列空间更是天文数字，所以很少直接用。</li>
+      <li><b>Policy-based</b>（REINFORCE）：直接参数化 \(\pi_\theta\)，用策略梯度。天然适合大离散 / 连续动作空间和随机策略。缺点：方差大、样本效率低。</li>
+      <li><b>Actor-critic</b>（A2C、PPO）：actor 是策略，critic 学 V 来降低方差（当 baseline 或做 bootstrap）。</li>
+      <li><b>On-policy</b>：梯度公式里的期望是对当前 \(\pi_\theta\) 的；用旧数据会有偏。PPO 名义上 on-policy，但用重要性比率 + clip 允许在同一批数据上做几个 epoch（"近似 on-policy"）。</li>
+      <li><b>Off-policy</b>：用行为策略 \(\mu\) 的数据学目标策略 \(\pi\)。Q-learning、DQN（replay buffer）、带重要性采样的 PG。DPO 在标准用法里也是"离线 / off-policy"的：偏好数据来自别的模型。</li>
+      <li><b>探索</b>：ε-greedy、softmax/温度、熵正则、乐观初始化、UCB、内在动机。<b>LLM 的探索主要靠采样温度和预训练先验</b>：模型只能"探索到"它本来就有一定概率生成的东西——这是"RL 是否创造新能力"争论的根源（§7）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Value-based methods like DQN learn a Q-function and act greedily with respect to it, which is hard when the action space is a hundred-thousand-token vocabulary. Policy-based methods directly do gradient ascent on the policy parameters, and actor-critic methods add a learned value function to reduce variance. On-policy methods need data from the current policy; off-policy methods can reuse data from other policies but need corrections such as importance weights. In LLM post-training we mostly use policy-gradient methods that are approximately on-policy, and exploration largely comes from sampling temperature and the pretrained prior.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Is PPO on-policy or off-policy?</b><details><summary>思路</summary><div class="inner">通常归为 on-policy：每一轮都用当前策略重新采样，旧数据丢弃。但每批数据会被用于多个 epoch / minibatch 更新，从第二次更新开始数据就略微 off-policy，所以用比率 \(\pi_\theta/\pi_{\text{old}}\) 修正、用 clip 限制偏离程度。异步 RL 框架里 rollout 可能落后好几个版本，off-policy 程度更大。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-llm-mdp">
+  <div class="concept-head"><span class="pri p1">★</span><h3>把 LLM 生成看作 MDP：token 级 vs 序列级（bandit）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Token 级视角：每个 token 是一个动作，状态是前缀，奖励多在末尾；序列级视角：整个回答是一个动作，是一个 contextual bandit。两种视角给出同一个梯度，但在 credit assignment、KL 放哪、loss 怎么归一化上有实际区别。</p><p class="en">Token-level MDP vs sequence-level contextual bandit: same objective, different credit assignment and normalization choices.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th></th><th>Token 级 MDP</th><th>序列级 bandit</th></tr>
+      <tr><td>状态</td><td>\(s_t=(x,y_{\lt t})\)</td><td>prompt \(x\)（context）</td></tr>
+      <tr><td>动作</td><td>下一个 token \(y_t\)</td><td>整个回答 \(y\)</td></tr>
+      <tr><td>转移</td><td>确定性拼接</td><td>无（一步结束）</td></tr>
+      <tr><td>奖励</td><td>末 token 给 RM 分数，其余为 0（或每 token 有 −β·KL）</td><td>\(r(x,y)\)</td></tr>
+      <tr><td>策略概率</td><td>\(\pi(y_t|x,y_{\lt t})\)</td><td>\(\pi(y|x)=\prod_t\pi(y_t|x,y_{\lt t})\)</td></tr>
+      <tr><td>典型方法</td><td>PPO + GAE（per-token value）</td><td>REINFORCE、RLOO、GRPO、DPO</td></tr>
+    </table></div>
+    <p><b>两者梯度一致</b>：\(\nabla\log\pi(y|x)=\sum_t\nabla\log\pi(y_t|x,y_{\lt t})\)。序列级 REINFORCE 给每个 token 乘同一个 \(r(x,y)-b(x)\)；token 级在 \(\gamma=1\)、只有末尾奖励时，reward-to-go 对每个 token 都等于 \(r\)，所以完全一样。区别出现在：(1) 有 per-token KL 奖励时 reward-to-go 各不相同；(2) 用 critic 时每个 token 有自己的 baseline \(V(s_t)\)；(3) loss 如何在 token 之间平均（这正是 Dr. GRPO / DAPO 讨论的问题）。</p>
+    <p><b>重要的特殊性</b>：(a) 转移确定、无环境噪声；(b) 动作空间巨大；(c) 有一个极强的初始策略（预训练模型），探索被先验约束；(d) 奖励极其稀疏且通常是二值（RLVR）；(e) 一个"episode"可能上万 token，per-token credit assignment 很困难。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为 token 级 MDP 必然更好。在只有末尾奖励的设定下，token 级 critic 需要从稀疏信号里学出每个前缀的价值，在长 CoT 上很难学准；很多 RLVR 工作因此直接放弃 critic，退回到序列级 MC 估计。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There are two equivalent ways to view generation. At the token level, it's an MDP where the state is the prompt plus the prefix, each token is an action, transitions are deterministic, and reward usually arrives only at the end. At the sequence level, it's a contextual bandit: the prompt is the context and the whole response is a single action. Because the log-probability of a sequence is the sum of token log-probs, the vanilla policy gradients coincide; the views differ in credit assignment — per-token critics and per-token KL — and in how the loss is normalized across tokens.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If rewards are only at the end, what does a token-level value function buy you?</b><details><summary>思路</summary><div class="inner">理论上它给每个前缀一个 baseline \(V(s_t)\)，能做更细的 credit assignment：一个关键 token 之后 V 突然上升，这个 token 的优势就大。实际上 value head 在长序列、稀疏二值奖励下很难学准，而且多一个与 policy 同尺寸的模型，显存翻倍。所以 GRPO/RLOO 用多样本的组均值当 baseline。也有工作用 MC rollout 估计中间状态价值（如 <a href="https://arxiv.org/abs/2410.01679" target="_blank" rel="noreferrer">VinePPO</a>）或训练 PRM 来补 credit assignment。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ===================================================== §2 -->
+<h2 class="sec" id="s-pg"><span class="num">§2 · POLICY GRADIENT</span>策略梯度</h2>
+<p class="sec-intro">这一节是整章的地基，几乎每次 RL 面试都会让你推一遍 policy gradient。目标：闭着眼睛推出 log-derivative trick、因果性（reward-to-go）、baseline 无偏性、GAE。</p>
+
+<section class="concept" id="c-pg-theorem">
+  <div class="concept-head"><span class="pri p1">★</span><h3>策略梯度定理：完整推导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\nabla_\theta J=\mathbb E_{\tau\sim\pi_\theta}\big[\sum_t\nabla_\theta\log\pi_\theta(a_t|s_t)\,\hat A_t\big]\)，其中 \(\hat A_t\) 可以是总回报、reward-to-go 或优势估计。关键一步是 \(\nabla p=p\nabla\log p\)。</p><p class="en">Gradient of expected return = expectation of grad-log-prob times return (or advantage); the environment dynamics drop out.</p></div>
+  <div class="deep">
+    <p><b>Step 1：log-derivative trick（score function）。</b>对任意分布 \(p_\theta\) 和不依赖 θ 的函数 \(f\)：</p>
+    $$\nabla_\theta\mathbb E_{x\sim p_\theta}[f(x)]=\nabla_\theta\int p_\theta(x)f(x)\,dx=\int p_\theta(x)\nabla_\theta\log p_\theta(x)\,f(x)\,dx=\mathbb E_{x\sim p_\theta}[\nabla_\theta\log p_\theta(x)\,f(x)].$$
+    <p>用到 \(\nabla p=p\cdot\nabla p/p=p\nabla\log p\)。妙处：期望的梯度变成了梯度的期望，可以用采样估计，而且 <b>f 不需要可导</b>（奖励可以是"答案对不对"这样的 0/1）。</p>
+    <p><b>Step 2：轨迹的 log 概率。</b></p>
+    $$\log p_\theta(\tau)=\log\rho_0(s_0)+\sum_t\big[\log\pi_\theta(a_t|s_t)+\log P(s_{t+1}|s_t,a_t)\big]\ \Rightarrow\ \nabla_\theta\log p_\theta(\tau)=\sum_t\nabla_\theta\log\pi_\theta(a_t|s_t).$$
+    <p>初始分布和转移不依赖 θ，梯度消失——<b>不需要环境模型</b>（model-free 的关键）。</p>
+    <p><b>Step 3：轨迹形式。</b>取 \(f=R(\tau)=\sum_t\gamma^tr_t\)：</p>
+    $$\nabla_\theta J=\mathbb E_\tau\Big[\Big(\sum_{t}\nabla_\theta\log\pi_\theta(a_t|s_t)\Big)R(\tau)\Big].$$
+    <p><b>Step 4：因果性 → reward-to-go。</b>展开后得到 \(\sum_t\sum_{t'}\mathbb E[\nabla\log\pi(a_t|s_t)\,\gamma^{t'}r_{t'}]\)。对 \(t'\lt t\) 的项：\(r_{t'}\) 只依赖 \(t\) 之前的历史 \(h_t\)；条件在 \(h_t\)（含 \(s_t\)）上，</p>
+    $$\mathbb E[\nabla\log\pi(a_t|s_t)\,r_{t'}]=\mathbb E_{h_t}\big[r_{t'}\;\mathbb E_{a_t\sim\pi(\cdot|s_t)}[\nabla\log\pi(a_t|s_t)]\big]=0,$$
+    <p>因为 \(\mathbb E_{a\sim\pi}[\nabla\log\pi(a|s)]=\sum_a\pi\nabla\log\pi=\sum_a\nabla\pi=\nabla\sum_a\pi=\nabla 1=0\)（这个 <b>"score 的期望为 0"</b> 是整章最常用的引理）。所以过去的奖励可以删掉：</p>
+    $$\nabla_\theta J=\mathbb E_\tau\Big[\sum_t\nabla_\theta\log\pi_\theta(a_t|s_t)\,\hat G_t\Big],\qquad\hat G_t=\sum_{t'\ge t}\gamma^{t'}r_{t'}.$$
+    <p>（严格地说这里的 \(\hat G_t\) 带着 \(\gamma^{t'}\) 而不是 \(\gamma^{t'-t}\)；实践中几乎都用 \(\gamma^{t'-t}\)，这相当于丢掉一个 \(\gamma^t\) 因子，是一个常见的、轻微有偏的近似。在 LLM 中 \(\gamma=1\)，二者一致。）</p>
+    <p><b>Step 5：Q / 优势形式（策略梯度定理）。</b>对 reward-to-go 取关于 \((s_t,a_t)\) 的条件期望得到 \(Q^\pi(s_t,a_t)\)；再减去 baseline \(V^\pi(s_t)\)（下一个概念证明无偏）：</p>
+    $$\nabla_\theta J=\mathbb E\Big[\sum_t\gamma^t\nabla_\theta\log\pi_\theta(a_t|s_t)\,A^\pi(s_t,a_t)\Big].$$
+    <div class="box why"><span class="lbl">直觉</span>把 \(\nabla\log\pi(a|s)\) 理解为"让动作 a 更可能的方向"。策略梯度 = 把每个采样到的动作往"更可能"的方向推，推的力度 = 它带来的（相对）好处。好动作被推高，坏动作（优势为负）被压低。这和监督学习的 NLL 梯度形式完全相同，只是每个样本多了一个权重——所以 <b>REINFORCE = 用回报加权的 SFT</b>。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 以为需要对奖励求导——不需要，奖励只作为权重；(2) 忘了 score 期望为 0 这一步的条件是"给定 \(s_t\)"；(3) 实现时把 loss 写成 <code>+logp*A</code>（应该是 <code>-logp*A</code>，因为优化器做梯度下降）；(4) 让梯度流过 A（A 必须 <code>detach</code>）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The key is the log-derivative trick: the gradient of p equals p times the gradient of log p, so the gradient of an expectation becomes an expectation of the score function times the reward, which we can estimate by sampling, and the reward doesn't need to be differentiable. For a trajectory, the log-probability decomposes into the policy terms plus the dynamics, and the dynamics don't depend on theta, so they vanish. Then, by causality, an action can't affect past rewards — formally, the expected score is zero given the state — so we can replace the total return with the reward-to-go, and subtract a state-dependent baseline to get the advantage form.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What's the alternative to the score-function estimator, and why don't we use it for LLMs?</b><details><summary>思路</summary><div class="inner">Pathwise / reparameterization 梯度（VAE、SAC 用的）：把样本写成 \(x=g_\theta(\epsilon)\)，对 \(f(g_\theta(\epsilon))\) 直接求导，方差通常低得多。但它要求 f 对 x 可导、x 连续。LLM 的 token 是离散的，奖励（对错、测试通过）也不可导，所以只能用 score function（或 Gumbel-softmax 之类的松弛，但在 LLM RL 中很少用）。</div></details></li>
+    <li><b>Is the policy gradient an unbiased estimate? What makes it high variance?</b><details><summary>思路</summary><div class="inner">用 MC 回报时是无偏的。方差来源：回报是许多随机项之和；长序列让 \(\sum_t\nabla\log\pi\) 项很多；回报不以 0 为中心时所有样本都朝同方向推。降低方差：reward-to-go、baseline、critic/GAE、多样本平均、奖励归一化。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-baseline">
+  <div class="concept-head"><span class="pri p1">★</span><h3>REINFORCE 与 baseline 无偏性证明</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>减去任何只依赖状态（不依赖当前动作）的 baseline \(b(s)\) 不改变期望梯度，因为 \(\mathbb E_{a\sim\pi}[\nabla\log\pi(a|s)]\,b(s)=0\)；但可以大幅降低方差。</p><p class="en">Any action-independent baseline keeps the gradient unbiased because the expected score is zero.</p></div>
+  <div class="deep">
+    <p><b>REINFORCE 算法</b>（Williams 1992）：</p>
+    <ol>
+      <li>用 \(\pi_\theta\) 采样 N 条轨迹；</li>
+      <li>对每个时刻计算 \(\hat G_t\)（reward-to-go）；</li>
+      <li>\(\hat g=\frac1N\sum_i\sum_t\nabla\log\pi_\theta(a_t^i|s_t^i)(\hat G_t^i-b(s_t^i))\)；</li>
+      <li>\(\theta\leftarrow\theta+\alpha\hat g\)。</li>
+    </ol>
+    <p><b>无偏性证明</b>：</p>
+    $$\mathbb E_{a\sim\pi_\theta(\cdot|s)}\big[\nabla_\theta\log\pi_\theta(a|s)\,b(s)\big]=b(s)\sum_a\pi_\theta(a|s)\frac{\nabla_\theta\pi_\theta(a|s)}{\pi_\theta(a|s)}=b(s)\nabla_\theta\sum_a\pi_\theta(a|s)=b(s)\nabla_\theta1=0.$$
+    <p>关键条件：<b>b 不能依赖当前动作 \(a_t\)</b>（否则不能提到求和外面）。b 可以依赖状态、可以依赖<b>其他</b>独立样本（例如 RLOO 的 leave-one-out 均值）。</p>
+    <p><b>最优 baseline</b>（最小化方差）：对单个参数分量，\(b^*=\frac{\mathbb E[(\nabla\log\pi)^2G]}{\mathbb E[(\nabla\log\pi)^2]}\)，即按梯度平方加权的期望回报；实践中用 \(V(s)\) 近似已经足够好。</p>
+    <p><b>方差为什么降低</b>：设 \(g=\nabla\log\pi\cdot(G-b)\)。\(\mathrm{Var}=\mathbb E[(\nabla\log\pi)^2(G-b)^2]-(\text{不变的均值})^2\)，选 b 接近 G 的条件期望让 \((G-b)^2\) 变小。直觉：如果所有回报都是 +100±1，不减 baseline 时每个动作都被大力推高，信号只在 ±1 的差异中；减掉 100 后只剩真正的信号。</p>
+    <p><b>数值验证</b>（§9 有代码）：4 臂 bandit，奖励整体平移 +5。20 个种子平均：无 baseline 时每样本梯度方差约 18.7，300 步后选中最优臂概率 0.755；加上滑动平均 baseline 后方差约 1.0，最优臂概率 0.881。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>用包含当前样本自身奖励的组均值做 baseline（GRPO 就是这样）严格来说会引入一个小偏差（样本和 baseline 相关），等价于把梯度缩放 \((G-1)/G\)；RLOO 用 leave-one-out 均值就是严格无偏的。面试中能指出这一点是加分项。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>REINFORCE samples trajectories, weights each action's log-probability gradient by its return, and does gradient ascent. Subtracting a baseline that depends only on the state keeps the estimator unbiased: the expectation of the score times b of s is b of s times the gradient of the sum of probabilities, which is the gradient of one, so it's zero. The baseline can't depend on the current action, but it can depend on other independent samples, which is what leave-one-out methods like RLOO exploit. A good baseline, like the value function, makes the weights centered around zero and dramatically reduces variance.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Can the baseline depend on the action? What about on future states?</b><details><summary>思路</summary><div class="inner">依赖当前动作会引入偏差（除非额外加修正项，如 control variate 方法 Q-Prop）。依赖未来状态同样不行，因为未来状态受动作影响。只能依赖 \(a_t\) 之前就确定的信息或独立的样本。</div></details></li>
+    <li><b>Why do we normalize advantages (subtract mean, divide by std) in a batch?</b><details><summary>思路</summary><div class="inner">减均值 ≈ 又一层 baseline；除以标准差相当于自适应缩放学习率，使不同阶段、不同奖励尺度下的更新幅度稳定。代价：除以 std 会改变不同样本间的相对权重（GRPO 的"难度偏差"，§7）；严格说除以 batch 统计量也不是完全无偏的，但实践中很有效。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-actor-critic">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Actor-Critic 与优势估计</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Actor 是策略，critic 学 \(V_\phi(s)\)；用 critic 构造优势估计（如 TD error \(\delta_t\)）代替高方差的 MC 回报，以偏差换方差。</p><p class="en">Actor-critic: learn a value function to build lower-variance advantage estimates.</p></div>
+  <div class="deep">
+    <p><b>Critic 训练</b>：回归目标回报 \(\hat R_t\)（MC 回报或 GAE 回报 \(\hat A_t+V_{\text{old}}(s_t)\)）：\(L_V=\frac12(V_\phi(s_t)-\hat R_t)^2\)。</p>
+    <p><b>Actor 训练</b>：\(L_\pi=-\log\pi_\theta(a_t|s_t)\,\hat A_t\)（\(\hat A_t\) detach）。</p>
+    <p><b>优势估计的谱系</b>（从高方差低偏差到低方差高偏差）：</p>
+    <ul>
+      <li>\(\hat A_t=\hat G_t-V(s_t)\)（MC 回报减 baseline）</li>
+      <li>\(\hat A_t^{(n)}=\sum_{k=0}^{n-1}\gamma^kr_{t+k}+\gamma^nV(s_{t+n})-V(s_t)\)（n 步）</li>
+      <li>\(\hat A_t^{(1)}=\delta_t=r_t+\gamma V(s_{t+1})-V(s_t)\)（一步 TD）</li>
+      <li>GAE：所有 n 步估计的指数加权平均。</li>
+    </ul>
+    <p><b>在 LLM 中</b>：critic 通常是与 policy 同架构（或从 RM 初始化）的模型加一个标量 value head，对每个 token 位置输出 \(V(s_t)\)。它带来的显存与计算开销是 GRPO 等方法想去掉的主要原因。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In actor-critic methods the actor is the policy and the critic is a learned value function. The critic is trained by regression onto returns, and it's used to build advantage estimates — for example the one-step TD error — which have much lower variance than Monte Carlo returns, at the cost of bias if the critic is inaccurate. In RLHF with PPO the critic is typically another LLM-sized network with a scalar head, which is a big memory cost.</p></div>
+</section>
+
+<section class="concept" id="c-gae">
+  <div class="concept-head"><span class="pri p1">★</span><h3>GAE：推导与 λ 的权衡</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\hat A_t^{\text{GAE}(\gamma,\lambda)}=\sum_{l\ge0}(\gamma\lambda)^l\delta_{t+l}\)，递推 \(\hat A_t=\delta_t+\gamma\lambda\hat A_{t+1}\)。λ=0 是一步 TD（低方差高偏差），λ=1 是 MC 回报减 V（无偏高方差）。</p><p class="en">GAE is an exponentially weighted sum of TD errors; λ trades bias for variance.</p></div>
+  <div class="deep">
+    <p>来源：<a href="https://arxiv.org/abs/1506.02438" target="_blank" rel="noreferrer">Schulman et al. 2015, High-Dimensional Continuous Control Using Generalized Advantage Estimation</a>。</p>
+    <p><b>推导</b>：k 步优势估计可以写成 TD error 的伸缩和（telescoping）：</p>
+    $$\hat A_t^{(k)}=\sum_{l=0}^{k-1}\gamma^lr_{t+l}+\gamma^kV(s_{t+k})-V(s_t)=\sum_{l=0}^{k-1}\gamma^l\delta_{t+l}.$$
+    <p>（验证 k=2：\(\delta_t+\gamma\delta_{t+1}=r_t+\gamma V_{t+1}-V_t+\gamma r_{t+1}+\gamma^2V_{t+2}-\gamma V_{t+1}=r_t+\gamma r_{t+1}+\gamma^2V_{t+2}-V_t\)。✓）</p>
+    <p>GAE 取它们的指数加权平均，权重 \((1-\lambda)\lambda^{k-1}\)：</p>
+    $$\hat A_t^{\text{GAE}}=(1-\lambda)\sum_{k\ge1}\lambda^{k-1}\hat A_t^{(k)}=(1-\lambda)\sum_{k\ge1}\lambda^{k-1}\sum_{l=0}^{k-1}\gamma^l\delta_{t+l}.$$
+    <p>交换求和顺序：对固定的 l，k 从 l+1 到 ∞，\((1-\lambda)\sum_{k\ge l+1}\lambda^{k-1}=\lambda^l\)。所以</p>
+    $$\boxed{\hat A_t^{\text{GAE}}=\sum_{l\ge0}(\gamma\lambda)^l\delta_{t+l}}\qquad\Longleftrightarrow\qquad\hat A_t=\delta_t+\gamma\lambda\,\hat A_{t+1}.$$
+    <p><b>两端检查</b>：λ=0 → \(\hat A_t=\delta_t\)；λ=1 → \(\sum_l\gamma^l\delta_{t+l}=\sum_l\gamma^lr_{t+l}-V(s_t)\)（伸缩后 V 项全消掉，只剩 \(-V(s_t)\)）= MC 回报减 baseline。</p>
+    <p><b>Value target</b>：\(\hat R_t=\hat A_t+V(s_t)\)（即 TD(λ) 回报）。</p>
+    <p><b>手算例子</b>（§11 练习 11.6）：γ=1, λ=0.9，奖励 (0,0,1)，V=(0.5,0.6,0.7)，终止后 V=0。δ=(0.1, 0.1, 0.3)；\(\hat A_2=0.3\)，\(\hat A_1=0.1+0.9\times0.3=0.37\)，\(\hat A_0=0.1+0.9\times0.37=0.433\)。</p>
+    <div class="box why"><span class="lbl">直觉</span>λ 控制"相信 critic 多少"。λ 小：几乎只看一步，大量依赖 V 的估计，V 不准就有偏；λ 大：看很远的真实奖励，方差大。LLM RLHF 中常用 γ=1、λ=0.95 或 1.0（如 TRL 默认 λ=0.95）。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 递推方向写反（必须从后往前）；(2) 序列结束后忘了把 \(V(s_{T})\) 设为 0（终止状态）或对截断序列错误地设 0（截断应 bootstrap）；(3) padding token 参与了 GAE 计算；(4) 优势和 value target 搞混。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>GAE defines the advantage as an exponentially weighted sum of future TD errors, with weight gamma-lambda to the power l. You get it by noticing that the k-step advantage estimator telescopes into a sum of TD errors, and then averaging all k-step estimators with weights proportional to lambda to the k. With lambda equals zero you get the one-step TD error — low variance but biased by the critic; with lambda equals one you get the Monte Carlo return minus the value baseline — unbiased but high variance. In code it's a single backward recursion: A_t equals delta_t plus gamma lambda A_{t+1}.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How do you handle truncated (not terminated) sequences in GAE?</b><details><summary>思路</summary><div class="inner">终止（EOS）时下一状态价值为 0；被长度上限截断时，真实回报应包含未来，应该用 \(V(s_T)\) bootstrap。LLM 里被截断的回答通常拿不到正确性奖励，很多实现直接给惩罚或像 DAPO 那样对截断样本做 overlong filtering / soft punishment。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-is">
+  <div class="concept-head"><span class="pri p1">★</span><h3>重要性采样与 off-policy 策略梯度</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用旧策略 \(\mu\) 的样本估计新策略 π 下的期望：\(\mathbb E_\pi[f]=\mathbb E_\mu[\frac{\pi}{\mu}f]\)。PPO 的比率 \(r_t(\theta)=\pi_\theta/\pi_{\text{old}}\) 就是这个；比率偏离 1 越远方差越大，所以要 clip / 信赖域。</p><p class="en">Importance weights let you reuse stale samples; variance explodes when policies diverge.</p></div>
+  <div class="deep">
+    $$\mathbb E_{x\sim\pi}[f(x)]=\sum_x\pi(x)f(x)=\sum_x\mu(x)\frac{\pi(x)}{\mu(x)}f(x)=\mathbb E_{x\sim\mu}\Big[\frac{\pi(x)}{\mu(x)}f(x)\Big]$$
+    <p>要求 \(\mu(x)\gt0\) 凡 \(\pi(x)f(x)\ne0\) 处（支撑覆盖）。<b>方差</b>：\(\mathbb E_\mu[(\pi/\mu)^2f^2]-(\mathbb E_\pi f)^2\)，当 π 在 μ 很小的地方有质量时比率巨大，方差爆炸。</p>
+    <p><b>序列级比率</b>：\(\frac{\pi(y|x)}{\mu(y|x)}=\prod_t\frac{\pi(y_t|\cdot)}{\mu(y_t|\cdot)}\)，长序列中乘积指数级发散。所以 PPO / GRPO 在实践中用 <b>per-token 比率</b>（一种近似：忽略了前缀分布的变化，只修正当前 token 的动作概率），这是"状态分布不变"的一阶近似（TRPO 论文中的 surrogate 就是这样构造的）。2025 年 Qwen 团队的 <a href="https://arxiv.org/abs/2507.18071" target="_blank" rel="noreferrer">GSPO</a> 则主张用（长度归一化的）序列级比率来匹配序列级奖励，以提升稳定性，尤其是 MoE 模型。</p>
+    <p><b>Off-policy PG（surrogate）</b>：</p>
+    $$\nabla_\theta J(\theta)\approx\mathbb E_{s,a\sim\pi_{\text{old}}}\Big[\frac{\pi_\theta(a|s)}{\pi_{\text{old}}(a|s)}\nabla_\theta\log\pi_\theta(a|s)\hat A\Big]=\nabla_\theta\,\mathbb E_{\pi_{\text{old}}}\Big[\frac{\pi_\theta(a|s)}{\pi_{\text{old}}(a|s)}\hat A\Big].$$
+    <p>在 \(\theta=\theta_{\text{old}}\) 处，surrogate \(L(\theta)=\mathbb E[\frac{\pi_\theta}{\pi_{\text{old}}}\hat A]\) 的梯度恰好等于 on-policy 策略梯度（因为 \(\nabla(\pi_\theta/\pi_{\text{old}})=(\pi_\theta/\pi_{\text{old}})\nabla\log\pi_\theta\)，在旧参数处比率为 1）。</p>
+    <p><b>LLM 里的另一个 IS 来源</b>：推理引擎（vLLM/SGLang）算出的 logprob 与训练框架（FSDP/Megatron）算的不完全一致（数值精度、kernel 不同），即使"同一个"策略也会有 train–inference mismatch；一些框架会用截断的重要性权重（truncated IS）修正这种差异。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Importance sampling rewrites an expectation under the new policy as an expectation under the old policy weighted by the probability ratio. That's what lets PPO take several gradient steps on the same batch. At the old parameters, the gradient of the ratio-weighted surrogate equals the true policy gradient, but as the policies diverge the weights get large and the variance blows up — especially for sequence-level ratios, which are products over thousands of tokens. That's why PPO uses per-token ratios and clips them, and why trust regions matter.</p></div>
+</section>
+
+<section class="concept" id="c-entropy">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>熵正则（entropy bonus）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在目标里加 \(c\cdot\mathcal H(\pi(\cdot|s))\) 鼓励策略保持随机、继续探索，防止过早收敛到确定性策略。</p><p class="en">An entropy bonus discourages premature collapse to a deterministic policy.</p></div>
+  <div class="deep">
+    <p>\(\mathcal H(\pi(\cdot|s))=-\sum_a\pi(a|s)\log\pi(a|s)\)。经典 PPO 的总 loss：\(L=-L^{\text{CLIP}}+c_1L^{V}-c_2\mathcal H\)。</p>
+    <p><b>LLM 里的特殊性</b>：词表 ~10⁵，对整个分布加熵奖励容易让模型往大量垃圾 token 上分配概率，生成乱码。所以 RLHF 中 entropy bonus 常设为 0，依赖 KL-to-reference 保持多样性。但在 RLVR 中观察到 <b>entropy collapse</b>（熵快速下降、探索停止、性能饱和），于是出现了新的控制手段：DAPO 的 clip-higher、对高协方差 token 的特殊处理（<a href="https://arxiv.org/abs/2505.22617" target="_blank" rel="noreferrer">Cui et al. 2025, The Entropy Mechanism of RL for Reasoning LMs</a>）、只对高熵"分叉"token 做更新等。见 §7 <a href="#c-entropy-collapse">entropy collapse</a>。</p>
+    <p><b>KL 正则 vs 熵正则</b>：\(\mathrm{KL}(\pi\|\pi_{\text{ref}})=-\mathcal H(\pi)-\mathbb E_\pi[\log\pi_{\text{ref}}]\)。当 \(\pi_{\text{ref}}\) 是均匀分布时，KL 惩罚就是熵奖励（差一个常数）。所以熵正则是"向均匀分布靠拢"，KL 正则是"向参考模型靠拢"。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The entropy bonus adds the policy's entropy to the objective to keep it stochastic and exploring. In classical PPO it's a standard term, but in LLM RLHF it's often set to zero, because with a huge vocabulary it can push mass onto garbage tokens; the KL penalty to the reference model plays the regularization role instead. Note that a KL penalty toward a uniform distribution is exactly an entropy bonus up to a constant. In reasoning RL, entropy collapse became a real problem, which led to techniques like clip-higher.</p></div>
+</section>
+
+<!-- ===================================================== §3 -->
+<h2 class="sec" id="s-ppo"><span class="num">§3 · TRPO / PPO</span>TRPO 与 PPO</h2>
+<p class="sec-intro">PPO 是 InstructGPT 时代 RLHF 的标准算法，也是理解 GRPO 的前提。面试常考：clip 的四种情况、为什么要 clip、RLHF 里四个模型分别是什么、KL 放在 reward 里还是 loss 里。</p>
+
+<section class="concept" id="c-trpo">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>信赖域与 TRPO</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在"旧策略附近"优化 surrogate \(\mathbb E[\frac{\pi_\theta}{\pi_{\text{old}}}\hat A]\)，约束 \(\mathbb E_s[\mathrm{KL}(\pi_{\text{old}}\|\pi_\theta)]\le\delta\)，保证单调改进（理论版）且不会一步走崩。</p><p class="en">Maximize the importance-weighted surrogate subject to a KL trust-region constraint.</p></div>
+  <div class="deep">
+    <p>来源：<a href="https://arxiv.org/abs/1502.05477" target="_blank" rel="noreferrer">Schulman et al. 2015, Trust Region Policy Optimization</a>。</p>
+    <p><b>为什么需要信赖域</b>：surrogate 只在旧策略附近是真实目标的好近似（用的是旧策略的状态分布）。步子太大 → 近似失效 → 性能崩溃，而且 RL 的数据由策略产生，坏策略产生坏数据，难以恢复（不像监督学习，一个坏 step 后数据不变）。</p>
+    <p><b>理论</b>：性能差引理（Kakade &amp; Langford）\(J(\pi')-J(\pi)=\frac{1}{1-\gamma}\mathbb E_{s\sim d^{\pi'},a\sim\pi'}[A^\pi(s,a)]\)。把 \(d^{\pi'}\) 换成 \(d^{\pi}\) 得到 surrogate，误差项被 \(\max_s\mathrm{KL}\) 控制，从而得到单调改进下界。</p>
+    <p><b>实现</b>：对 surrogate 一阶展开、KL 二阶展开（Fisher 矩阵 F）→ 自然梯度方向 \(F^{-1}g\)，用共轭梯度求解 + line search。实现复杂、与参数共享/dropout 不兼容 → 催生 PPO。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>TRPO maximizes the importance-weighted surrogate objective subject to a constraint on the average KL between the old and new policies. The surrogate is only accurate near the old policy because it uses the old state distribution, so the trust region prevents destructive updates — which matter more in RL than in supervised learning, since a bad policy collects bad data. In practice TRPO uses a natural-gradient step via conjugate gradient and a line search, which is complex, and PPO replaced it with a simple clipped objective.</p></div>
+</section>
+
+<section class="concept" id="c-ppo-clip">
+  <div class="concept-head"><span class="pri p1">★</span><h3>PPO-Clip：目标、四种情况、完整 loss</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(L^{\text{CLIP}}=\mathbb E_t\big[\min(r_t\hat A_t,\ \mathrm{clip}(r_t,1-\epsilon,1+\epsilon)\hat A_t)\big]\)，取 min 得到一个<b>悲观下界</b>：一旦比率朝"有利方向"走出 \([1-\epsilon,1+\epsilon]\)，梯度就为 0。</p><p class="en">PPO clips the probability ratio so that the objective stops rewarding moves beyond the trust region.</p></div>
+  <div class="deep">
+    <p>来源：<a href="https://arxiv.org/abs/1707.06347" target="_blank" rel="noreferrer">Schulman et al. 2017, Proximal Policy Optimization Algorithms</a>。\(r_t(\theta)=\frac{\pi_\theta(a_t|s_t)}{\pi_{\theta_{\text{old}}}(a_t|s_t)}\)，ε 常取 0.2。</p>
+    <p><b>四种情况（必背表）</b>，以 ε=0.2 为例：</p>
+    <div class="table-wrap"><table>
+      <tr><th>情况</th><th>min 取到哪项</th><th>目标值</th><th>对 θ 的梯度</th><th>含义</th></tr>
+      <tr><td>A&gt;0, r&gt;1+ε（如 r=1.5, A=1）</td><td>clip 项 (1.2·A)</td><td>1.2</td><td><b>0</b></td><td>好动作已经被推得够高了，不再推</td></tr>
+      <tr><td>A&gt;0, r&lt;1+ε（如 r=0.5）</td><td>未截断项 r·A</td><td>0.5</td><td>正常（推高）</td><td>好动作概率还变小了，必须纠正，<b>不截断</b></td></tr>
+      <tr><td>A&lt;0, r&lt;1−ε（如 r=0.5, A=−1）</td><td>clip 项 (0.8·A)</td><td>−0.8</td><td><b>0</b></td><td>坏动作已经被压得够低了，不再压</td></tr>
+      <tr><td>A&lt;0, r&gt;1−ε（如 r=1.5）</td><td>未截断项 r·A</td><td>−1.5</td><td>正常（压低）</td><td>坏动作概率反而变大，必须纠正，<b>不截断</b></td></tr>
+    </table></div>
+    <p>（§9 的 numpy 代码逐项验证了这张表的数值和梯度。）口诀：<b>"只截断让你更开心的方向，不截断让你更难受的方向"</b>——这就是"悲观（pessimistic）下界"的含义。</p>
+    <p><b>完整 PPO loss</b>（最小化）：</p>
+    $$L(\theta,\phi)=-L^{\text{CLIP}}(\theta)+c_1\,\mathbb E_t\big[(V_\phi(s_t)-\hat R_t)^2\big]-c_2\,\mathbb E_t\,\mathcal H[\pi_\theta(\cdot|s_t)]$$
+    <p><b>训练流程</b>：(1) 用 \(\pi_{\text{old}}\) 采一批 rollout；(2) 计算奖励、GAE 优势、回报；(3) 在这批数据上跑 K 个 epoch、每个 epoch 分若干 minibatch 优化上面的 loss；(4) \(\pi_{\text{old}}\leftarrow\pi_\theta\)，回到 (1)。</p>
+    <p><b>监控指标</b>：clip fraction（被截断的 token 比例，通常希望在 0.1–0.3 以下）、approx KL（\(\pi_{\text{old}}\) 与 \(\pi_\theta\) 之间，可做 early stopping）、value loss、explained variance、entropy。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 认为 clip 能严格保证 KL 小——不能，clip 只是去掉了继续推的激励，多 epoch 下比率仍可能远超范围（有工作专门指出这一点）；(2) 把 min 写成 max；(3) 以为所有 \(r\gt1+\epsilon\) 都没有梯度——只有 A&gt;0 时才是；(4) <code>old_logp</code> 没 detach。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>PPO maximizes the minimum of the ratio times the advantage and the clipped ratio times the advantage. Taking the min makes it a pessimistic bound: if the advantage is positive and the ratio already exceeds one plus epsilon, the gradient is zero, so we stop pushing that action up; symmetrically for negative advantages below one minus epsilon. But if the ratio has moved in the wrong direction — a good action became less likely — the unclipped term is active and we still correct it. The full loss adds a value-function regression term and usually an entropy bonus, and we run several epochs of minibatch updates on each batch of rollouts.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why not just use a KL penalty instead of clipping?</b><details><summary>思路</summary><div class="inner">PPO 论文里也提出了 adaptive KL penalty 版本（PPO-penalty），效果不如 clip。KL 惩罚系数难调：太小没约束、太大学不动，而且合适的值随训练阶段变化。Clip 是一个简单、对超参不敏感的启发式。注意 RLHF 里另有一个"对 reference 模型的 KL"，那是另一回事（防止 reward hacking），不是 PPO 的信赖域。</div></details></li>
+    <li><b>What's dual-clip PPO?</b><details><summary>思路</summary><div class="inner">当 A&lt;0 且比率非常大时，未截断项 \(r\cdot A\) 会非常负、梯度很大，可能不稳定。Dual-clip 额外用 \(\max(\cdot,\,c\cdot A)\)（c&gt;1，如 3）给这种情况设下界。一些 LLM RL 框架（如 verl）提供该选项。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-ppo-rlhf">
+  <div class="concept-head"><span class="pri p1">★</span><h3>PPO 用于 RLHF：四个模型、KL 放哪、显存</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>四个模型：policy（训练）、reference（冻结，算 KL）、reward model（冻结，打分）、value/critic（训练）。InstructGPT 式做法把 \(-\beta\log\frac{\pi}{\pi_{\text{ref}}}\) 作为<b>每个 token 的奖励</b>；GRPO 式做法把 KL 作为 <b>loss 里单独一项</b>。</p><p class="en">Policy, reference, reward model, critic; KL either shaped into the per-token reward or added to the loss.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>模型</th><th>是否训练</th><th>作用</th><th>典型初始化</th></tr>
+      <tr><td>Policy / actor \(\pi_\theta\)</td><td>训练</td><td>生成回答、被优化</td><td>SFT 模型</td></tr>
+      <tr><td>Reference \(\pi_{\text{ref}}\)</td><td>冻结</td><td>算每 token 的 log-prob，用于 KL 惩罚</td><td>SFT 模型</td></tr>
+      <tr><td>Reward model \(r_\psi\)</td><td>冻结</td><td>对完整回答打一个标量分</td><td>SFT 模型 + 标量头，在偏好数据上训</td></tr>
+      <tr><td>Value / critic \(V_\phi\)</td><td>训练</td><td>每个 token 位置预测期望回报，用于 GAE</td><td>常用 RM 初始化</td></tr>
+    </table></div>
+    <p><b>KL-shaped reward（InstructGPT / Stiennon et al.）</b>：</p>
+    $$r_t=-\beta\big(\log\pi_{\text{old}}(y_t|s_t)-\log\pi_{\text{ref}}(y_t|s_t)\big)+\mathbb 1[t=T]\cdot r_\psi(x,y).$$
+    <p>每个 token 的 log 比率是 KL 的 k1 单样本估计；它进入 reward → GAE → 优势，因此 KL 的影响会沿时间反向传播（影响前面 token 的优势）。整条回答的总奖励 \(=r_\psi-\beta\sum_t\log\frac{\pi}{\pi_{\text{ref}}}\)，其期望正是 KL 正则目标 \(\mathbb E[r]-\beta\,\mathrm{KL}\)。</p>
+    <p><b>KL in loss（GRPO）</b>：奖励只有 \(r_\psi\)（或可验证奖励），loss 里加 \(+\beta\,\hat{\mathrm{KL}}\)（用 k3 估计器，逐 token 直接求导）。区别：KL 不经过优势，只是一个直接的正则梯度；不同 token 的 KL 不会互相影响。注意：<b>直接对 k3 估计值求导，得到的并不是 reverse KL 的梯度</b>（§9 数值验证：on-policy 下其期望梯度等于 forward KL \(\mathrm{KL}(\pi_{\text{ref}}\|\pi)\) 的梯度；对 k1 直接求导期望梯度为 0），这是 2025 年被讨论较多的一个细节。</p>
+    <p><b>显存/计算</b>：4 个模型中两个要训练（需要优化器状态：mixed-precision Adam 约 16 字节/参数），两个只推理。7B 规模：policy+critic 训练态约 2×112 GB（未分片），再加 ref、RM 的权重和 rollout 的 KV cache。这就是为什么 (1) 需要 ZeRO/FSDP 分片、offload；(2) 去掉 critic（GRPO/RLOO）很有吸引力；(3) LoRA 训练时 ref 可以直接用"关掉 adapter 的 policy"。</p>
+    <p><b>Rollout 是主要开销</b>：自回归生成是 memory-bound，长 CoT 场景生成时间常占一次迭代的大头，所以现代框架（OpenRLHF、verl 等）把生成交给 vLLM/SGLang，并在训练和推理引擎之间同步权重。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>PPO-based RLHF involves four models: the policy being trained, a frozen reference model — usually the SFT checkpoint — for the KL penalty, a frozen reward model that scores the full response, and a trained value model for GAE, often initialized from the reward model. In the InstructGPT formulation, the KL is folded into the reward: every token gets minus beta times the log-ratio to the reference, and the reward-model score is added at the last token, so the KL flows through the advantages. GRPO instead puts a KL estimator directly into the loss. Memory-wise, you're training two LLM-sized networks with optimizer states and running inference on two more, which is the main motivation for critic-free methods.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why do we need the KL penalty to the reference model at all?</b><details><summary>思路</summary><div class="inner">(1) RM 只在 SFT 分布附近可信，离开这个分布 RM 会被 exploit（reward hacking / over-optimization）；(2) 保持语言流畅、保留预训练知识与多样性，防止 mode collapse；(3) 理论上让目标有良好定义的唯一最优解 \(\pi^*\propto\pi_{\text{ref}}e^{r/\beta}\)（§5），这也是 DPO 的出发点。在 RLVR 中奖励不可 hack（规则验证），很多工作发现去掉 KL 反而更好（DAPO 去掉了 KL）。</div></details></li>
+    <li><b>Why initialize the critic from the reward model?</b><details><summary>思路</summary><div class="inner">两者都是"读一段文本、输出期望分数"的任务，RM 已经学会了评估回答好坏的特征，比从 SFT 初始化收敛更快、早期 value 估计更准（早期 critic 不准会导致优势噪声大）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-ppo-details">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>PPO-RLHF 的实现细节</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>PPO 对实现细节非常敏感：优势归一化、奖励白化/缩放、value clipping、EOS 处理、对截断回答的惩罚、dropout 关闭、学习率很小、minibatch 与 epoch 数……</p><p class="en">PPO-RLHF is notoriously sensitive to implementation details.</p></div>
+  <div class="deep">
+    <p>参考：<a href="https://arxiv.org/abs/2403.17031" target="_blank" rel="noreferrer">Huang et al. 2024, The N+ Implementation Details of RLHF with PPO: A Case Study on TL;DR Summarization</a>（复现 OpenAI 早期 RLHF 工作的详细清单）。常被提到的细节：</p>
+    <ul>
+      <li><b>优势归一化</b>：在 batch（或 minibatch）内对优势减均值除标准差。</li>
+      <li><b>奖励归一化 / 白化</b>：RM 输出的尺度是任意的，常对 RM 做偏置调整使 SFT 样本的平均奖励为 0，或在线统计归一化。</li>
+      <li><b>Value clipping</b>：\(L^V=\frac12\max\big((V-\hat R)^2,(V_{\text{old}}+\mathrm{clip}(V-V_{\text{old}},-\epsilon_v,\epsilon_v)-\hat R)^2\big)\)，限制 value 每次更新的幅度（效果有争议）。</li>
+      <li><b>EOS 处理</b>：没有生成 EOS 的回答（被截断）给固定负奖励；RM 分数读取 EOS 位置的输出。</li>
+      <li><b>关闭 dropout</b>：否则 \(\pi_{\text{old}}\) 与 \(\pi_\theta\) 的 logprob 在同一参数下也不同，比率不等于 1。</li>
+      <li><b>采样设置</b>：rollout 温度与训练时计算 logprob 的温度要一致（logits 都除以同一个 T）。</li>
+      <li><b>Padding 与 mask</b>：左 padding 生成、所有 loss 只在回答 token 上平均。</li>
+      <li><b>超参量级</b>：lr ~1e-6 量级、KL β ~0.01–0.1、ε=0.2、γ=1、λ=0.95、每批 1–4 个 PPO epoch。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>PPO for RLHF is sensitive to many small details: advantage normalization, reward normalization so the reward-model scale is sane, value clipping, penalizing responses that don't produce an EOS token, disabling dropout so the ratio is exactly one at the start, matching the sampling temperature when recomputing log-probs, and masking everything except response tokens. The "N+ implementation details" paper from Hugging Face documents these carefully. Many of the "PPO doesn't work" stories come down to these details.</p></div>
+</section>
+
+<!-- ===================================================== §4 -->
+<h2 class="sec" id="s-sft"><span class="num">§4 · SUPERVISED FINE-TUNING</span>SFT 与拒绝采样微调</h2>
+<p class="sec-intro">SFT 看似简单，但面试官喜欢问：loss 只算在哪些 token 上？SFT 和 RL 的本质区别？为什么 SFT 之后还要 RL？这些问题的答案都能从"SFT = forward KL / 行为克隆"推出来。</p>
+
+<section class="concept" id="c-sft">
+  <div class="concept-head"><span class="pri p1">★</span><h3>指令微调：chat template、assistant-only loss、packing</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>SFT 在 (prompt, response) 对上做 next-token NLL，但 <b>只对 assistant 回答的 token 计算 loss</b>（prompt / system / user token 的 label 设为 −100）；数据用固定的 chat template 序列化。</p><p class="en">SFT is next-token NLL on demonstrations, masked to assistant tokens, under a fixed chat template.</p></div>
+  <div class="deep">
+    $$\mathcal L_{\text{SFT}}(\theta)=-\mathbb E_{(x,y)\sim\mathcal D}\sum_{t=1}^{|y|}\log\pi_\theta(y_t\mid x,y_{\lt t})$$
+    <ul>
+      <li><b>Chat template</b>：把多轮对话变成一个 token 序列，用特殊 token 标记角色和边界（如 <code>&lt;|im_start|&gt;user ... &lt;|im_end|&gt;</code>）。训练和推理必须用<b>同一个</b> template，否则性能大幅下降；EOS / 回合结束 token 必须在 label 中（否则模型学不会停）。</li>
+      <li><b>Assistant-only loss</b>：只在回答 token 上算 loss。原因：我们想学 \(\pi(y|x)\) 而不是建模用户会说什么；prompt 的 loss 会浪费容量，并可能让模型学会"模仿用户"。多轮对话中每一轮 assistant 回复都计算 loss。</li>
+      <li><b>Packing</b>：把多条短样本拼到一个 max_len 序列里，减少 padding 浪费。需要注意：(1) 用 attention mask / 位置 id 重置防止跨样本注意力（varlen FlashAttention）；(2) loss 的归一化——按 token 平均时长样本权重大，按样本平均时短样本权重大。</li>
+      <li><b>超参量级</b>：lr 比预训练小（~1e-5 到 2e-5 对 7B 全参，LoRA 大一个量级）、2–3 epoch、warmup + cosine。</li>
+    </ul>
+    <p><b>LIMA</b>（<a href="https://arxiv.org/abs/2305.11206" target="_blank" rel="noreferrer">Zhou et al. 2023</a>）：只用约 1000 条精心挑选的高质量样本 SFT 一个 65B 的 LLaMA，就得到了很强的对话能力。提出 <b>Superficial Alignment Hypothesis</b>：模型的知识和能力几乎全部在预训练中获得，对齐主要是学习"用什么格式/风格与用户交互"。启示：<b>SFT 数据质量与多样性 &gt;&gt; 数量</b>。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 忘了把 EOS 放进 label → 模型不会停；(2) 训练和推理 template 不一致（多一个空格或换行都会影响）；(3) packing 时没处理跨样本注意力；(4) 过多 epoch 导致过拟合、多样性下降（SFT 模型的输出熵会显著降低）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Supervised fine-tuning is just next-token prediction on curated demonstrations, but with two important details: the conversation is serialized with a fixed chat template that the model will also see at inference time, and the loss is masked so only assistant tokens — including the end-of-turn token — contribute. Packing multiple examples into one sequence improves efficiency but requires resetting attention across example boundaries. LIMA showed that around a thousand high-quality examples can go a long way, supporting the idea that SFT mostly teaches format and style on top of pretrained capabilities.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Should you average the loss per token or per sequence?</b><details><summary>思路</summary><div class="inner">Per-token（batch 内所有有效 token 平均）：长回答权重大，偏向学长回答。Per-sequence（每条先平均再在样本间平均）：每条样本权重相同，但长回答中每个 token 的权重变小。没有绝对正确的答案，是隐式的数据加权选择；梯度累积时要注意保持与非累积时一致的归一化（常见 bug：每个 micro-batch 各自按 token 平均再相加，导致加权不一致）。这和 RL 中 GRPO vs DAPO 的 token-level loss 讨论是同一个问题。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-sft-bc">
+  <div class="concept-head"><span class="pri p1">★</span><h3>SFT = 行为克隆 = forward KL；暴露偏差；SFT 与 RL 的区别</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>SFT 最小化 \(\mathrm{KL}(\pi_{\text{data}}\|\pi_\theta)\)（mode-covering），是 off-policy 的模仿；RL 优化 \(\mathbb E_{\pi_\theta}[r]\)，在自己的分布上学习（on-policy），能利用负反馈、纠正自己的错误。</p><p class="en">SFT is behavior cloning (forward KL, off-policy); RL learns on its own distribution with negative feedback.</p></div>
+  <div class="deep">
+    <p><b>SFT 是 forward KL</b>：\(\mathrm{KL}(\pi_{\text{data}}\|\pi_\theta)=\mathbb E_{y\sim\pi_{\text{data}}}[\log\pi_{\text{data}}(y)]-\mathbb E_{y\sim\pi_{\text{data}}}[\log\pi_\theta(y)]\)，第一项与 θ 无关，所以最小化 forward KL ⟺ 最大化数据似然 ⟺ SFT。forward KL 是 <b>mode-covering</b>：数据中有的东西模型都必须给概率，否则 \(\log\pi_\theta\to-\infty\) 被重罚。</p>
+    <p><b>RLHF 的 KL 惩罚是 reverse KL</b>：\(\mathrm{KL}(\pi_\theta\|\pi_{\text{ref}})\)，<b>mode-seeking</b>：可以只集中在 ref 的某些模式上。这解释了 RL 后模型多样性下降。</p>
+    <p><b>暴露偏差（exposure bias）</b>：SFT 训练时永远以<b>真实前缀</b>为条件（teacher forcing），推理时以<b>自己生成的前缀</b>为条件。一旦生成偏离了训练分布，模型没学过如何恢复，错误会累积（模仿学习理论中 behavior cloning 的误差随时域长度二次增长，DAgger 等交互式方法可降为线性）。RL 天然在自己的分布上训练，学会从自己的状态出发获取奖励。</p>
+    <div class="table-wrap"><table>
+      <tr><th></th><th>SFT</th><th>RL（RLHF / RLVR）</th></tr>
+      <tr><td>数据来源</td><td>固定的示范（人或更强模型）</td><td>策略自己采样（on-policy）</td></tr>
+      <tr><td>信号</td><td>每个 token 的"正确答案"</td><td>整条回答的标量奖励</td></tr>
+      <tr><td>负反馈</td><td>无（只学"该做什么"）</td><td>有（负优势样本被压低）</td></tr>
+      <tr><td>目标</td><td>forward KL / 模仿</td><td>期望奖励 − β·reverse KL</td></tr>
+      <tr><td>上限</td><td>受示范质量限制</td><td>受奖励质量与探索能力限制，可超过示范</td></tr>
+      <tr><td>多样性</td><td>保持覆盖</td><td>倾向下降（mode-seeking）</td></tr>
+      <tr><td>泛化（经验观察）</td><td>容易记住格式与表面模式</td><td>有研究发现在分布外泛化更好（<a href="https://arxiv.org/abs/2501.17161" target="_blank" rel="noreferrer">Chu et al. 2025, SFT Memorizes, RL Generalizes</a>，在特定任务设定下）</td></tr>
+    </table></div>
+    <p><b>为什么还需要 RL</b>：(1) 很多目标容易<b>判断</b>但难以<b>示范</b>（generator–verifier gap）：人很难写出完美回答，但能比较两个回答；(2) 负样本信号：告诉模型"不要这样做"；(3) 在自己的分布上纠错；(4) 可以超越示范者。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>SFT is behavior cloning: minimizing forward KL from the data distribution to the model, which is the same as maximizing likelihood, so it's mode-covering. It's off-policy — the model always conditions on ground-truth prefixes during training, but on its own outputs at inference, which causes exposure bias and compounding errors. RL instead trains on the model's own samples with a scalar reward, so it gets negative feedback and learns to recover from its own mistakes, and it can exceed the demonstrator when judging quality is easier than producing it. The flip side is that the reverse-KL-regularized RL objective is mode-seeking and tends to reduce diversity.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Can you get the benefits of RL with only supervised learning?</b><details><summary>思路</summary><div class="inner">部分可以：rejection sampling fine-tuning / expert iteration（下一个概念）就是"用自己的样本 + 过滤 + SFT"，相当于只用正样本的 on-policy RL；best-of-n distillation 类似。缺少的是：负样本的梯度、细粒度的优势加权、以及 KL 正则的理论保证。on-policy distillation 也是一种在学生分布上的监督信号（§8）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-rft">
+  <div class="concept-head"><span class="pri p1">★</span><h3>拒绝采样微调：RFT / STaR / Expert Iteration</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>采样多个回答 → 用奖励/验证器过滤出好的 → 在好样本上 SFT → 重复。它等价于用 0/1 奖励（只有正样本）的 on-policy 策略梯度的一种近似。</p><p class="en">Sample, filter by a verifier, fine-tune on the survivors, repeat — a positive-only form of on-policy RL.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>STaR</b>（<a href="https://arxiv.org/abs/2203.14465" target="_blank" rel="noreferrer">Zelikman et al. 2022, Self-Taught Reasoner</a>）：让模型生成推理链，保留得到正确答案的那些做微调；对做错的题，给出正确答案作为提示让模型"合理化"（rationalization）生成推理再加入训练。迭代进行。</li>
+      <li><b>Expert iteration</b>：源自 AlphaZero 式的思想——搜索/采样（expert）产生更好的策略，再蒸馏回网络（apprentice）。</li>
+      <li><b>RFT / Rejection sampling fine-tuning</b>：LLaMA-2-Chat、DeepSeek-R1 的第三阶段都用了"从当前最好模型采样 → RM 或规则挑选 → SFT"。</li>
+    </ul>
+    <p><b>与策略梯度的联系</b>：在二值奖励 \(r\in\{0,1\}\) 下，REINFORCE 梯度 \(\mathbb E_{y\sim\pi}[r(y)\nabla\log\pi(y)]\) = \(P(r=1)\cdot\mathbb E_{y\sim\pi(\cdot|r=1)}[\nabla\log\pi(y)]\)，即"对通过过滤的样本做 SFT"再乘以通过率。区别：(1) RFT 通常离线批量做、每轮之间数据是 off-policy 的；(2) 没有 baseline——不减均值，所以没有负样本梯度；(3) 每道题的权重被归一化方式改变（每题保留 k 个 vs 按通过率加权）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Rejection-sampling fine-tuning, STaR and expert iteration all follow the same loop: sample several solutions from the current model, keep the ones a verifier or reward model accepts, fine-tune on them, and repeat. With binary rewards this is basically REINFORCE without a baseline — the policy gradient equals the pass rate times the SFT gradient on the accepted samples — so it's on-policy RL restricted to positive examples. It's simple and stable, but it throws away the information in failed samples and can't push probability away from bad behavior.</p></div>
+</section>
+
+<!-- ===================================================== §5 -->
+<h2 class="sec" id="s-rlhf"><span class="num">§5 · REWARD MODELS &amp; RLHF</span>奖励模型与 RLHF</h2>
+<p class="sec-intro">这一节的两个必推结果：Bradley–Terry 损失，和 KL 正则目标的闭式最优解 \(\pi^*\propto\pi_{\text{ref}}\exp(r/\beta)\)。后者是 DPO 的全部基础。</p>
+
+<section class="concept" id="c-instructgpt">
+  <div class="concept-head"><span class="pri p1">★</span><h3>InstructGPT 三阶段流程与偏好数据</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>SFT → 训练奖励模型（人类对多个回答排序）→ 用 PPO 优化"RM 分数 − β·KL"。偏好数据是"比较"而不是"打分"，因为人类做相对判断更一致。</p><p class="en">SFT, then a reward model from human comparisons, then PPO against the RM with a KL penalty.</p></div>
+  <div class="deep">
+    <p>来源：<a href="https://arxiv.org/abs/2203.02155" target="_blank" rel="noreferrer">Ouyang et al. 2022, Training language models to follow instructions with human feedback</a>（基于 Christiano et al. 2017 与 Stiennon et al. 2020 的方法）。</p>
+    <ol>
+      <li><b>SFT</b>：标注员写示范回答，微调 GPT-3。</li>
+      <li><b>RM</b>：对每个 prompt 采样 K 个回答（K=4–9），标注员排序，得到 \(\binom K2\) 对比较；训练 RM 用 BT 损失。同一 prompt 的所有比较放在同一个 batch 里（防止过拟合）。</li>
+      <li><b>PPO</b>：最大化 \(r_\psi(x,y)-\beta\log\frac{\pi(y|x)}{\pi_{\text{SFT}}(y|x)}\)；还有一个 PPO-ptx 变体：混入预训练梯度以减少"对齐税"（在公开 NLP benchmark 上的退化）。</li>
+    </ol>
+    <p>一个常被引用的结果：1.3B 的 InstructGPT 在人类偏好评估中胜过 175B 的 GPT-3。</p>
+    <p><b>偏好数据要点</b>：(1) 比较比绝对打分更一致；(2) 标注员之间一致率并不高（InstructGPT 报告约 73% 左右的标注员间一致率），RM 准确率天花板也就在 70% 量级；(3) 数据分布要覆盖当前策略会生成的回答（否则 RM 在策略分布上不可信），所以要迭代收集（on-policy 偏好数据）；(4) 已知偏差：长回答、自信语气、格式更好看的回答更容易被选中。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The InstructGPT recipe has three stages: supervised fine-tuning on human demonstrations, training a reward model on human rankings of several sampled responses per prompt, and then optimizing the policy with PPO against the reward model, with a KL penalty to the SFT model. We collect comparisons rather than absolute scores because relative judgments are much more consistent across annotators. A famous result was that a 1.3B InstructGPT model was preferred over the 175B GPT-3.</p></div>
+</section>
+
+<section class="concept" id="c-bt">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Bradley–Terry 模型与奖励模型损失（推导）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>假设 \(P(y_w\succ y_l|x)=\sigma(r(x,y_w)-r(x,y_l))\)，最大似然得到 \(\mathcal L_{\text{RM}}=-\mathbb E\log\sigma(r_w-r_l)\)。奖励只确定到"每个 prompt 一个常数平移"。</p><p class="en">BT: preference probability is the sigmoid of the reward difference; the RM loss is its negative log-likelihood.</p></div>
+  <div class="deep">
+    <p><b>模型</b>：给每个回答一个"实力"\(e^{r(y)}\)，</p>
+    $$P(y_w\succ y_l)=\frac{e^{r(y_w)}}{e^{r(y_w)}+e^{r(y_l)}}=\frac{1}{1+e^{-(r(y_w)-r(y_l))}}=\sigma\big(r(y_w)-r(y_l)\big).$$
+    <p>（也可以从"效用 + Gumbel 噪声，选效用大的"推出：两个独立 Gumbel 之差服从 logistic 分布。）</p>
+    <p><b>MLE</b>：对偏好数据集 \(\{(x,y_w,y_l)\}\)，</p>
+    $$\mathcal L_{\text{RM}}(\psi)=-\mathbb E_{(x,y_w,y_l)}\big[\log\sigma\big(r_\psi(x,y_w)-r_\psi(x,y_l)\big)\big].$$
+    <p><b>梯度</b>：设 margin \(m=r_w-r_l\)，\(\frac{\partial\mathcal L}{\partial r_w}=-(1-\sigma(m))=-\sigma(-m)\)，\(\frac{\partial\mathcal L}{\partial r_l}=+\sigma(-m)\)。当 RM 已经很确信（m 大）时梯度趋于 0；排错时（m&lt;0）梯度接近 1。这和 logistic regression 完全一样——RM 就是一个"成对 logistic 回归"。数值例：\(r_w=1.0,r_l=0.2\)，loss = \(-\log\sigma(0.8)=0.371\)，\(\partial\mathcal L/\partial r_w=-0.31\)（§9 验证）。</p>
+    <p><b>平移不变性</b>：\(r(x,y)\to r(x,y)+c(x)\) 不改变任何偏好概率——RM 的绝对值没有意义，只有同一 prompt 下的差有意义。这正是 DPO 中配分函数 Z(x) 能消掉的原因。实践中常加一个小的正则（如 \(r^2\) 惩罚）或做归一化，使 RM 输出居中。</p>
+    <p><b>K 个回答的排序</b>：可以拆成 \(\binom K2\) 对，或用 Plackett–Luce 模型（BT 的多元推广）。</p>
+    <p><b>RM 架构</b>：通常是 SFT 模型去掉 LM head，换成一个线性层输出标量，读取最后一个 token（EOS）的隐藏状态。也有：生成式 RM / LLM-as-judge（让模型输出判断或分数）、带 CoT 的生成式验证器、pairwise RM（直接输入两个回答输出偏好）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 直接用 <code>torch.log(torch.sigmoid(x))</code>（数值不稳定，应用 <code>F.logsigmoid</code>）；(2) 读错位置的 hidden state（padding 方向弄错时读到 pad token）；(3) 把 RM 绝对分数跨 prompt 比较。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The Bradley–Terry model says the probability that response A is preferred over B is the sigmoid of the difference in their rewards. Maximizing the likelihood of human comparisons gives the reward-model loss: minus log sigmoid of r chosen minus r rejected — it's just pairwise logistic regression. The gradient on the chosen reward is minus sigmoid of the negative margin, so confident correct pairs contribute little. An important property is that rewards are only identified up to a prompt-dependent constant, since adding c of x to all responses doesn't change any preference — which is exactly why the partition function cancels in DPO.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you evaluate a reward model?</b><details><summary>思路</summary><div class="inner">(1) 留出偏好集上的 pairwise accuracy（天花板受标注一致率限制）；(2) RewardBench 一类的基准；(3) 更重要的是<b>下游</b>：用它做 best-of-N 或 RL 后策略的真实质量（人评 / 强模型评），因为高 accuracy 不代表在策略分布上鲁棒；(4) 校准性、长度相关性（分数与长度的相关系数）、对抗样本鲁棒性；(5) 在策略分布（而不是训练分布）上的准确率。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-kl-optimal">
+  <div class="concept-head"><span class="pri p1">★</span><h3>KL 正则目标与最优策略 π* ∝ π_ref·exp(r/β)（推导）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\max_\pi\mathbb E_{y\sim\pi}[r(x,y)]-\beta\,\mathrm{KL}(\pi\|\pi_{\text{ref}})\) 的闭式解是 \(\pi^*(y|x)=\frac1{Z(x)}\pi_{\text{ref}}(y|x)\exp(r(x,y)/\beta)\)，最优值为 \(\beta\log Z(x)\)。</p><p class="en">The KL-regularized optimum is the reference policy exponentially tilted by reward over beta.</p></div>
+  <div class="deep">
+    <p><b>推导（"凑 KL"法，最推荐面试时用）</b>：对固定 x，</p>
+    $$\begin{aligned}
+    \mathbb E_{\pi}[r]-\beta\,\mathrm{KL}(\pi\|\pi_{\text{ref}})
+    &=\sum_y\pi(y)\Big[r(y)-\beta\log\frac{\pi(y)}{\pi_{\text{ref}}(y)}\Big]\\
+    &=-\beta\sum_y\pi(y)\Big[\log\frac{\pi(y)}{\pi_{\text{ref}}(y)}-\frac{r(y)}{\beta}\Big]\\
+    &=-\beta\sum_y\pi(y)\log\frac{\pi(y)}{\pi_{\text{ref}}(y)e^{r(y)/\beta}}\\
+    &=-\beta\sum_y\pi(y)\log\frac{\pi(y)}{\pi_{\text{ref}}(y)e^{r(y)/\beta}/Z}+\beta\log Z\\
+    &=-\beta\,\mathrm{KL}(\pi\|\pi^*)+\beta\log Z,
+    \end{aligned}$$
+    <p>其中 \(Z=\sum_y\pi_{\text{ref}}(y)e^{r(y)/\beta}\)，\(\pi^*=\pi_{\text{ref}}e^{r/\beta}/Z\) 是合法分布。由于 KL ≥ 0 且仅在 \(\pi=\pi^*\) 时为 0，最优解就是 \(\pi^*\)，最优值 \(\beta\log Z\)。（§9 的 numpy 代码用随机分布暴力检验了这一点。）</p>
+    <p><b>另一种推导</b>：拉格朗日乘子 + 约束 \(\sum_y\pi=1\)，对 \(\pi(y)\) 求导令其为 0：\(r(y)-\beta(\log\frac{\pi(y)}{\pi_{\text{ref}}(y)}+1)-\lambda=0\Rightarrow\pi(y)\propto\pi_{\text{ref}}(y)e^{r(y)/\beta}\)。</p>
+    <p><b>解读</b>：</p>
+    <ul>
+      <li>β→0：\(\pi^*\) 集中到 argmax r（纯奖励最大化，容易 hack）；β→∞：\(\pi^*\to\pi_{\text{ref}}\)。</li>
+      <li>\(\pi^*\) 不会给 \(\pi_{\text{ref}}\) 概率为 0 的回答分配概率——RL 只能"重新加权"参考模型的支撑集（这和"RL 能否创造新能力"的争论直接相关）。</li>
+      <li><b>反解奖励</b>：\(r(x,y)=\beta\log\frac{\pi^*(y|x)}{\pi_{\text{ref}}(y|x)}+\beta\log Z(x)\)——<b>DPO 的出发点</b>。</li>
+      <li>这是 <b>RL as inference / 控制即推断</b> 视角：\(\pi^*\) 是先验 \(\pi_{\text{ref}}\) 在"似然" \(e^{r/\beta}\) 下的后验。Best-of-N 采样也可看作对 \(\pi^*\) 的一种近似。</li>
+    </ul>
+    <p>为什么不直接采样 \(\pi^*\)？因为 Z(x) 需要对所有可能回答求和，不可计算；而且我们想要一个能快速采样的参数化模型。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The KL-regularized objective — expected reward minus beta times KL to the reference — has a closed-form optimum: the reference policy reweighted by exp of reward over beta, normalized by a partition function Z of x. The cleanest proof is to rewrite the objective as minus beta times the KL between pi and this tilted distribution, plus beta log Z; since KL is non-negative and zero only when the distributions match, the tilted distribution is optimal. Two consequences: the optimal policy can only reweight the reference's support, and we can invert the relation to express the reward in terms of the optimal policy — which is the starting point of DPO.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Is PPO-RLHF with a per-token KL penalty optimizing exactly this objective?</b><details><summary>思路</summary><div class="inner">在期望意义上是的：每 token 的 \(\log\frac{\pi}{\pi_{\text{ref}}}\) 在序列上求和、对 π 取期望恰好是序列级 \(\mathrm{KL}(\pi(\cdot|x)\|\pi_{\text{ref}}(\cdot|x))\)。所以 \(\gamma=1\) 的 token 级 MDP 与序列级 KL 正则 bandit 有同一个最优解。实际优化有函数逼近、有限样本、clip 等偏差，不保证达到 \(\pi^*\)。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-overopt">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Reward over-optimization（Goodhart）与长度偏差</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RM 只是人类偏好的代理；对它优化得越狠，代理分数持续上升但真实（gold）分数先升后降。Gao et al. 发现 gold 分数关于 \(d=\sqrt{\mathrm{KL}}\) 有可预测的函数形式。最常见的 hacking 方式是变长。</p><p class="en">Optimizing a proxy reward too hard makes the true reward rise then fall; length is the most common exploit.</p></div>
+  <div class="deep">
+    <p><b>Gao, Schulman, Hilton 2022</b>（<a href="https://arxiv.org/abs/2210.10760" target="_blank" rel="noreferrer">Scaling Laws for Reward Model Overoptimization</a>）：用一个大的"gold RM"代替人类给小的代理 RM 打标签，然后观察对代理 RM 做 best-of-n 或 RL 时 gold 分数的变化。令 \(d=\sqrt{\mathrm{KL}(\pi\|\pi_{\text{init}})}\)：</p>
+    <ul>
+      <li>Best-of-n：\(R_{\text{gold}}(d)=d(\alpha_{\text{bon}}-\beta_{\text{bon}}d)\)；</li>
+      <li>RL：\(R_{\text{gold}}(d)=d(\alpha_{\text{RL}}-\beta_{\text{RL}}\log d)\)。</li>
+    </ul>
+    <p>两者都是先升后降；更大的 RM 过优化更慢。（Best-of-n 的 KL 有解析式 \(\log n-\frac{n-1}{n}\)。）</p>
+    <p><b>长度偏差</b>：人类与 RM 都倾向于偏爱更长、更详细的回答，策略很快学会"写长"来涨分。<a href="https://arxiv.org/abs/2310.03716" target="_blank" rel="noreferrer">Singhal et al. 2023, A Long Way to Go</a> 发现 RLHF 带来的奖励提升有相当大一部分可以由长度增加解释。</p>
+    <p><b>常见的 hacking 形式</b>：变长、重复、过度使用列表格式、谄媚（sycophancy，附和用户）、过度拒答或过度免责声明、利用 RM 的特定偏好（如某些词汇）；在 RLVR 中：改测试用例、硬编码输出、利用验证器的解析漏洞。</p>
+    <p><b>缓解</b>：KL 惩罚 / early stopping（按 KL 预算选 checkpoint）、RM ensemble 取保守估计（<a href="https://arxiv.org/abs/2310.02743" target="_blank" rel="noreferrer">Coste et al. 2023</a>）、长度惩罚或长度归一化的奖励、在 RM 训练数据中做长度去偏、迭代收集 on-policy 偏好数据重训 RM、用更大的 RM、对 hack 样本做专门的负样本。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The reward model is only a proxy for human preferences, so this is Goodhart's law: as you optimize harder against it, the proxy reward keeps increasing while the true reward first improves and then degrades. Gao, Schulman and Hilton measured this with a gold reward model and found predictable curves as a function of the square root of the KL from the initial policy, with larger reward models overoptimizing more slowly. The most common exploit is length — longer answers score higher — along with sycophancy and formatting tricks. Mitigations include the KL penalty, early stopping on a KL budget, reward-model ensembles, length penalties, and refreshing the reward model with on-policy data.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you detect reward hacking during training?</b><details><summary>思路</summary><div class="inner">监控：RM 分数 vs 独立评估（另一个 RM、强模型 judge、人评、held-out benchmark）的背离；回答长度、重复率、格式特征的分布漂移；KL 增长速度；定期人工抽查高分样本（最高分样本往往就是 hack 样本）。在 RLVR 中检查"答案对但推理不对"、通过测试但修改了测试文件等。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ===================================================== §6 -->
+<h2 class="sec" id="s-dpo"><span class="num">§6 · DIRECT PREFERENCE OPTIMIZATION</span>DPO 家族</h2>
+<p class="sec-intro">DPO 推导是 post-training 面试的头号白板题。四步：闭式最优解 → 反解奖励 → 代入 BT → 配分函数抵消。然后要能讲梯度的含义、隐式奖励、已知问题，以及各变体一句话的区别。</p>
+
+<section class="concept" id="c-dpo">
+  <div class="concept-head"><span class="pri p1">★</span><h3>DPO 完整推导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\mathcal L_{\text{DPO}}=-\mathbb E\Big[\log\sigma\Big(\beta\log\frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)}-\beta\log\frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\Big)\Big]\)——把 RLHF 的"训 RM + RL"变成在偏好对上的一个分类损失。</p><p class="en">DPO reparameterizes the reward through the optimal policy so RLHF becomes a binary classification loss on preference pairs.</p></div>
+  <div class="deep">
+    <p>来源：<a href="https://arxiv.org/abs/2305.18290" target="_blank" rel="noreferrer">Rafailov et al. 2023, Direct Preference Optimization: Your Language Model is Secretly a Reward Model</a>。</p>
+    <p><b>Step 1（闭式最优解，§5）</b>：KL 正则目标的最优策略</p>
+    $$\pi^*(y|x)=\frac{1}{Z(x)}\pi_{\text{ref}}(y|x)\exp\Big(\frac{r(x,y)}{\beta}\Big),\qquad Z(x)=\sum_y\pi_{\text{ref}}(y|x)e^{r(x,y)/\beta}.$$
+    <p><b>Step 2（反解奖励）</b>：两边取 log 并整理，</p>
+    $$r(x,y)=\beta\log\frac{\pi^*(y|x)}{\pi_{\text{ref}}(y|x)}+\beta\log Z(x).$$
+    <p>这说明：<b>任何奖励函数都可以用它对应的最优策略表示</b>（加一个只依赖 x 的项）。</p>
+    <p><b>Step 3（代入 Bradley–Terry）</b>：</p>
+    $$P(y_w\succ y_l|x)=\sigma\big(r(x,y_w)-r(x,y_l)\big)=\sigma\Big(\beta\log\frac{\pi^*(y_w|x)}{\pi_{\text{ref}}(y_w|x)}+\beta\log Z(x)-\beta\log\frac{\pi^*(y_l|x)}{\pi_{\text{ref}}(y_l|x)}-\beta\log Z(x)\Big).$$
+    <p><b>Step 4（配分函数抵消）</b>：两个 \(\beta\log Z(x)\) 相同（同一个 prompt），直接相减为 0。不可计算的 Z 消失了！于是偏好概率只依赖策略：</p>
+    $$P(y_w\succ y_l|x)=\sigma\Big(\beta\log\frac{\pi^*(y_w|x)}{\pi_{\text{ref}}(y_w|x)}-\beta\log\frac{\pi^*(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\Big).$$
+    <p><b>Step 5（MLE）</b>：把 \(\pi^*\) 换成参数化的 \(\pi_\theta\)，对偏好数据做最大似然，即得 DPO 损失。等价地说：我们不是在训练 RM，而是在训练一个"隐式 RM" \(\hat r_\theta(x,y)=\beta\log\frac{\pi_\theta(y|x)}{\pi_{\text{ref}}(y|x)}\)，而这个 RM 对应的最优策略恰好就是 \(\pi_\theta\) 自己。</p>
+    <p><b>关键点</b>：(1) Z(x) 能抵消是因为 BT 只依赖<b>同一 prompt 下的奖励差</b>（§5 平移不变性）；(2) \(\log\pi(y|x)=\sum_t\log\pi(y_t|x,y_{\lt t})\) 是整条回答的 token log-prob <b>之和</b>（不是平均）；(3) 不需要采样、不需要 RM、不需要 critic，只需 policy 与冻结的 ref 各前向一次。</p>
+    <p><b>实现</b>：每个样本 4 次前向（policy 和 ref 各对 chosen 与 rejected），ref 的 logprob 可以预先离线算好。β 常取 0.1 左右（0.01–0.5）。初始化时 \(\pi_\theta=\pi_{\text{ref}}\)，loss = log 2 ≈ 0.693。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 用 token 平均的 log-prob 代替求和（那是 SimPO 的做法，不是 DPO）；(2) 忘了 prompt token 要 mask 掉；(3) 认为 DPO "不是 RL"——它优化的是同一个 KL 正则目标，只是用离线偏好数据、绕过了显式 RM 和采样；(4) 认为 DPO 与 RLHF 完全等价——只在"无限数据、模型能表示最优解、偏好数据覆盖充分"的理想条件下目标的最优解一致，实际中数据分布不同（off-policy）会导致行为不同。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>DPO starts from the closed-form optimum of the KL-regularized objective: pi star is proportional to pi ref times exp of r over beta. Inverting that, the reward equals beta log of pi star over pi ref, plus beta log Z of x. If we plug this into the Bradley–Terry model, the preference probability depends only on the reward difference between two responses to the same prompt, so the intractable log partition function cancels. We then replace pi star with our parameterized policy and maximize the likelihood of the preference data, which gives a simple logistic loss on the difference of log-ratios. In effect, the policy is its own implicit reward model.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does the partition function cancel? Would it cancel with a different preference model?</b><details><summary>思路</summary><div class="inner">因为 BT 只依赖同一 prompt 的奖励差，而 \(\beta\log Z(x)\) 只依赖 prompt。任何只依赖"同 prompt 下奖励差"的偏好模型（如 Plackett–Luce 排序模型）都能抵消；如果偏好模型依赖奖励绝对值，或比较不同 prompt 的回答，就无法抵消。KTO 处理的是"单个回答好/坏"的数据，就需要另外估计一个参考点。</div></details></li>
+    <li><b>What's the role of β in DPO?</b><details><summary>思路</summary><div class="inner">与 RLHF 中一样，β 是 KL 正则强度：β 小 → 允许偏离 ref 更多；β 大 → 保持靠近 ref。在损失里，β 也控制 sigmoid 的"温度"：隐式奖励差需要多大才被认为分类正确。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-dpo-grad">
+  <div class="concept-head"><span class="pri p1">★</span><h3>DPO 的梯度解读与隐式奖励</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(\nabla\mathcal L=-\beta\,\mathbb E\big[\sigma(\hat r_l-\hat r_w)\,(\nabla\log\pi(y_w)-\nabla\log\pi(y_l))\big]\)：提高 chosen、降低 rejected 的似然，权重是"隐式 RM 排错的程度"。</p><p class="en">The gradient raises chosen and lowers rejected likelihood, weighted by how wrong the implicit reward currently is.</p></div>
+  <div class="deep">
+    <p>记 \(\hat r_\theta(x,y)=\beta\log\frac{\pi_\theta(y|x)}{\pi_{\text{ref}}(y|x)}\)，\(u=\hat r_w-\hat r_l\)。因为 \(\frac{d}{du}[-\log\sigma(u)]=-\sigma(-u)\)，</p>
+    $$\nabla_\theta\mathcal L_{\text{DPO}}=-\beta\,\mathbb E\Big[\underbrace{\sigma(\hat r_\theta(x,y_l)-\hat r_\theta(x,y_w))}_{\text{排错越严重权重越大}}\big(\underbrace{\nabla\log\pi_\theta(y_w|x)}_{\text{提高 chosen}}-\underbrace{\nabla\log\pi_\theta(y_l|x)}_{\text{降低 rejected}}\big)\Big].$$
+    <p>具体到 logprob：\(\partial\mathcal L/\partial\log\pi(y_w)=-\beta\sigma(-u)\lt0\)，\(\partial\mathcal L/\partial\log\pi(y_l)=+\beta\sigma(-u)\gt0\)。梯度下降 → chosen 的 logprob 上升、rejected 下降（§9 代码数值验证了符号和大小）。</p>
+    <p><b>与"不加权的 unlikelihood"对比</b>：如果去掉 σ 权重，模型会无限压低 rejected 直到退化；σ 权重让已经分对的样本贡献变小，这是 KL 约束在梯度中的体现。</p>
+    <p><b>隐式奖励的用途</b>：训练时监控 <code>rewards/chosen</code>、<code>rewards/rejected</code>、<code>rewards/margins</code>、<code>rewards/accuracies</code>（隐式 RM 在训练对上的准确率）。也可以把 \(\hat r_\theta\) 当 RM 用来给新回答打分（但要注意它只在同 prompt 内可比）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The DPO gradient increases the log-likelihood of the chosen response and decreases that of the rejected one, and each pair is weighted by sigmoid of the rejected implicit reward minus the chosen implicit reward — that is, by how wrong the implicit reward model currently is. So pairs that are already well separated contribute little, which is how the KL constraint shows up in the gradient. The implicit reward, beta times the log-ratio to the reference, is what people log as chosen and rejected rewards and margins during training.</p></div>
+</section>
+
+<section class="concept" id="c-dpo-issues">
+  <div class="concept-head"><span class="pri p1">★</span><h3>DPO 的已知问题：likelihood displacement、off-policy、过拟合</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>DPO 只约束 chosen 与 rejected 的<b>差</b>，常见现象是两者的似然<b>都在下降</b>（概率被挪到别的回答上）；偏好数据通常不是当前策略生成的（off-policy），对分布外的回答没有约束；确定性偏好会让隐式奖励差趋于无穷而过拟合。</p><p class="en">DPO only constrains the margin; both likelihoods often fall, data is off-policy, and it can overfit deterministic preferences.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Likelihood displacement / chosen likelihood 下降</b>：训练中经常看到 \(\log\pi(y_w)\) 和 \(\log\pi(y_l)\) 同时下降，只是后者降得更快。概率质量被转移到既不是 chosen 也不是 rejected 的其他回答上——可能是好的，也可能是坏的。<a href="https://arxiv.org/abs/2410.08847" target="_blank" rel="noreferrer">Razin et al. 2024, Unintentional Unalignment</a> 分析了这一现象：当 chosen 与 rejected 的表示非常相似时（用他们提出的 CHES 分数衡量），甚至可能使模型转向有害回答；他们建议过滤这类高相似度的样本对。</li>
+      <li><b>Off-policy 问题</b>：偏好对来自其他模型（或旧 SFT 模型），而 DPO 损失只作用在这些回答上。当前策略实际会生成的回答如果不在数据中，就没有被直接约束——RLHF 的 on-policy 采样 + RM 打分没有这个问题。解决：<b>online / iterative DPO</b>——用当前策略采样，用 RM 或 judge 标注偏好，再做 DPO，多轮迭代（例如 <a href="https://arxiv.org/abs/2402.04792" target="_blank" rel="noreferrer">Guo et al. 2024, Online AI Feedback</a>）。</li>
+      <li><b>过拟合确定性偏好</b>：如果某对的偏好总是 \(y_w\succ y_l\)（概率 1），BT-MLE 希望 \(\hat r_w-\hat r_l\to\infty\)，这要求 \(\pi(y_l)\to0\)，无论 β 多大，KL 正则实际失效。这是 IPO 的动机。</li>
+      <li><b>长度利用</b>：chosen 往往更长，DPO 也会学到变长。对策：长度归一化（SimPO）、加长度正则（如 R-DPO）、数据去偏。</li>
+      <li><b>对 β、数据质量敏感</b>；离线 DPO 在推理、数学等需要探索的任务上通常不如 online RL。</li>
+    </ul>
+    <p><b>常见修补</b>：加一个对 chosen 的 SFT/NLL 项（如 RPO、ORPO 的思路）；过滤 chosen/rejected 过于相似或噪声大的样本对；online/iterative 采样；降低 lr 和 epoch 数。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A well-known issue is that DPO only constrains the margin between chosen and rejected, so in practice both log-likelihoods often decrease — the probability mass goes somewhere else, which researchers call likelihood displacement, and in bad cases it can even move toward undesirable responses. DPO is also typically off-policy: the preference pairs come from other models, so the responses the current policy actually produces aren't directly constrained, which is why online or iterative DPO with fresh samples helps a lot. Finally, with deterministic preferences the optimal implicit reward gap is infinite, so the KL regularization effectively disappears — that's the motivation for IPO.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>You see the chosen log-probability decreasing during DPO training. Is that a bug?</b><details><summary>思路</summary><div class="inner">不一定是 bug，是 DPO 的常见现象。先检查：margin 和 reward accuracy 是否正常上升？生成质量（judge 胜率）是否在提升？如果生成质量下降或出现退化（重复、变长），可以：降低 lr / epoch、增大 β、加 chosen 的 NLL 项、过滤高相似度对、改用 online DPO。面试时要说清"这是目标函数的性质而不是实现错误"，并给出诊断路径。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-dpo-variants">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>变体：IPO、KTO、SimPO、ORPO、online DPO</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>IPO 用平方损失防过拟合；KTO 用"单个好/坏"标签；SimPO 去掉 ref、用长度归一化 + margin；ORPO 把偏好项加到 SFT 损失上、无 ref；online DPO 用当前策略采样标注。</p><p class="en">Each variant changes one thing: the loss shape, the data format, the reference model, or the data source.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>方法</th><th>核心改动</th><th>损失（简写，\(h=\log\frac{\pi(y_w)}{\pi_{\text{ref}}(y_w)}-\log\frac{\pi(y_l)}{\pi_{\text{ref}}(y_l)}\)）</th></tr>
+      <tr><td><a href="https://arxiv.org/abs/2310.12036" target="_blank" rel="noreferrer">IPO</a>（Azar et al. 2023）</td><td>不依赖 BT 假设；用平方损失把 margin 回归到一个有限目标，避免确定性偏好下的过拟合</td><td>\((h-\frac{1}{2\tau})^2\)</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2402.01306" target="_blank" rel="noreferrer">KTO</a>（Ethayarajh et al. 2024）</td><td>基于前景理论（prospect theory）；只需"这个回答好/不好"的二值标签，不需要成对数据；用一个 KL 估计作参考点</td><td>好：\(1-\sigma(\beta(\hat r-z_0))\)；坏：\(1-\sigma(\beta(z_0-\hat r))\)（各带权重）</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2405.14734" target="_blank" rel="noreferrer">SimPO</a>（Meng et al. 2024）</td><td>去掉 reference model；隐式奖励改为<b>长度归一化</b>的平均 logprob（与生成时的似然更一致）；加目标 margin γ</td><td>\(-\log\sigma\big(\frac{\beta}{|y_w|}\log\pi(y_w)-\frac{\beta}{|y_l|}\log\pi(y_l)-\gamma\big)\)</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2403.07691" target="_blank" rel="noreferrer">ORPO</a>（Hong et al. 2024）</td><td>单阶段：SFT 的 NLL + odds ratio 偏好项，不需要 ref 和单独的 SFT 阶段</td><td>\(\mathcal L_{\text{NLL}}(y_w)-\lambda\log\sigma\big(\log\frac{\text{odds}(y_w)}{\text{odds}(y_l)}\big)\)，odds\(=\frac{p}{1-p}\)</td></tr>
+      <tr><td>Online / iterative DPO</td><td>每轮用当前策略采样多个回答，用 RM / LLM judge 选出 chosen/rejected，再做 DPO；缓解 off-policy</td><td>同 DPO，数据来源不同</td></tr>
+    </table></div>
+    <p><b>面试时的总结句</b>：这些变体都在回答"DPO 的哪个假设不成立时该怎么办"——BT 假设（IPO）、成对数据（KTO）、需要 ref 的开销与长度偏差（SimPO）、需要单独 SFT 阶段（ORPO）、离线数据（online DPO）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Most DPO variants change one assumption. IPO replaces the log-sigmoid with a squared loss toward a finite margin, so it doesn't overfit deterministic preferences. KTO works with unpaired thumbs-up or thumbs-down labels, inspired by prospect theory. SimPO drops the reference model and uses the length-normalized average log-probability as the implicit reward, plus a target margin. ORPO folds an odds-ratio preference term into the SFT loss so you need a single stage and no reference. And online or iterative DPO keeps the loss but regenerates preference pairs from the current policy, which addresses the off-policy problem.</p></div>
+</section>
+
+<section class="concept" id="c-ppo-vs-dpo">
+  <div class="concept-head"><span class="pri p1">★</span><h3>PPO vs DPO：什么时候用哪个</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>DPO 简单、便宜、稳定，适合有高质量偏好数据的风格/对齐任务；online RL（PPO/GRPO）在需要探索、有可靠奖励信号（尤其是可验证奖励）的任务上通常更强。</p><p class="en">DPO is cheap and stable for offline preference data; online RL wins when exploration and a good reward signal matter.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th></th><th>PPO / online RL</th><th>DPO（离线）</th></tr>
+      <tr><td>需要的模型</td><td>policy、ref、RM、critic（GRPO 不需要 critic）</td><td>policy、ref</td></tr>
+      <tr><td>生成</td><td>需要在线采样（贵）</td><td>不需要</td></tr>
+      <tr><td>数据</td><td>on-policy</td><td>off-policy，固定</td></tr>
+      <tr><td>稳定性 / 调参</td><td>难，细节多</td><td>简单，像 SFT</td></tr>
+      <tr><td>奖励信号</td><td>可用任意奖励（RM、规则、执行结果）</td><td>只能用成对偏好</td></tr>
+      <tr><td>探索</td><td>有（会尝试新回答并获得反馈）</td><td>无</td></tr>
+      <tr><td>典型适用</td><td>推理、代码、agent、需要超越数据的任务</td><td>风格对齐、安全偏好、资源有限</td></tr>
+    </table></div>
+    <p>经验证据：<a href="https://arxiv.org/abs/2404.10719" target="_blank" rel="noreferrer">Xu et al. 2024, Is DPO Superior to PPO for LLM Alignment?</a> 发现调好的 PPO 在多个任务（尤其是代码竞赛）上超过 DPO。很多开源 pipeline（如 Tülu 3）采取组合：SFT → DPO（偏好）→ RLVR（可验证任务）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>DPO is attractive because it needs no reward model, no critic and no sampling — it trains like SFT and is very stable. But it's offline: it only sees the preference pairs in the dataset and never explores. Online RL like PPO or GRPO is more expensive and finicky, but it samples from the current policy, can use any reward — including verifiable rewards like unit tests — and can discover better responses than the data contains. So I'd use DPO for style and preference alignment with good data, and online RL for reasoning, coding and agentic tasks where we have a reliable reward signal. Many open pipelines actually do both.</p></div>
+</section>
+
+<!-- ===================================================== §7 -->
+<h2 class="sec" id="s-rlvr"><span class="num">§7 · RLVR &amp; REASONING MODELS</span>RLVR 与推理模型</h2>
+<p class="sec-intro">2025 年以来最热的方向：用可自动验证的奖励（数学答案、单元测试、形式化证明）做大规模 RL，训练出长 CoT 推理模型。面试会问 GRPO 的完整公式、它的缺陷与修复（Dr. GRPO、DAPO）、entropy collapse、"RL 到底有没有教会新能力"。推理与测试时计算的更多内容见 <a href="m07-reasoning.html">模块 07</a>。</p>
+
+<section class="concept" id="c-rlvr">
+  <div class="concept-head"><span class="pri p1">★</span><h3>可验证奖励（RLVR）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用程序化验证器代替学习的 RM：数学看最终答案是否等价，代码看单元测试是否通过，证明看 Lean 是否编译通过。好处是难以被 hack、可无限扩展；局限是只适用于有客观答案的任务。</p><p class="en">RLVR replaces a learned reward model with a programmatic verifier — answer matching, unit tests, proof checkers.</p></div>
+  <div class="deep">
+    <p>"RLVR"这个名字来自 <a href="https://arxiv.org/abs/2411.15124" target="_blank" rel="noreferrer">Tülu 3（Lambert et al. 2024）</a>；DeepSeek-R1 是让它广为人知的工作。</p>
+    <div class="table-wrap"><table>
+      <tr><th>领域</th><th>验证器</th><th>坑</th></tr>
+      <tr><td>数学</td><td>抽取最终答案（如 <code>\boxed{}</code>），做规范化后比较或符号等价判断（sympy、math-verify 一类工具）</td><td>答案格式多样（分数/小数/区间/单位）导致假阴性；选择题可以靠猜；"答案对但过程错"</td></tr>
+      <tr><td>代码</td><td>在沙箱中运行单元测试，通过比例或全部通过</td><td>测试覆盖不足 → 通过测试但错误；模型修改测试 / 特判测试输入；沙箱安全；执行耗时</td></tr>
+      <tr><td>形式化证明</td><td>Lean / Isabelle 编译器检查证明</td><td>几乎无法 hack（除非利用 <code>sorry</code>、axiom 等漏洞，需要禁止）；奖励极稀疏</td></tr>
+      <tr><td>指令遵循</td><td>可程序检查的约束（"恰好 3 段""不含逗号"）</td><td>只覆盖可检查的约束</td></tr>
+      <tr><td>格式</td><td>是否有 <code>&lt;think&gt;</code> 标签、答案是否可解析</td><td>格式奖励过大会喧宾夺主</td></tr>
+    </table></div>
+    <p>相关阅读（形式化证明上的 RLVR）：<a href="https://arxiv.org/abs/2507.23726" target="_blank" rel="noreferrer">Seed-Prover（arXiv 2507.23726）</a>，用 Lean 反馈做大规模 RL 的定理证明系统。</p>
+    <p><b>设计可验证奖励的原则</b>：(1) 二值 0/1 通常比部分分更不易被 hack；(2) 验证器的假阳性比假阴性危害大（假阳性直接教模型作弊）；(3) 题目难度要和模型能力匹配——全对或全错的题对 GRPO 没有梯度；(4) 对截断/格式错误的回答要有明确处理。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Reinforcement learning with verifiable rewards replaces a learned reward model with a programmatic checker: for math we extract and normalize the final answer and compare it to the ground truth, for code we run unit tests in a sandbox, and for formal math the proof assistant checks the proof. These rewards are much harder to hack and scale to millions of problems, which is why they drove the recent reasoning models. The limitations are that they only cover tasks with objective answers, they're usually sparse and binary, and imperfect verifiers — like weak test suites — can still be exploited.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you design the reward for a code-generation RL run?</b><details><summary>思路</summary><div class="inner">(1) 主奖励：在隔离沙箱中运行隐藏测试，全部通过 = 1，否则 0（或通过比例，但部分分容易被"只通过简单测试"利用）；(2) 测试质量：用多组测试（含边界与随机生成的测试），检查测试本身正确；(3) 防作弊：禁止读写测试文件、禁止网络、设置时间与内存限制、检测硬编码输出；(4) 格式：代码块可解析，否则 0；(5) 截断：超长直接 0 或软惩罚；(6) 监控：通过率 vs 人工抽查、在 held-out 基准（如 LiveCodeBench 一类时间切分的集合）上的表现；(7) 难度课程：过滤 pass rate 为 0 或 1 的题。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-grpo">
+  <div class="concept-head"><span class="pri p1">★</span><h3>GRPO：完整目标</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每个 prompt 采样 G 个回答，优势 = 组内标准化的奖励 \(\hat A_i=\frac{r_i-\text{mean}(r)}{\text{std}(r)}\)（广播到该回答所有 token），用 PPO-clip 的 surrogate，再在 loss 里加 β·k3 KL。没有 critic。</p><p class="en">GRPO: group-normalized rewards as advantages, PPO-style clipped surrogate, KL to the reference in the loss, no critic.</p></div>
+  <div class="deep">
+    <p>来源：<a href="https://arxiv.org/abs/2402.03300" target="_blank" rel="noreferrer">Shao et al. 2024, DeepSeekMath</a>。目标（最大化）：</p>
+    $$\mathcal J_{\text{GRPO}}(\theta)=\mathbb E_{q,\{o_i\}_{i=1}^G\sim\pi_{\text{old}}}\Bigg[\frac1G\sum_{i=1}^G\frac1{|o_i|}\sum_{t=1}^{|o_i|}\Big(\min\big(\rho_{i,t}\hat A_{i,t},\ \mathrm{clip}(\rho_{i,t},1-\epsilon,1+\epsilon)\hat A_{i,t}\big)-\beta\,\mathbb D_{\text{KL}}^{(i,t)}\Big)\Bigg]$$
+    $$\rho_{i,t}=\frac{\pi_\theta(o_{i,t}|q,o_{i,\lt t})}{\pi_{\text{old}}(o_{i,t}|q,o_{i,\lt t})},\qquad\hat A_{i,t}=\frac{r_i-\mathrm{mean}(r_1..r_G)}{\mathrm{std}(r_1..r_G)},\qquad\mathbb D_{\text{KL}}^{(i,t)}=\frac{\pi_{\text{ref}}}{\pi_\theta}-\log\frac{\pi_{\text{ref}}}{\pi_\theta}-1.$$
+    <p><b>逐项解释</b>：</p>
+    <ul>
+      <li><b>组内基线</b>：同一 prompt 的 G 个回答的平均奖励是 \(V(q)\) 的 MC 估计——不需要 critic。除以 std 做尺度归一化。</li>
+      <li><b>优势广播</b>：结果奖励（outcome supervision）下，回答 i 的每个 token 都用同一个 \(\hat A_i\)。DeepSeekMath 也给了过程监督版本（PRM 给每步打分，token 优势 = 其后所有步的归一化奖励之和）。</li>
+      <li><b>KL 在 loss 里</b>，用 Schulman 的 k3 估计器（\(r=\pi_{\text{ref}}/\pi_\theta\)，\(r-1-\log r\ge0\)，无偏、低方差），而不是 InstructGPT 那样放进 reward。</li>
+      <li><b>归一化</b>：先在每条回答内对 token 平均（\(1/|o_i|\)），再对 G 条平均——这个选择后来被 Dr. GRPO 和 DAPO 批评。</li>
+    </ul>
+    <p>DeepSeekMath 的设置：G=64、β=0.04、policy lr=1e-6、最大长度 1024。DeepSeek-R1 沿用了 GRPO。</p>
+    <p><b>数值例子</b>：G=8，奖励 [1,0,0,1,1,0,0,0]，均值 0.375，std（总体）0.484 → 正确回答优势 +1.291，错误回答 −0.775（§9 验证）。若 8 个全对或全错，所有优势为 0，<b>这个 prompt 没有梯度</b>（只剩 KL 项）。</p>
+    <div class="box why"><span class="lbl">直觉</span>GRPO = "PPO 去掉 critic，用同题多采样的平均分当 baseline"。它非常适合 LLM：同一个 prompt 采样多个回答本来就便宜（共享 prompt 的 KV cache），而 per-token critic 在稀疏的 0/1 奖励下很难学准。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>GRPO, introduced in DeepSeekMath, samples a group of G responses per prompt, scores each one, and uses the group-normalized reward — reward minus the group mean, divided by the group standard deviation — as the advantage for every token of that response. It then uses the PPO clipped surrogate with per-token ratios, and instead of putting the KL penalty in the reward, it adds a KL term directly to the loss using the k3 estimator, which is unbiased and always non-negative. The key point is there's no value network: the group mean is a Monte Carlo baseline, which saves a whole LLM-sized model and avoids training a critic on sparse binary rewards.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does GRPO drop the critic? What do you lose?</b><details><summary>思路</summary><div class="inner">得到：省一个与 policy 同尺寸的模型（显存、计算、同步）；不用训练在稀疏 0/1 奖励、超长序列下很难学准的 value head；超参更少。失去：per-token credit assignment（所有 token 共享一个优势）；每个 prompt 需要多个样本（G 通常 8–64）；对全对/全错的组没有信号。DeepSeekMath 论文中也展示了 critic-free 在其设置下效果不差。</div></details></li>
+    <li><b>Why the k3 estimator for KL?</b><details><summary>思路</summary><div class="inner">在 on-policy 样本 \(o\sim\pi_\theta\) 上，令 \(r=\pi_{\text{ref}}/\pi_\theta\)：k1 \(=-\log r\) 无偏但方差大且可为负；k3 \(=r-1-\log r\) 同样无偏（因为 \(\mathbb E_{\pi_\theta}[r]=1\)，减去的 \(r-1\) 是均值为 0 的控制变量），且逐样本非负、方差更小。细节：如果把 k3 当 loss 直接求导（而不是当 reward），得到的期望梯度其实是 \(\nabla\mathrm{KL}(\pi_{\text{ref}}\|\pi_\theta)\)（forward KL）而非 reverse KL（§9 数值验证）；这是 2025 年讨论较多的一个技术点。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-r1">
+  <div class="concept-head"><span class="pri p1">★</span><h3>DeepSeek-R1 流程：R1-Zero、冷启动、蒸馏</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>R1-Zero：直接在 base 模型上用 GRPO + 规则奖励训练，自发出现长 CoT 和自我反思，但可读性差、语言混杂。R1：冷启动 SFT → 推理 RL（加语言一致性奖励）→ 拒绝采样 SFT（约 60 万推理 + 20 万通用）→ 全场景 RL。再把 R1 蒸馏到小模型（只 SFT）。</p><p class="en">R1-Zero is pure RL from the base model; R1 adds cold-start SFT, reasoning RL, rejection-sampling SFT and a final RL stage; small models are distilled with SFT only.</p></div>
+  <div class="deep">
+    <p>来源：<a href="https://arxiv.org/abs/2501.12948" target="_blank" rel="noreferrer">DeepSeek-AI 2025, DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning</a>。</p>
+    <p><b>R1-Zero</b>：</p>
+    <ul>
+      <li>从 DeepSeek-V3-Base 出发，<b>不做 SFT</b>，直接 GRPO。</li>
+      <li>奖励只有规则：<b>准确性奖励</b>（数学答案、代码编译测试）+ <b>格式奖励</b>（推理放在 think 标签内）。刻意不用神经网络 RM，因为担心 reward hacking。</li>
+      <li>简单模板：让模型先推理再回答，不规定推理内容。</li>
+      <li>现象：回答长度随训练持续增长；出现反思、验证、"aha moment"式的回溯。AIME 2024 pass@1 从 15.6% 升到 71.0%（多数投票 86.7%）。</li>
+      <li>问题：可读性差、中英文混杂。</li>
+    </ul>
+    <p><b>R1 四阶段</b>：</p>
+    <ol>
+      <li><b>冷启动</b>：用"数千条"可读的长 CoT 数据 SFT base 模型（带总结格式），改善可读性并加快 RL 起步。</li>
+      <li><b>面向推理的 RL</b>：GRPO + 准确性奖励 + <b>语言一致性奖励</b>（CoT 中目标语言词的比例）。论文指出语言一致性奖励略降性能但提升可读性。</li>
+      <li><b>拒绝采样 + SFT</b>：从 RL checkpoint 采样，保留正确回答，约 60 万推理样本；加约 20 万非推理样本（写作、事实问答、自我认知、翻译）；在 V3-Base 上 SFT 2 个 epoch。</li>
+      <li><b>全场景 RL</b>：推理任务用规则奖励，通用任务用 RM（有用性只评最终总结，无害性评全文）。</li>
+    </ol>
+    <p><b>蒸馏</b>：用 R1 生成的约 80 万样本对 Qwen2.5 与 Llama 系列（1.5B–70B）做 <b>纯 SFT</b>，得到的小模型推理能力很强。论文的一个重要观察：对小模型而言，<b>从强模型蒸馏比直接对小模型做大规模 RL 更有效</b>。</p>
+    <p><b>R1-Zero 的后续批评</b>：<a href="https://arxiv.org/abs/2503.20783" target="_blank" rel="noreferrer">Liu et al. 2025（Dr. GRPO 论文）</a>发现很多 base 模型（含 DeepSeek-V3-Base）在 RL 之前就已经表现出"aha"式的自我反思；Qwen2.5 base 模型在无模板时就很强，提示预训练中可能含大量问答式数据。所以"RL 让反思能力涌现"的叙事需要谨慎。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>DeepSeek-R1-Zero applied GRPO directly to the base model with only rule-based accuracy and format rewards, and long chains of thought with self-verification emerged — AIME pass@1 went from about 16 to 71 percent — but the outputs were hard to read and mixed languages. R1 fixed this with a pipeline: a small cold-start SFT on readable long-CoT data, reasoning-focused RL with an added language-consistency reward, rejection sampling to build roughly 800k SFT examples including non-reasoning data, and a final RL stage mixing rule-based and model-based rewards. They also distilled R1 into smaller Qwen and Llama models with SFT only, and found distillation beat running RL directly on the small models.</p></div>
+</section>
+
+<section class="concept" id="c-grpo-fixes">
+  <div class="concept-head"><span class="pri p1">★</span><h3>GRPO 的缺陷与修复：Dr. GRPO 与 DAPO</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Dr. GRPO：去掉 \(1/|o_i|\)（长度偏差）和除以 std（难度偏差）。DAPO：clip-higher（ε_low=0.2, ε_high=0.28）、动态采样（丢掉全对/全错组）、token 级 loss、超长回答的软惩罚，并去掉 KL。</p><p class="en">Dr. GRPO removes length and std normalization biases; DAPO adds clip-higher, dynamic sampling, token-level loss and overlong shaping.</p></div>
+  <div class="deep">
+    <p><b>Dr. GRPO</b>（<a href="https://arxiv.org/abs/2503.20783" target="_blank" rel="noreferrer">Liu et al. 2025, Understanding R1-Zero-Like Training: A Critical Perspective</a>）指出两个偏差：</p>
+    <ul>
+      <li><b>回答级长度偏差</b>：每条回答的 loss 除以 \(|o_i|\)。对正优势（答对）的回答，越短每个 token 梯度越大 → 鼓励短的正确回答；对负优势（答错）的回答，越长每个 token 惩罚越小 → <b>错误回答倾向于越写越长</b>。这可能部分解释了"回答长度不断增长"的现象，未必都是"更多思考"。</li>
+      <li><b>问题级难度偏差</b>：除以组内 std。std 很小的题（几乎全对或几乎全错）优势被放大，权重过高。</li>
+      <li>修复：去掉这两个归一化（用常数归一化），保持 token 效率的同时性能相当。</li>
+    </ul>
+    <p><b>DAPO</b>（<a href="https://arxiv.org/abs/2503.14476" target="_blank" rel="noreferrer">Yu et al. 2025, DAPO: An Open-Source LLM RL System at Scale</a>）四项技术，在 Qwen2.5-32B base 上 AIME 2024 达到 50 分，用 DeepSeek-R1-Zero-Qwen-32B 一半的训练步数：</p>
+    <ol>
+      <li><b>Clip-Higher</b>：解耦上下界 \(\mathrm{clip}(\rho,1-\epsilon_{\text{low}},1+\epsilon_{\text{high}})\)，\(\epsilon_{\text{low}}=0.2,\epsilon_{\text{high}}=0.28\)。原因：对一个概率很低的 token（如 p=0.01），上界 1.2 只允许升到 0.012，"探索性"的低概率 token 很难被提升 → entropy collapse。放宽上界让它们有机会被提升。</li>
+      <li><b>Dynamic Sampling</b>：过滤掉组内准确率为 0 或 1 的 prompt（它们优势全为 0，只贡献噪声并减小有效 batch），持续采样直到 batch 填满"有信号"的 prompt。</li>
+      <li><b>Token-Level Policy Gradient Loss</b>：把 batch 内所有 token 放在一起平均（\(1/\sum_i|o_i|\)），而不是先在每条回答内平均。这样长回答中的每个 token 与短回答中的 token 权重相同，长回答里的坏模式（重复、胡言乱语）能被充分惩罚。</li>
+      <li><b>Overlong Reward Shaping</b>：先做 overlong filtering（截断样本的 loss 屏蔽），再用软惩罚：长度 ≤ \(L_{\max}-L_{\text{cache}}\) 时惩罚 0，在 \((L_{\max}-L_{\text{cache}},L_{\max}]\) 内线性降到 −1，超过 \(L_{\max}\) 为 −1（论文中 \(L_{\max}\)=16384，\(L_{\text{cache}}\)=4096，G=16）。</li>
+    </ol>
+    <p>另外 DAPO <b>去掉了 KL 惩罚</b>：长 CoT 推理训练中策略本来就需要大幅偏离初始模型，且规则奖励不易被 hack，KL 约束主要起限制作用。</p>
+    <div class="table-wrap"><table>
+      <tr><th>问题</th><th>症状</th><th>修复</th></tr>
+      <tr><td>长度偏差（1/|o|）</td><td>错误回答越来越长</td><td>Dr. GRPO 常数归一化；DAPO token-level</td></tr>
+      <tr><td>难度偏差（÷std）</td><td>极易/极难题权重过大</td><td>Dr. GRPO 去掉 std</td></tr>
+      <tr><td>零优势组</td><td>有效 batch 变小、梯度噪声</td><td>DAPO dynamic sampling；课程/难度过滤</td></tr>
+      <tr><td>Entropy collapse</td><td>熵骤降、探索停止、性能饱和</td><td>clip-higher；熵/协方差控制；高熵 token 更新</td></tr>
+      <tr><td>截断样本</td><td>奖励噪声（好推理被截断判错）</td><td>overlong filtering + 软惩罚</td></tr>
+      <tr><td>KL 限制</td><td>学不动</td><td>减小 β 或去掉（RLVR 中）</td></tr>
+    </table></div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把"回答长度增长"直接等同于"学会了更多思考"。Dr. GRPO 表明部分长度增长可能来自归一化偏差，错误回答尤其会变长。要分别看正确与错误回答的长度趋势。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Dr. GRPO pointed out two biases in the original objective. Dividing each response's loss by its length means long wrong answers get a smaller per-token penalty, so incorrect responses tend to grow longer; and dividing by the group standard deviation over-weights questions that are almost always right or almost always wrong. They simply remove both normalizations. DAPO added four practical fixes: clip-higher, which decouples the clipping range — 0.2 below, 0.28 above — so low-probability exploratory tokens can grow and entropy doesn't collapse; dynamic sampling, which drops groups that are all correct or all wrong because they have zero advantage; a token-level loss that averages over all tokens in the batch; and soft penalties for overlong responses. They also removed the KL term.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does the upper clip bound specifically hurt exploration?</b><details><summary>思路</summary><div class="inner">clip 是对<b>比率</b>的约束。高概率 token（p=0.9）的上界 1.2 → 最高 1.0，没有实质限制；低概率 token（p=0.01）→ 最高 0.012，几乎不能提升。所以正优势时，clip 系统性地偏向已经高概率的 token，熵不断降低；放宽上界给低概率但好的 token 更多提升空间。下界不放宽是为了避免把 token 概率压到接近 0 导致崩溃。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-entropy-collapse">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Entropy collapse 与探索</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RLVR 训练早期策略熵迅速下降，随后性能饱和：模型变得确定，不再探索新解法。原因与"高概率且高优势的动作被进一步强化"的动力学有关；对策包括 clip-higher、熵正则（谨慎）、对高协方差 token 限制更新、更高采样温度、更大更难的题集。</p><p class="en">Entropy collapse: policy entropy drops early, exploration stops, performance plateaus.</p></div>
+  <div class="deep">
+    <p><b>机制</b>（<a href="https://arxiv.org/abs/2505.22617" target="_blank" rel="noreferrer">Cui et al. 2025, The Entropy Mechanism of RL for Reasoning LMs</a>）：对 softmax 策略，一步更新后熵的变化近似等于<b>负的</b>"动作 log 概率与其 logit 变化量的协方差"；对策略梯度类算法，logit 变化量正比于优势，所以这个协方差在训练中大多为正——高概率动作拿到正优势、低概率动作拿到负优势时，熵单调下降。他们观察到性能与熵之间近似呈 \(R\approx -a\,e^{\mathcal H}+b\) 的经验关系，意味着熵耗尽时性能也到顶；并提出对高协方差 token 做 clip 或 KL 限制（Clip-Cov / KL-Cov）。</p>
+    <p><b>"关键 token"视角</b>：<a href="https://arxiv.org/abs/2506.01939" target="_blank" rel="noreferrer">Wang et al. 2025, Beyond the 80/20 Rule</a> 发现 CoT 中只有少数高熵的"分叉"token（如 "however"、"wait" 处的选择）决定推理走向；只对约 20% 的高熵 token 计算策略梯度，在 Qwen3-8B 上与全量更新相当，在 Qwen3-14B/32B 上明显更好；只训练低熵的 80% token 则性能显著下降。</p>
+    <p><b>场景题："entropy 在第 200 步崩了怎么办"</b>：(1) 确认：熵曲线、回答多样性（同题多样本的不同率）、pass@k 是否下降；(2) 检查温度：rollout 温度是否太低，训练时 logprob 是否用了同样温度；(3) 检查 lr 过大或 PPO epoch 过多导致过度更新；(4) 数据：题目是否太简单（大部分组全对）；(5) 对策：clip-higher、降低 lr、提高采样温度、加小的熵奖励或协方差控制、增大 G、加入更难的题、减少每批数据的重复更新次数。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Entropy collapse is when the policy's entropy drops sharply early in RL training and then performance plateaus, because the model becomes nearly deterministic and stops exploring alternative solutions. Mechanistically, the entropy change is roughly driven by the covariance between a token's log-probability and its advantage, so reinforcing already-likely tokens reduces entropy. If I saw it at step 200, I'd check the sampling temperature, the learning rate and number of updates per batch, and whether the problems are too easy, and then try clip-higher, a lower learning rate, higher temperature, harder data, or targeted entropy control on high-covariance tokens.</p></div>
+</section>
+
+<section class="concept" id="c-kl-or-not">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>要不要 KL？参考模型的作用</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RLHF（学习的 RM）中 KL 是防 reward hacking 的关键；RLVR（规则奖励）中很多工作去掉 KL 或用很小的 β，以便策略能大幅偏离初始模型；也有长时间训练的工作（如 ProRL）用 KL + 定期重置参考模型来保持稳定。</p><p class="en">With learned rewards, KL is essential; with verifiable rewards, many drop it or periodically reset the reference.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>保留 KL 的理由</b>：防止 RM 被 exploit；保持通用能力和语言质量；稳定训练；理论上的良好定义。</li>
+      <li><b>去掉 KL 的理由</b>：规则奖励难以 hack；长 CoT 需要远离初始分布；省去 ref 模型的前向开销；DAPO、Dr. GRPO 等工作在数学 RLVR 中去掉 KL。</li>
+      <li><b>折中</b>：<a href="https://arxiv.org/abs/2505.24864" target="_blank" rel="noreferrer">ProRL（NVIDIA 2025）</a>使用 KL 控制并周期性把参考模型重置为当前策略（reference reset），以支持很长时间的 RL 训练；DeepSeekMath 的 iterative GRPO 也在每轮开始时把 ref 设为当前策略。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Whether to keep the KL penalty depends on the reward. With a learned reward model, KL is essential to prevent the policy from exploiting the reward model and to preserve general capabilities. With verifiable rewards, hacking is much harder and reasoning RL needs to move far from the initial policy, so works like DAPO drop the KL term entirely. A middle ground is to keep a KL penalty but periodically reset the reference to the current policy, which ProRL used for very long training runs.</p></div>
+</section>
+
+<section class="concept" id="c-rloo">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>RLOO、REINFORCE++ 等 critic-free 方法</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RLOO：每个样本的 baseline 是同组其他 k−1 个样本的平均奖励（严格无偏）；REINFORCE++：不用组 baseline，而是在全局 batch 上做优势归一化，并用 token 级 KL 奖励等 PPO 技巧，追求稳定且不依赖多样本。</p><p class="en">RLOO uses a leave-one-out baseline; REINFORCE++ normalizes advantages globally with PPO-style tricks.</p></div>
+  <div class="deep">
+    <p><b>RLOO</b>（<a href="https://arxiv.org/abs/2402.14740" target="_blank" rel="noreferrer">Ahmadian et al. 2024, Back to Basics: Revisiting REINFORCE Style Optimization for RLHF</a>，基于 Kool et al. 2019 的思想）：</p>
+    $$\hat A_i=r_i-\frac1{k-1}\sum_{j\ne i}r_j=\frac{k}{k-1}\Big(r_i-\bar r\Big).$$
+    <p>baseline 不包含样本自身 → 严格无偏；与"减组均值"只差一个常数因子 \(k/(k-1)\)（§9 验证）。该论文论证：在 RLHF 中，因为从强 SFT 模型出发、策略变化不大，PPO 的很多组件（critic、clip）不是必需的，REINFORCE 风格方法（RLOO）在他们的实验中效果更好且更省资源。</p>
+    <p><b>REINFORCE++</b>（<a href="https://arxiv.org/abs/2501.03262" target="_blank" rel="noreferrer">Hu et al. 2025</a>）：不用 critic，也不依赖同 prompt 的多样本基线，而是对整个 batch 的优势做全局归一化，结合 token 级 KL 惩罚、clip 等技巧；论文认为组内归一化容易对特定 prompt 过拟合，全局归一化更稳健。</p>
+    <p><b>小结</b>：GRPO（组均值 + 组 std）、RLOO（留一均值）、REINFORCE++（全局归一化）、PPO（learned critic）——本质区别都在 <b>baseline / 优势估计</b> 的选择上。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>RLOO samples k responses per prompt and uses the average reward of the other k minus one as each sample's baseline, which is strictly unbiased and equals the group-mean-centered reward times k over k minus one. The Back to Basics paper argued that because RLHF starts from a strong SFT policy, PPO's critic and clipping are often unnecessary, and RLOO works as well or better with less compute. REINFORCE++ goes further and normalizes advantages over the global batch rather than per prompt. All these methods differ mainly in how they construct the baseline.</p></div>
+</section>
+
+<section class="concept" id="c-async">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Rollout 效率、off-policy 与异步 RL</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>长 CoT RL 中生成占大部分时间，且回答长度长尾分布导致 GPU 空等；异步 RL 让生成与训练并行，但 rollout 来自旧策略（staleness），需要重要性修正或限制落后步数。</p><p class="en">Generation dominates; asynchronous RL overlaps generation and training at the cost of off-policy staleness.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>为什么慢</b>：自回归解码是 memory-bound；同一 batch 中最长的回答决定完成时间（长尾），短回答完成后 GPU 闲置。</li>
+      <li><b>同步（on-policy）</b>：生成 → 训练 → 同步权重 → 生成…，严格 on-policy，但两阶段互相等待。</li>
+      <li><b>异步</b>：生成 worker 持续用"最近的"权重生成，训练 worker 持续消费数据。数据落后 k 个版本 → off-policy。处理：限制最大落后步数、用 \(\pi_\theta/\pi_{\text{behavior}}\) 做（截断的）重要性加权、解耦 PPO 的 behavior 策略与 proximal 策略（如 <a href="https://arxiv.org/abs/2505.24298" target="_blank" rel="noreferrer">AReaL</a>）。</li>
+      <li><b>其他技巧</b>：partial rollout（长回答跨迭代继续生成）、长度分桶、在生成引擎中做前缀缓存、使用 FP8 推理生成、train/inference 数值不一致的修正。</li>
+      <li><b>样本效率</b>：动态采样、按难度课程筛题（保留 pass rate 在中间区间的题）、复用高价值样本。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In long chain-of-thought RL, generation dominates the wall-clock time, and the long tail of response lengths leaves GPUs idle while the longest sample finishes. Asynchronous RL decouples generation from training so both run continuously, but the rollouts then come from slightly stale policies, so you need to bound the staleness and correct with importance weights, often truncated. Other tricks include partial rollouts, length bucketing, prefix caching and curriculum filtering of problems by pass rate.</p></div>
+</section>
+
+<section class="concept" id="c-prm">
+  <div class="concept-head"><span class="pri p1">★</span><h3>ORM vs PRM：结果奖励与过程奖励</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>ORM 只评最终结果；PRM 给每个推理步骤打分，提供更密集的信号和更好的 credit assignment，但标注昂贵、容易被 hack、"什么是一步"难定义。大规模 RLVR 实践（如 R1）主要用结果奖励。</p><p class="en">Outcome reward models judge the final answer; process reward models score each step — denser but costly and hackable.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>PRM800K</b>（<a href="https://arxiv.org/abs/2305.20050" target="_blank" rel="noreferrer">Lightman et al. 2023, Let's Verify Step by Step</a>）：人工为 MATH 解答的每一步标注正确/错误/中性（约 80 万步级标签）。在 best-of-N 重排序中，过程监督训练的 PRM 明显优于结果监督的 ORM。</li>
+      <li><b>Math-Shepherd</b>（<a href="https://arxiv.org/abs/2312.08935" target="_blank" rel="noreferrer">Wang et al. 2023</a>）：无需人工标注——从某一步出发做多次 MC rollout，用"能到达正确答案的比例"作为该步的标签（本质是估计中间状态的价值）。</li>
+      <li><b>PRM 的用途</b>：(1) 测试时重排序 / beam search 引导（见 m07）；(2) RL 中提供步级奖励（DeepSeekMath 的过程监督 GRPO）。</li>
+      <li><b>为什么大规模 RL 多用 ORM</b>：DeepSeek-R1 论文讨论了 PRM 的困难：步骤难以明确定义；自动标注噪声大、人工标注不可扩展；神经 PRM 在 RL 中容易被 hack，且需要不断重训。结果奖励（规则验证）虽然稀疏，但准确、可扩展。</li>
+      <li><b>折中</b>：生成式验证器（让模型写出验证 CoT）、用 MC rollout 估计中间价值（VinePPO 类）、隐式过程奖励（从结果奖励模型的 token 级 log-ratio 推出）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>An outcome reward model only judges the final answer, while a process reward model scores each intermediate step, which gives denser feedback and better credit assignment. OpenAI's Let's Verify Step by Step collected about 800k step-level human labels and showed that process supervision beats outcome supervision for reranking solutions. Math-Shepherd avoided human labels by estimating each step's quality from Monte Carlo rollouts. But in large-scale RL, PRMs are hard to use: steps are ill-defined, labels are noisy or expensive, and neural PRMs get hacked — so DeepSeek-R1 and most RLVR work rely on outcome rewards from rule-based verifiers.</p></div>
+</section>
+
+<section class="concept" id="c-elicit-debate">
+  <div class="concept-head"><span class="pri p1">★</span><h3>RL 是"教会新能力"还是"激发已有能力"？</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Yue et al. 2025：RLVR 模型在小 k 的 pass@k 上胜过 base，但在大 k 时 base 反超 → RLVR 主要是把 base 已能采到的正确路径的概率提高（sharpening），没有扩展能力边界。反方：更长时间、更多样的 RL（如 ProRL）可以解决 base 在大量采样下也解不出的题。答案仍有争议。</p><p class="en">Does RLVR teach new reasoning or just sharpen what the base model can already sample? Evidence on both sides.</p></div>
+  <div class="deep">
+    <p><b>正方（"激发 / sharpening"）</b>：<a href="https://arxiv.org/abs/2504.13837" target="_blank" rel="noreferrer">Yue et al. 2025, Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?</a></p>
+    <ul>
+      <li>在多个模型族、多种 RL 算法、数学/代码/视觉推理任务上，pass@k 曲线出现 <b>交叉</b>：k 小时 RL 模型更好，k 大（如数百）时 base 模型更好。</li>
+      <li>解读：RL 提高了采样效率（把概率集中到 base 已有的正确路径上），但缩小了可解决问题的覆盖范围；RL 模型的正确推理路径在 base 模型下已有不低的概率。</li>
+      <li>与理论吻合：KL 正则最优解 \(\pi^*\propto\pi_{\text{ref}}e^{r/\beta}\) 只能重新加权参考模型的支撑集。</li>
+      <li>他们同时观察到：<b>蒸馏</b>（从更强的模型学）能真正引入新的推理模式、扩展边界。</li>
+    </ul>
+    <p><b>反方 / 补充证据</b>：</p>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2505.24864" target="_blank" rel="noreferrer">ProRL（Liu et al. 2025, NVIDIA）</a>：用 KL 控制、参考策略重置、多样化任务做长时间 RL，报告在一些 base 模型无论采样多少次都表现很差的任务上，RL 模型取得了实质成功，pass@k 边界随训练扩展。</li>
+      <li>方法论质疑：pass@k 在 k 极大时，对有限答案空间（如整数答案）可以"蒙对"，base 的高 pass@k 部分可能来自猜测而非正确推理；需要检查推理过程正确性。</li>
+      <li>"Spurious rewards"（<a href="https://arxiv.org/abs/2506.10947" target="_blank" rel="noreferrer">Shao et al. 2025</a>）：在 Qwen2.5-Math-7B 上即使用随机奖励做 GRPO，MATH-500 也能提升约 21 个百分点（真实奖励约 29 个点），但这一现象在 Llama3、OLMo2 上不成立——说明某些模型的提升主要来自激发预训练中已有的行为（如"用代码推理"），也提醒 RLVR 研究要在多个模型族上验证。</li>
+    </ul>
+    <p><b>面试中的平衡回答</b>：(1) 在当前常见设置（有限步数、从强 base 出发、0/1 奖励）下，证据表明 RLVR 主要是 sharpening，能力上限大体由预训练决定；(2) 但这不意味着 RL 原则上不能扩展边界——探索更充分、训练更长、任务更多样（尤其多轮、与环境交互的 agent 任务）时可能不同；(3) sharpening 本身价值巨大：把 pass@64 变成 pass@1 就是巨大的实际提升；(4) 研究方向：更好的探索、把蒸馏与 RL 结合、在 base 模型中注入更多推理"种子"（mid-training）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Yue and colleagues showed that RLVR-trained models beat their base models on pass@1, but when you sample hundreds of times, the base model's pass@k catches up and overtakes, suggesting RL mainly sharpens the distribution toward solutions the base model could already find rather than expanding its reasoning boundary — consistent with the KL-regularized optimum only reweighting the reference support. On the other side, ProRL reported that prolonged, diverse RL with reference resets solves tasks where the base model fails even with many samples, and there are methodological concerns about pass@k at very large k due to guessing. My view is that under typical settings RLVR is mostly elicitation, which is still hugely valuable, but whether RL can expand capabilities with better exploration and longer, interactive training is an open and important question.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you design an experiment to test whether RL creates new capabilities?</b><details><summary>思路</summary><div class="inner">(1) 用大 k 的 pass@k（无偏估计器）比较 base 与 RL 模型，并对正确答案做过程正确性检查（排除猜中）；(2) 构造 base 模型在大采样预算下也 0 解的题集，看 RL 后能否解出；(3) 控制数据污染（时间切分的新题）；(4) 在多个模型族上验证（避免 Qwen 特有现象）；(5) 分析 RL 模型正确解法在 base 模型下的似然——如果极低，说明是"新"路径；(6) 对比同等计算量下的蒸馏与 RL。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ===================================================== §8 -->
+<h2 class="sec" id="s-other"><span class="num">§8 · OTHER ALIGNMENT TECHNIQUES</span>其他对齐技术</h2>
+<p class="sec-intro">这些话题不一定深挖，但面试中常作为"你还知道哪些方法"或研究讨论的切入点出现。每个要能说出核心思想、优缺点、和前面方法的联系。</p>
+
+<section class="concept" id="c-cai">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Constitutional AI 与 RLAIF</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用一组书面原则（constitution）让模型自我批评与修改（SL 阶段），再让 AI 根据原则给偏好标注、训练偏好模型并做 RL（RLAIF），以减少对人工有害性标注的依赖。</p><p class="en">Constitutional AI replaces human harmlessness labels with AI feedback guided by written principles.</p></div>
+  <div class="deep">
+    <p>来源：<a href="https://arxiv.org/abs/2212.08073" target="_blank" rel="noreferrer">Bai et al. 2022, Constitutional AI: Harmlessness from AI Feedback</a>（Anthropic）。</p>
+    <ol>
+      <li><b>监督阶段（critique → revision）</b>：让有用性模型对有害 prompt 生成回答，再让它根据随机抽取的原则批评并修改自己的回答，多轮修改后用修改版做 SFT。</li>
+      <li><b>RL 阶段（RLAIF）</b>：对同一 prompt 采样两个回答，让模型根据原则判断哪个更好（可用 CoT），得到 AI 偏好标签，训练偏好模型，再像 RLHF 一样做 RL。</li>
+    </ol>
+    <p><b>意义</b>：可扩展（AI 标注便宜）、原则透明可修改、得到"无害但不回避"的模型（会解释为什么拒绝，而非简单拒答）。<b>局限</b>：AI 标注者的偏差会被放大；原则的表述影响很大；标注模型能力是上限。</p>
+    <p>相关发展：OpenAI 的 <a href="https://arxiv.org/abs/2412.16339" target="_blank" rel="noreferrer">Deliberative Alignment（2024）</a>让推理模型在 CoT 中显式回忆并推理安全规范后再回答。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Constitutional AI uses a short list of written principles instead of large amounts of human harmlessness labels. In the supervised phase, the model critiques and revises its own responses according to the principles, and we fine-tune on the revisions. In the RL phase, the model compares pairs of responses according to the principles to produce AI preference labels, we train a preference model on them and run RL — that's RLAIF. It scales cheaply and makes the target behavior explicit, but it inherits the biases and limits of the judging model.</p></div>
+</section>
+
+<section class="concept" id="c-bon">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Best-of-N 与 BoN 蒸馏</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>采样 N 个回答，用 RM/验证器选最好的。简单、强、无需训练，但推理成本 N 倍；把 BoN 分布蒸馏回策略（如 BOND）可以在单次采样中获得类似效果。BoN 相对 base 的 KL 为 \(\log N-\frac{N-1}{N}\)。</p><p class="en">Best-of-N is a strong training-free baseline; distilling it amortizes the cost.</p></div>
+  <div class="deep">
+    <ul>
+      <li>BoN 是 RLHF 的强 baseline，也是 KL 正则 RL 的一种近似：在 KL 预算相同的情况下，BoN 往往和 RL 效果相当（Gao et al. 的过优化研究同时比较了两者）。</li>
+      <li>KL 公式 \(\mathrm{KL}(\pi_{\text{BoN}}\|\pi)=\log N-\frac{N-1}{N}\)（假设回答各不相同时的上界）：N=16 时约 1.84 nats，N 增长时 KL 只按 \(\log N\) 增长。</li>
+      <li><a href="https://arxiv.org/abs/2407.14622" target="_blank" rel="noreferrer">BOND（Sessa et al. 2024, Google DeepMind）</a>：把策略向 BoN 分布做分布匹配（使用 Jeffreys 散度），让策略在单次采样时接近 BoN 的质量。</li>
+      <li>拒绝采样微调（§4）可以看作 BoN 蒸馏的最简形式：在 BoN 选出的样本上 SFT。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Best-of-N sampling draws N responses and keeps the one the reward model likes best. It's a surprisingly strong baseline — at a matched KL budget it often rivals RL — but it multiplies inference cost by N. Its KL from the base policy is about log N minus (N minus 1) over N, so it grows only logarithmically. Methods like BOND distill the best-of-N distribution back into the policy so you get similar quality with a single sample.</p></div>
+</section>
+
+<section class="concept" id="c-opd">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>On-policy distillation</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>学生自己采样，教师对学生生成的每个 token 给出 log-prob，用 per-token reverse KL（学生 logprob − 教师 logprob）作为密集的"负奖励"训练学生。结合了 RL 的 on-policy（纠正自己的错误）和蒸馏的密集监督。</p><p class="en">The student samples; the teacher grades every token via reverse KL — on-policy like RL, dense like distillation.</p></div>
+  <div class="deep">
+    <ul>
+      <li>早期工作：<a href="https://arxiv.org/abs/2306.13649" target="_blank" rel="noreferrer">GKD（Agarwal et al. 2023, On-Policy Distillation of Language Models）</a>——在学生自己生成的序列上最小化学生与教师分布间的散度，缓解训练/推理分布不一致（暴露偏差）。</li>
+      <li><a href="https://thinkingmachines.ai/blog/on-policy-distillation/" target="_blank" rel="noreferrer">Thinking Machines 2025 年 10 月的博客</a>：把它写成 RL 形式——学生 rollout，教师在同一序列上一次前向得到 logprob，每 token 奖励 \(=-(\log\pi_{\text{student}}-\log\pi_{\text{teacher}})\)，折扣因子为 0（每个 token 只看自己的项），用 RL 风格的 loss 更新；认为它以远低于 RL 的成本达到类似效果。</li>
+      <li>对比：off-policy 蒸馏（在教师生成的数据上 SFT）= forward KL + 暴露偏差；RL = on-policy 但每条序列只有一个稀疏奖励；on-policy 蒸馏 = on-policy + 每 token 密集信号（reverse KL，mode-seeking）。需要能访问教师的 logprob（同一 tokenizer 更方便）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>On-policy distillation has the student generate its own samples and then asks the teacher to score every token, using the per-token reverse KL — student log-prob minus teacher log-prob — as a dense negative reward. So it's on-policy like RL, which avoids exposure bias and teaches the student to recover from its own mistakes, but the signal is dense like distillation rather than one sparse reward per sequence. GKD introduced the idea for language models, and Thinking Machines recently showed it can match RL-level results at a fraction of the cost.</p></div>
+</section>
+
+<section class="concept" id="c-merge-safety">
+  <div class="concept-head"><span class="pri p3">○</span><h3>模型合并、RM ensemble、安全训练基础</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>合并：对多个微调模型的权重做平均/任务向量相加（model soup、task arithmetic、TIES 等），低成本组合能力。RM ensemble：用多个 RM 的保守聚合（均值减方差、最小值）缓解过优化。安全训练：拒答/有用性平衡、红队数据、对抗训练。</p><p class="en">Merging combines fine-tunes cheaply; reward ensembles curb overoptimization; safety training balances refusal and helpfulness.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>模型合并</b>：从同一预训练模型出发的多个微调模型往往处于同一个 loss basin，权重平均可以组合能力；task vector = 微调权重 − base 权重，可加减。post-training 中常用来平衡不同阶段/不同数据训练出的模型，或 RL 后与 SFT 模型插值以恢复部分通用能力。</li>
+      <li><b>RM ensemble</b>：<a href="https://arxiv.org/abs/2310.02743" target="_blank" rel="noreferrer">Coste et al. 2023</a> 显示用最坏情况（min）或不确定性加权（均值 − λ·方差）的集成目标能明显缓解过优化。</li>
+      <li><b>安全训练</b>：有害请求数据 + 期望行为（拒绝、安全补全、提供替代帮助）；过度拒答（over-refusal）同样是失败模式，需要"看起来敏感但无害"的数据平衡；红队与自动化红队；对 jailbreak 的对抗训练；规则奖励 / 基于规范的 RM。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Model merging averages or adds task vectors of models fine-tuned from the same base, which is a cheap way to combine skills or interpolate back toward an SFT model after RL. Reward-model ensembles with conservative aggregation, like taking the minimum or mean minus variance, reduce overoptimization. And safety training is about balancing refusals of genuinely harmful requests against over-refusal of benign ones, using red-teaming data, adversarial training and specification-based rewards.</p></div>
+</section>
+
+<section class="concept" id="c-oversight">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Weak-to-strong 与可扩展监督</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>当模型比人类更强时，人类的偏好标注不再可靠。Weak-to-strong 研究用弱模型监督强模型来类比这一问题；可扩展监督（debate、递归奖励建模、AI 辅助评估）试图放大人类的评估能力。</p><p class="en">How do we supervise models smarter than us? Weak-to-strong generalization and scalable oversight study this.</p></div>
+  <div class="deep">
+    <ul>
+      <li><a href="https://arxiv.org/abs/2312.09390" target="_blank" rel="noreferrer">Burns et al. 2023, Weak-to-Strong Generalization</a>（OpenAI）：用小模型的标签微调大模型，大模型的表现常常超过弱监督者本身（但达不到用真实标签训练的水平），用"恢复了多少性能差距"来衡量；加辅助置信度损失等方法可进一步提高。</li>
+      <li><b>可扩展监督</b>：debate（两个模型辩论，人类裁判）、递归奖励建模、让模型帮人类找错误（critique models）、生成式验证器。</li>
+      <li>与 RLVR 的联系：可验证奖励是"不需要人类判断"的监督来源；generator–verifier gap 是 RL 能超越示范者的前提。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Once models exceed human ability on a task, human preference labels become unreliable, which is the scalable oversight problem. OpenAI's weak-to-strong work studies an analogy: fine-tuning a strong model on labels from a weaker model, and they found the strong model often generalizes beyond its weak supervisor, though it doesn't fully recover ground-truth performance. Approaches to scalable oversight include debate, recursive reward modeling and AI-assisted critique.</p></div>
+</section>
+
+<!-- ===================================================== §9 -->
+<h2 class="sec" id="s-code"><span class="num">§9 · CODE</span>代码：从 log-prob 到 GRPO</h2>
+<p class="sec-intro">这些是 ML coding 面试中 RL 方向最常出的手写题（更多练习形式见 <a href="m14-ml-coding.html">模块 14</a>）。numpy 代码均已运行通过；PyTorch 代码已写成自带 assert 的测试文件，其逻辑由等价的 numpy 实现验证（运行环境暂无 torch）。建议：先看懂，再关掉页面从空白文件重写一遍。</p>
+
+<section class="concept" id="c-code-logprob">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Per-token log-prob gather 与 masked mean</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>位置 t 的 logits 预测 token t+1：<code>logits[:, :-1]</code> 对齐 <code>input_ids[:, 1:]</code>，<code>log_softmax</code> 后 <code>gather</code>；所有 loss 只在回答 token 上（mask）平均。</p><p class="en">Shift by one, log_softmax, gather the target tokens, then average under the response mask.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def token_logprobs(logits, input_ids):
+    """logits: (B, T, V) from model(input_ids); input_ids: (B, T).
+    Returns (B, T-1): log pi(x_{t+1} | x_{&lt;=t})."""
+    logits = logits[:, :-1, :].float()          # position t predicts token t+1
+    targets = input_ids[:, 1:]                    # shift left
+    logp = F.log_softmax(logits, dim=-1)          # (B, T-1, V)
+    return torch.gather(logp, -1, targets.unsqueeze(-1)).squeeze(-1)
+
+def masked_mean(x, mask, dim=None):
+    mask = mask.to(x.dtype)
+    if dim is None:
+        return (x * mask).sum() / mask.sum().clamp(min=1)
+    return (x * mask).sum(dim) / mask.sum(dim).clamp(min=1)
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+    B, T, V = 2, 6, 11
+    logits = torch.randn(B, T, V); ids = torch.randint(0, V, (B, T))
+    lp = token_logprobs(logits, ids)
+    ref = -F.cross_entropy(logits[:, :-1].reshape(-1, V), ids[:, 1:].reshape(-1), reduction="none").view(B, T - 1)
+    assert torch.allclose(lp, ref, atol=1e-6)
+    # response mask: only tokens after a 2-token prompt count
+    mask = torch.zeros(B, T - 1); mask[:, 2:] = 1
+    assert torch.allclose(masked_mean(lp, mask), lp[:, 2:].mean(), atol=1e-6)
+    print("ok")</code></pre>
+    <p>要点：(1) 一定要 shift；(2) 用 <code>log_softmax</code> 而不是 <code>log(softmax)</code>；(3) 转成 fp32 再算 log_softmax（bf16 下误差会让 ratio 偏离 1）；(4) 大词表时 <code>(B,T,V)</code> 的 log_softmax 很占显存，可用 <code>logsumexp</code> 分块或直接用 <code>-F.cross_entropy(..., reduction='none')</code>（测试中用它做了对照）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The logits at position t predict token t plus one, so I drop the last logit position and the first token, take log-softmax in float32, and gather the log-probability of each target token. Every RL loss is then averaged only over response tokens using a mask, so prompt and padding tokens don't contribute.</p></div>
+</section>
+
+<section class="concept" id="c-code-bandit">
+  <div class="concept-head"><span class="pri p1">★</span><h3>REINFORCE + baseline：4 臂 bandit（numpy）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>softmax 策略，\(\nabla_\theta\log\pi(a)=\text{onehot}(a)-\pi\)。所有奖励都 +5 时，无 baseline 的梯度方差约为有 baseline 的 18 倍，学习明显更慢。</p><p class="en">A minimal REINFORCE showing the baseline's variance reduction.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import numpy as np
+
+TRUE_MEAN = np.array([1.0, 1.5, 2.0, 0.5])   # arm 2 is best
+
+def softmax(z):
+    e = np.exp(z - z.max()); return e / e.sum()
+
+def run(use_baseline, seed=0, steps=300, lr=0.05, batch=8):
+    rng = np.random.default_rng(seed)
+    theta = np.zeros(4)            # policy logits
+    b = 0.0                        # running-mean baseline
+    gvar = []
+    for t in range(steps):
+        p = softmax(theta)
+        a = rng.choice(4, size=batch, p=p)
+        r = TRUE_MEAN[a] + rng.normal(0, 1.0, size=batch) + 5.0  # shift: all rewards &gt; 0
+        adv = r - b if use_baseline else r
+        g = (np.eye(4)[a] - p) * adv[:, None]   # grad log pi(a) = onehot(a) - p
+        gvar.append(g.var(axis=0).sum())
+        theta += lr * g.mean(axis=0)            # gradient ASCENT
+        if use_baseline:
+            b = 0.9 * b + 0.1 * r.mean()
+    return softmax(theta)[2], float(np.mean(gvar))
+
+for ub in [False, True]:
+    res = [run(ub, seed=s) for s in range(20)]
+    pb = np.mean([x[0] for x in res]); gv = np.mean([x[1] for x in res])
+    print(f"baseline={str(ub):5s}  P(best arm) after 300 steps = {pb:.3f}   mean per-sample grad variance = {gv:.2f}")
+nb = np.mean([run(False, s)[0] for s in range(20)]); wb = np.mean([run(True, s)[0] for s in range(20)])
+assert wb &gt; nb</code></pre>
+<pre><code class="language-plaintext">baseline=False  P(best arm) after 300 steps = 0.755   mean per-sample grad variance = 18.72
+baseline=True   P(best arm) after 300 steps = 0.881   mean per-sample grad variance = 1.01</code></pre>
+    <p>为什么无 baseline 也能学会？因为期望梯度相同（无偏），只是噪声大得多，需要更多样本/更小步长。把奖励平移 +5 是关键：平移不改变最优策略，但不减 baseline 时所有动作都被"推高"，信号只体现在推高程度的差异中。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-code-gae">
+  <div class="concept-head"><span class="pri p1">★</span><h3>GAE（numpy）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>从后往前：\(\delta_t=r_t+\gamma V_{t+1}-V_t\)，\(A_t=\delta_t+\gamma\lambda A_{t+1}\)；value target \(=A_t+V_t\)。</p><p class="en">A single backward pass over TD errors.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import numpy as np
+
+def gae(rewards, values, gamma=1.0, lam=0.95, last_value=0.0):
+    """rewards, values: (T,) for one trajectory. last_value = V(s_T) (0 if terminated).
+    Returns advantages (T,) and value targets (T,)."""
+    T = len(rewards)
+    values_ext = np.append(values, last_value)
+    adv = np.zeros(T)
+    running = 0.0
+    for t in reversed(range(T)):                     # must go BACKWARD in time
+        delta = rewards[t] + gamma * values_ext[t + 1] - values_ext[t]
+        running = delta + gamma * lam * running      # A_t = delta_t + gamma*lam*A_{t+1}
+        adv[t] = running
+    returns = adv + values                           # TD(lambda) targets for the critic
+    return adv, returns
+
+r = np.array([0., 0., 1.]); v = np.array([0.5, 0.6, 0.7])
+adv, ret = gae(r, v, gamma=1.0, lam=0.9)
+print(np.round(adv, 4), np.round(ret, 4))            # [0.433 0.37 0.3] [0.933 0.97 1.]
+assert np.allclose(adv, [0.433, 0.37, 0.3])
+assert np.allclose(gae(r, v, 1.0, 1.0)[0], 1.0 - v)            # lam=1: MC return - V
+assert np.allclose(gae(r, v, 1.0, 0.0)[0], [0.1, 0.1, 0.3])    # lam=0: one-step TD error</code></pre>
+    <p>批量版本：对 <code>(B,T)</code> 张量从 t=T−1 循环到 0，用 mask 把 padding 位置的 δ 置 0、并在 EOS 后把下一个 V 设为 0。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-code-ppo">
+  <div class="concept-head"><span class="pri p1">★</span><h3>PPO loss：clip + value clip + 熵 + KL-shaped reward（PyTorch）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>ratio = exp(logp − old_logp)；policy loss = −mean(min(ratio·A, clip(ratio)·A))；value loss 取 clip 前后较大者；记录 clipfrac 与 approx KL。</p><p class="en">The full PPO loss with standard diagnostics.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+def ppo_loss(logp, old_logp, adv, values, old_values, returns, mask,
+             clip_eps=0.2, vf_clip=0.2, vf_coef=0.5, ent=None, ent_coef=0.0):
+    """All tensors (B, T) over response tokens; mask=1 for real response tokens."""
+    m = mask.float(); n = m.sum().clamp(min=1)
+    ratio = torch.exp(logp - old_logp)                       # pi_theta / pi_old, per token
+    pg1 = ratio * adv
+    pg2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * adv
+    policy_loss = -(torch.min(pg1, pg2) * m).sum() / n       # maximise -&gt; minimise negative
+    v_clipped = old_values + torch.clamp(values - old_values, -vf_clip, vf_clip)
+    vf_loss = 0.5 * (torch.max((values - returns) ** 2, (v_clipped - returns) ** 2) * m).sum() / n
+    loss = policy_loss + vf_coef * vf_loss
+    if ent is not None:
+        loss = loss - ent_coef * (ent * m).sum() / n
+    with torch.no_grad():
+        clipfrac = (((ratio - 1).abs() &gt; clip_eps).float() * m).sum() / n
+        approx_kl = (((ratio - 1) - (logp - old_logp)) * m).sum() / n   # k3 estimate of KL(old||new)
+    return loss, dict(policy=policy_loss.item(), vf=vf_loss.item(), clipfrac=clipfrac.item(), kl=approx_kl.item())
+
+def kl_shaped_rewards(score, logp_old, logp_ref, mask, beta=0.05):
+    """InstructGPT-style: per-token reward = -beta*(log pi_old - log pi_ref); RM score added at last token."""
+    r = -beta * (logp_old - logp_ref) * mask
+    last = mask.long().cumsum(-1).argmax(-1)                 # index of last real token per row
+    r[torch.arange(r.size(0)), last] += score
+    return r
+
+if __name__ == "__main__":
+    # numeric check of clipping cases on single tokens
+    one = torch.ones(1, 1)
+    def pol(ratio, A):
+        logp = torch.log(torch.tensor([[ratio]], requires_grad=True))
+        lp = logp.detach().clone().requires_grad_(True)
+        loss, _ = ppo_loss(lp, torch.zeros(1, 1), torch.tensor([[A]]), torch.zeros(1, 1), torch.zeros(1, 1), torch.zeros(1, 1), one, vf_coef=0.0)
+        loss.backward(); return loss.item(), lp.grad.item()
+    l, g = pol(1.5, 1.0); assert abs(l + 1.2) &lt; 1e-6 and g == 0.0      # clipped: no gradient
+    l, g = pol(0.5, 1.0); assert abs(l + 0.5) &lt; 1e-6 and g &lt; 0          # pushes logp up
+    l, g = pol(1.5, -1.0); assert abs(l - 1.5) &lt; 1e-6 and g &gt; 0         # pushes logp down
+    l, g = pol(0.5, -1.0); assert abs(l - 0.8) &lt; 1e-6 and g == 0.0      # clipped
+    r = kl_shaped_rewards(torch.tensor([2.0, 3.0]), torch.zeros(2, 4), torch.zeros(2, 4), torch.tensor([[1, 1, 1, 0], [1, 1, 1, 1.]]))
+    assert r[0, 2] == 2.0 and r[1, 3] == 3.0 and r.sum() == 5.0
+    print("ok")</code></pre>
+    <p>numpy 对照（四种情况的数值与梯度）：</p>
+<pre><code class="language-python">import numpy as np
+sig = lambda x: 1 / (1 + np.exp(-x))
+
+# --- PPO clip: check the four cases (eps = 0.2) ---
+def ppo_clip(ratio, A, eps=0.2):
+    return np.minimum(ratio * A, np.clip(ratio, 1 - eps, 1 + eps) * A)
+def d_dratio(f, ratio, A, h=1e-6):
+    return (f(ratio + h, A) - f(ratio - h, A)) / (2 * h)
+for ratio, A in [(1.5, 1), (0.5, 1), (0.5, -1), (1.5, -1)]:
+    print(f"r={ratio}, A={A:+d}: obj={ppo_clip(ratio, A):+.2f}, grad={d_dratio(ppo_clip, ratio, A):+.2f}")
+# r=1.5,A=+1: obj=+1.20 grad=0 | r=0.5,A=+1: +0.50 grad=+1 | r=0.5,A=-1: -0.80 grad=0 | r=1.5,A=-1: -1.50 grad=-1
+
+# --- DPO loss and its gradient signs ---
+def dpo_loss(pc, pr, refc, refr, beta=0.1):
+    return -np.log(sig(beta * ((pc - refc) - (pr - refr))))
+pc, pr, refc, refr, h = -10.0, -12.0, -11.0, -11.5, 1e-6
+g_c = (dpo_loss(pc + h, pr, refc, refr) - dpo_loss(pc - h, pr, refc, refr)) / (2 * h)
+g_r = (dpo_loss(pc, pr + h, refc, refr) - dpo_loss(pc, pr - h, refc, refr)) / (2 * h)
+m = 0.1 * ((pc - refc) - (pr - refr))
+assert g_c &lt; 0 &lt; g_r and np.isclose(g_c, -0.1 * sig(-m), atol=1e-6)   # descent raises chosen
+assert np.isclose(dpo_loss(-5, -7, -5, -7), np.log(2))                 # policy == ref -&gt; log 2
+
+# --- GRPO and RLOO advantages ---
+def grpo_adv(r, eps=1e-6):
+    r = np.asarray(r, float); return (r - r.mean()) / (r.std() + eps)
+def rloo_adv(r):
+    r = np.asarray(r, float); k = len(r); return r - (r.sum() - r) / (k - 1)
+print(np.round(grpo_adv([1, 0, 0, 1, 1, 0, 0, 0]), 3))   # [ 1.291 -0.775 ...]
+assert np.allclose(grpo_adv([1, 1, 1, 1]), 0)             # all-correct group: zero signal
+r = np.array([1, 0, 0, 1.]); assert np.allclose(rloo_adv(r), 4 / 3 * (r - r.mean()))</code></pre>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span><code>adv</code>、<code>old_logp</code>、<code>returns</code> 都必须是常量（detach / no_grad 下计算）；approx KL 用 k3 形式 <code>(ratio-1) - log ratio</code> 比 <code>old_logp - logp</code> 的均值更稳定；value clip 用 <code>max</code>（悲观）而不是 <code>min</code>。</div>
+</section>
+
+<section class="concept" id="c-code-dpo">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Bradley–Terry RM loss 与 DPO loss（PyTorch）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RM：<code>-logsigmoid(r_c - r_r)</code>。DPO：<code>-logsigmoid(beta*((pi_c-ref_c)-(pi_r-ref_r)))</code>，其中各项是<b>整条回答 token log-prob 之和</b>。</p><p class="en">Both are logistic losses on a margin; DPO's margin is the difference of log-ratios.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import math
+import torch
+import torch.nn.functional as F
+
+def bt_reward_loss(r_chosen, r_rejected):
+    # -log sigma(r_c - r_r); logsigmoid is numerically stable
+    return -F.logsigmoid(r_chosen - r_rejected).mean()
+
+def dpo_loss(pi_c, pi_r, ref_c, ref_r, beta=0.1):
+    """Inputs: SUMMED log-probs of each full response, shape (B,)."""
+    logits = beta * ((pi_c - ref_c) - (pi_r - ref_r))
+    loss = -F.logsigmoid(logits).mean()
+    chosen_reward = beta * (pi_c - ref_c).detach()       # implicit rewards, for logging
+    rejected_reward = beta * (pi_r - ref_r).detach()
+    return loss, chosen_reward, rejected_reward
+
+if __name__ == "__main__":
+    pc = torch.tensor([-10.0], requires_grad=True); pr = torch.tensor([-12.0], requires_grad=True)
+    loss, cr, rr = dpo_loss(pc, pr, torch.tensor([-11.0]), torch.tensor([-11.5]))
+    loss.backward()
+    assert pc.grad.item() &lt; 0 &lt; pr.grad.item()           # descent: raise chosen, lower rejected
+    m = 0.1 * ((-10 + 11) - (-12 + 11.5)); s = 1 / (1 + math.exp(m))
+    assert abs(pc.grad.item() + 0.1 * s) &lt; 1e-6
+    l0, _, _ = dpo_loss(torch.tensor([-5.0]), torch.tensor([-7.0]), torch.tensor([-5.0]), torch.tensor([-7.0]))
+    assert abs(l0.item() - math.log(2)) &lt; 1e-6            # policy == ref -&gt; log 2
+    assert abs(bt_reward_loss(torch.tensor([1.0]), torch.tensor([0.2])).item() - 0.37110) &lt; 1e-4
+    print("ok")</code></pre>
+    <p>梯度符号检查（numpy 有限差分验证）：\(\partial\mathcal L/\partial\log\pi(y_w)=-\beta\sigma(-m)\lt0\)，\(\partial\mathcal L/\partial\log\pi(y_l)=+\beta\sigma(-m)\gt0\)；例中 \(m=0.15\)，梯度为 ∓0.0463。初始化（policy = ref）时 loss = log 2。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-code-grpo">
+  <div class="concept-head"><span class="pri p1">★</span><h3>GRPO 优势 + loss（k3 KL，序列级或 token 级归一化）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>advantages = (r − mean)/std 按组计算并广播到 token；loss = −[min(ratio·A, clip·A) − β·k3]；<code>token_level=True</code> 即 DAPO 式归一化，<code>scale_std=False</code> 即 Dr. GRPO。</p><p class="en">GRPO in ~30 lines, with switches for the Dr. GRPO and DAPO variants.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import torch
+
+def grpo_advantages(rewards, eps=1e-6, scale_std=True):
+    """rewards: (num_prompts, G) scalar reward per completion -&gt; same-shape advantages."""
+    mean = rewards.mean(dim=1, keepdim=True)
+    adv = rewards - mean
+    if scale_std:                                   # Dr. GRPO sets scale_std=False
+        adv = adv / (rewards.std(dim=1, keepdim=True, unbiased=False) + eps)
+    return adv
+
+def grpo_loss(logp, old_logp, ref_logp, adv, mask, clip_eps=0.2, beta=0.04, token_level=False):
+    """logp/old_logp/ref_logp, mask: (N, T) with N = num_prompts*G; adv: (N,) one value per sequence."""
+    m = mask.float()
+    ratio = torch.exp(logp - old_logp)
+    A = adv.unsqueeze(1)                            # broadcast sequence advantage to every token
+    surr = torch.min(ratio * A, torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * A)
+    log_r = ref_logp - logp                         # log(pi_ref / pi_theta)
+    kl = torch.exp(log_r) - log_r - 1               # k3 estimator, &gt;= 0 per token
+    per_tok = -(surr - beta * kl)
+    if token_level:                                 # DAPO: average over all tokens in batch
+        return (per_tok * m).sum() / m.sum()
+    # original GRPO: mean over each sequence's tokens, then mean over sequences
+    return ((per_tok * m).sum(1) / m.sum(1)).mean()
+
+if __name__ == "__main__":
+    r = torch.tensor([[1., 0, 0, 1, 1, 0, 0, 0], [1., 1, 1, 1, 1, 1, 1, 1]])
+    a = grpo_advantages(r)
+    assert torch.allclose(a[0], torch.tensor([1.291, -.775, -.775, 1.291, 1.291, -.775, -.775, -.775]), atol=1e-3)
+    assert torch.all(a[1] == 0)                     # all-correct group gives zero gradient
+    N, T = 16, 5
+    torch.manual_seed(0)
+    lp = torch.randn(N, T) * 0.1 - 1
+    mask = torch.ones(N, T); mask[0, 3:] = 0
+    L = grpo_loss(lp.clone().requires_grad_(True), lp, lp, a.reshape(-1), mask)
+    # on-policy first step, pi = pi_old = pi_ref -&gt; ratio 1, kl 0, loss = -mean(adv) ~ 0
+    assert abs(L.item() + a.reshape(-1).mean().item()) &lt; 1e-6
+    lp2 = lp.clone().requires_grad_(True)
+    grpo_loss(lp2, lp, lp, a.reshape(-1), mask, token_level=True).backward()
+    assert lp2.grad[0, 0] &lt; 0 and lp2.grad[1, 0] &gt; 0   # positive adv -&gt; raise logp; negative -&gt; lower
+    print("ok")</code></pre>
+    <p>注意：<code>std(unbiased=False)</code> 与 <code>unbiased=True</code> 会给出不同数值，实现时要和论文/框架保持一致；全对或全错的组 std=0，靠 eps 防止除零，优势为 0。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-code-kl">
+  <div class="concept-head"><span class="pri p1">★</span><h3>KL 估计器 k1 / k2 / k3 与精确 KL 对比（numpy）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(x\sim q\)，\(r=p(x)/q(x)\)：k1=−log r（无偏、高方差、可负）、k2=½(log r)²（有偏、低方差）、k3=(r−1)−log r（无偏、非负、低方差）。</p><p class="en">Schulman's KL estimators, checked against the closed-form Gaussian KL.</p></div>
+  <div class="deep">
+    <p>参考：<a href="http://joschu.net/blog/kl-approx.html" target="_blank" rel="noreferrer">John Schulman, Approximating KL Divergence (2020)</a>。</p>
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(1)
+
+def kl_estimators(logp_q, logp_p):
+    """Samples x ~ q. Estimates KL(q || p). log_r = log p(x) - log q(x)."""
+    log_r = logp_p - logp_q
+    k1 = -log_r                          # unbiased, high variance, can be negative
+    k2 = 0.5 * log_r ** 2                # biased (low bias when q ~ p), low variance
+    k3 = np.exp(log_r) - 1 - log_r       # unbiased AND always &gt;= 0, low variance
+    return k1, k2, k3
+
+# q = N(0,1) (the policy we sample from), p = N(mu,1) (the reference). True KL = mu^2/2
+for mu in [0.1, 0.5, 1.0]:
+    x = rng.normal(0, 1, size=200_000)
+    logq, logp = -0.5 * x**2, -0.5 * (x - mu)**2      # shared normalizer cancels
+    k1, k2, k3 = kl_estimators(logq, logp)
+    print(f"true={mu**2/2:.4f} | k1 {k1.mean():.4f}±{k1.std():.3f} | "
+          f"k2 {k2.mean():.4f}±{k2.std():.3f} | k3 {k3.mean():.4f}±{k3.std():.3f}")
+    assert (k3 &gt;= 0).all() and abs(k1.mean() - mu**2/2) &lt; 0.02 and abs(k3.mean() - mu**2/2) &lt; 0.02</code></pre>
+<pre><code class="language-plaintext">true=0.0050 | k1 0.0052±0.100 | k2 0.0050±0.007 | k3 0.0050±0.007
+true=0.1250 | k1 0.1266±0.499 | k2 0.1324±0.188 | k3 0.1243±0.185
+true=0.5000 | k1 0.4985±1.000 | k2 0.6243±0.868 | k3 0.5003±0.846</code></pre>
+    <p>观察：k1 的标准差比 k3 大一个数量级（KL 小时尤其明显），且约一半样本为负；k2 在分布接近时几乎无偏，分布远离时偏差变大（0.62 vs 0.50）；k3 始终无偏且非负。</p>
+    <p><b>当 loss 用时的梯度（进阶）</b>：在 on-policy 样本上把估计值直接对 θ 求导（样本固定），离散分布的精确计算显示：k1 的期望梯度恒为 0（因为 \(\mathbb E_\pi[\nabla\log\pi]=0\)），k3 的期望梯度等于 \(\nabla_\theta\mathrm{KL}(\pi_{\text{ref}}\|\pi_\theta)\)，而不是 reverse KL 的梯度。所以"KL 当 reward"（经过 score function）和"KL 当 loss"（直接求导）在梯度层面不是一回事。</p>
+<pre><code class="language-python"># Expected "pathwise-only" gradient of k1/k3 used directly as a loss on on-policy samples
+import numpy as np
+rng=np.random.default_rng(0); K=5
+th=rng.normal(size=K); ref=rng.dirichlet(np.ones(K))
+sm=lambda z: np.exp(z-z.max())/np.exp(z-z.max()).sum()
+p=sm(th)
+J=np.diag(p)-np.outer(p,p)            # d p / d theta ; grad log p_a = e_a - p
+glog=np.eye(K)-p                       # row a = grad log p_a
+# E_{a~p}[ grad_theta k(a) ] with sample a held fixed
+k1_grad = sum(p[a]*glog[a] for a in range(K))                          # k1 = log p - log ref
+k3_grad = sum(p[a]*(1-ref[a]/p[a])*glog[a] for a in range(K))          # k3 = ref/p - log(ref/p) - 1
+rev = J@(np.log(p/ref)+1)              # grad KL(p||ref)
+fwd = J@(-ref/p)                       # grad KL(ref||p) = -sum ref * grad log p
+print("k1 loss grad:",np.round(k1_grad,6))
+print("k3 loss grad:",np.round(k3_grad,4)," grad KL(ref||p):",np.round(fwd,4)," grad KL(p||ref):",np.round(rev,4))
+assert np.allclose(k1_grad,0) and np.allclose(k3_grad,fwd) and not np.allclose(k3_grad,rev)</code></pre>
+  </div>
+</section>
+
+<!-- ===================================================== §10 -->
+<h2 class="sec" id="s-scenarios"><span class="num">§10 · INTERVIEW SCENARIOS</span>面试场景题</h2>
+<p class="sec-intro">场景题考的是"排查与权衡"的思路，而不是背答案。推荐结构：<b>先确认现象（看哪些指标）→ 列假设（按可能性排序）→ 每个假设怎么验证 → 对应修复</b>。每题给出要点和一段可以直接说的英文。</p>
+
+<section class="concept" id="c-sc-1">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 1：RM 分数一直涨，但人评/真实质量在降</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>典型 reward over-optimization（Goodhart）。查长度、KL、RM 在策略分布上的准确率；对策是 KL/early stop、ensemble、长度控制、刷新 RM。</p><p class="en">Classic reward hacking — diagnose via length, KL and held-out judges, then constrain or refresh the RM.</p></div>
+  <div class="deep">
+    <ol>
+      <li><b>确认</b>：画 RM 分数 vs KL；用独立评估（另一个 RM、强模型 judge、人工抽样）对比；看最高分样本长什么样。</li>
+      <li><b>常见原因</b>：长度膨胀；重复/格式化 hack；谄媚；RM 在策略分布外失准；β 太小 / KL 失控；RM 训练数据有偏。</li>
+      <li><b>验证</b>：分数与长度的相关性；控制长度后的 RM 分数；在新采样的策略输出上收集少量人工偏好，测 RM 准确率。</li>
+      <li><b>修复</b>：增大 β 或按 KL 预算 early stop；长度惩罚/归一化；RM ensemble 保守聚合；用 on-policy 样本重新标注、重训 RM（迭代 RLHF）；对 hack 模式加入负样本。</li>
+    </ol>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>That's the classic sign of reward over-optimization. First I'd confirm it with an independent signal — a held-out judge or a small human eval — and look at the highest-reward samples, which usually reveal the exploit. Then I'd check whether reward correlates with length, repetition or sycophancy, and how fast the KL is growing. Fixes include a stronger KL penalty or early stopping on a KL budget, length control, a conservative ensemble of reward models, and refreshing the reward model with preference labels on the current policy's outputs.</p></div>
+</section>
+
+<section class="concept" id="c-sc-2">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 2：为什么 GRPO 不需要 critic？什么时候还是该用 PPO？</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>组均值是 V(prompt) 的 MC 估计，替代 critic；在稀疏 0/1 奖励、长序列下 critic 难学且昂贵。需要细粒度 credit assignment、每个 prompt 只能采一个样本、或多步环境交互中间奖励丰富时，critic 更有价值。</p><p class="en">The group mean is a Monte Carlo baseline; critics help when you need per-step credit assignment.</p></div>
+  <div class="deep">
+    <p>省显存（少一个大模型 + 优化器状态）、少一组超参、避免 critic 不准带来的有偏优势。代价：每个 prompt 需 G 个样本；所有 token 共享一个优势；全对/全错组无信号。PPO + critic 在以下情况可能更好：奖励密集或有中间奖励（多轮 agent）、序列中有明显的关键决策点、采样成本极高无法多采。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>GRPO replaces the learned value function with the mean reward of a group of samples for the same prompt, which is a Monte Carlo estimate of the prompt's value. For LLM reasoning with sparse binary rewards over thousands of tokens, a token-level critic is expensive and hard to train accurately, so this is a good trade. What you lose is per-token credit assignment, and you need several samples per prompt. I'd still consider a critic for multi-turn agent tasks with intermediate rewards or when sampling many completions per prompt is too expensive.</p></div>
+</section>
+
+<section class="concept" id="c-sc-3">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 3：RLVR 训练到第 200 步 entropy 崩了，reward 停滞</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>查温度一致性、lr 与重复更新次数、题目难度分布（多少组全对）；用 clip-higher、更高温度、更难的题、降低 lr、熵/协方差控制。</p><p class="en">Check temperature, step size, and data difficulty; apply clip-higher and harder data.</p></div>
+  <div class="deep">
+    <p>见 <a href="#c-entropy-collapse">entropy collapse</a>。补充：检查是否有 bug 让熵"看起来"崩了（例如计算熵时用了错误的温度）；检查 pass@k（k 大）是否同步下降——如果 pass@1 不升而 pass@k 降，说明多样性丧失；检查有效 batch（非零优势样本比例）是否随训练变小，若是则需要更难的题或动态采样。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd first verify the entropy computation and that rollout and training use the same temperature. Then I'd look at the fraction of groups with all-correct answers — if most prompts are solved, the effective batch shrinks and the policy just sharpens — and at pass-at-k for large k to see if diversity is collapsing. Remedies are clip-higher to let low-probability tokens grow, a lower learning rate or fewer updates per batch, a higher sampling temperature, harder problems or dynamic sampling, and targeted entropy control.</p></div>
+</section>
+
+<section class="concept" id="c-sc-4">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 4：DPO 训练中 chosen 的 log-likelihood 在下降</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>DPO 只优化 margin，这是已知现象（likelihood displacement），不一定是 bug；看生成质量与 margin，必要时加 NLL 项、增大 β、过滤相似对、online DPO。</p><p class="en">Expected behavior of a margin-only objective; act only if generation quality suffers.</p></div>
+  <div class="deep">
+    <p>见 <a href="#c-dpo-issues">DPO 的已知问题</a>。先排除 bug：logprob 是否求和、prompt 是否 mask、chosen/rejected 是否搞反（检查 reward accuracy 是否 &gt; 0.5 并上升）、ref 是否真的冻结。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>That's actually common with DPO, because the loss only cares about the margin between chosen and rejected, so both can go down while the rejected falls faster. I'd first rule out bugs — summed log-probs, prompt masking, swapped labels, a frozen reference — and check that implicit reward accuracy and margins go up. If generations are still improving, it's fine; if they degrade, I'd lower the learning rate, increase beta, add an SFT term on the chosen responses, filter near-duplicate pairs, or move to online DPO.</p></div>
+</section>
+
+<section class="concept" id="c-sc-5">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 5：为代码生成设计奖励</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>沙箱执行隐藏测试的 0/1 通过奖励为主；高质量多样的测试；防作弊（不可改测试、资源限制、禁止网络）；处理截断和格式；监控 held-out 时间切分基准。</p><p class="en">Binary pass/fail on hidden tests in a sandbox, with anti-hacking guards.</p></div>
+  <div class="deep"><p>见 <a href="#c-rlvr">RLVR</a> 的追问。补充权衡：部分分（通过比例）给更密的信号但更易被"只解简单 case"利用；可以把编译成功作为很小的辅助奖励，但不应超过正确性；对多轮（agent 式调试）任务，可以允许模型看到公开测试的结果，但用隐藏测试打分。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd use a binary reward: the solution passes all hidden unit tests in a sandbox or it gets zero. The test suite needs to be strong — edge cases and randomized tests — because weak tests are the main source of false positives. I'd guard against hacking by isolating test files, limiting time, memory and network, and checking for hard-coded outputs. Truncated or unparsable outputs get zero, and I'd monitor progress on a held-out, time-split benchmark rather than only the training reward.</p></div>
+</section>
+
+<section class="concept" id="c-sc-6">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 6：PPO 还是 DPO？给一个新产品对齐任务选方法</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>看奖励信号、数据、算力和是否需要探索：有离线偏好数据、追求简单稳定 → DPO（最好 iterative）；有可验证奖励或可靠 RM、需要超越数据 → online RL。</p><p class="en">Decide by reward source, data, compute and need for exploration.</p></div>
+  <div class="deep"><p>见 <a href="#c-ppo-vs-dpo">PPO vs DPO</a>。面试时可以提出"先 SFT → DPO 打底 → 在可验证子任务上做 RLVR"的组合方案，并说明如何评估（人评/judge 胜率、安全指标、通用能力回归测试）。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>It depends on the reward signal and the compute budget. If we mainly have a fixed set of preference comparisons and want something simple and stable, I'd start with DPO, ideally iterative DPO with fresh samples from the current model. If we have a reliable reward — verifiable checks or a well-calibrated reward model — and the task benefits from exploration, like reasoning or tool use, online RL such as PPO or GRPO is worth the extra complexity. In practice I'd probably combine them: SFT, then preference optimization, then RL on the verifiable parts.</p></div>
+</section>
+
+<section class="concept" id="c-sc-7">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 7：RL 后回答长度暴涨（length hacking）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>区分"有用的更长思考"与"hack"：分别看正确/错误回答的长度、按长度分桶的准确率；检查 loss 归一化（GRPO 的 1/|o| 偏差）与 RM 长度偏好；对策：长度惩罚、Dr. GRPO/token-level loss、超长软惩罚、RM 去偏。</p><p class="en">Separate useful longer reasoning from hacking; check normalization bias and RM length preference.</p></div>
+  <div class="deep">
+    <p>RLHF 场景：多半是 RM 长度偏好 → 长度控制的 RM 评估、长度惩罚、在 RM 数据中平衡长度。RLVR 场景：长度增长可能伴随准确率提升（真实地多思考），但如果是错误回答在变长，怀疑 GRPO 的长度归一化偏差；若大量回答被截断，加 overlong 软惩罚、调整最大长度。也可以用"效率奖励"（同样正确时更短更好）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>First I'd separate the length trends of correct and incorrect responses and look at accuracy by length bucket. In RLHF, length growth usually comes from the reward model's length preference, so I'd add a length penalty or length-controlled evaluation and debias the reward data. In reasoning RL, some growth is genuine extra thinking, but if mostly wrong answers are getting longer, that points to the per-response length normalization bias in GRPO, which Dr. GRPO or a token-level loss fixes; and if many responses hit the limit, I'd add a soft overlong penalty.</p></div>
+</section>
+
+<section class="concept" id="c-sc-8">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 8：GRPO 训练中大部分组的奖励全是 0</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>题太难 → 没有梯度信号。降低难度/课程学习、增大 G、先 SFT（冷启动）、提示/部分解答引导、过滤 pass rate 为 0 的题、检查验证器是否有假阴性（格式问题）。</p><p class="en">No positive samples means no signal — fix difficulty, sampling, or the verifier.</p></div>
+  <div class="deep"><p>第一步先查验证器与格式：模型其实答对了但答案抽取失败（如没写 <code>\boxed{}</code>、模板不匹配）是非常常见的原因（Dr. GRPO 论文显示模板不匹配可以让 Qwen2.5-Math-7B 在 RL 前几乎 0 分）。然后：离线估计每题 pass rate，构造难度课程；增大 G 提高至少一个正样本的概率（\(1-(1-p)^G\)）；用冷启动 SFT 让模型学会格式。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If every sample in a group gets zero, the advantages are all zero and there's no learning signal. I'd first check the verifier and the prompt template — very often the model is actually right but the answer extraction fails. Then I'd estimate per-problem pass rates and build a curriculum that keeps problems in a useful difficulty band, increase the group size so at least one success is likely, and consider a small cold-start SFT to teach the format.</p></div>
+</section>
+
+<section class="concept" id="c-sc-9">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 9：PPO 训练突然崩溃（reward 骤降、KL 飙升）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>看 clipfrac、approx KL、grad norm、value loss、ratio 的极值；常见原因：lr 太大、epoch 太多、train/inference logprob 不一致、数值精度、坏样本；对策：降 lr、减少 epoch、KL early stop、梯度裁剪、修复 mismatch、回滚。</p><p class="en">Inspect clip fraction, approx KL, grad norm and ratio extremes; reduce step size and fix mismatches.</p></div>
+  <div class="deep"><p>额外检查：dropout 是否关闭；old_logp 是否在正确的模型版本上计算；rollout 引擎与训练引擎的 logprob 差异（同一参数下比率应约为 1）；MoE 模型的路由在两个引擎中不一致；是否有异常长的样本或 NaN 奖励。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd look at the PPO diagnostics right before the collapse: clip fraction, approximate KL between old and new policies, gradient norm, value loss, and the extreme values of the ratio. Typical causes are too large a learning rate or too many epochs per batch, a mismatch between the log-probs computed by the inference engine and the trainer, dropout left on, or a few pathological samples. I'd roll back to a good checkpoint, lower the learning rate, add KL-based early stopping, and verify the ratio is about one at the start of each update.</p></div>
+</section>
+
+<section class="concept" id="c-sc-10">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 10：RL 后数学变强了，但通用对话/其他能力退化</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>"对齐税"/遗忘。混合多领域数据与奖励、保留 KL 或混入 SFT/预训练梯度（PPO-ptx 思想）、模型合并/插值、最后再做一轮通用 SFT/RL（R1 的做法）。</p><p class="en">Mitigate forgetting with mixed data, KL or SFT replay, merging, and a final general-purpose stage.</p></div>
+  <div class="deep"><p>评估上建立回归测试集（通用对话、指令遵循、安全、知识），每个 checkpoint 都跑；R1 的流程正是在推理 RL 之后加了拒绝采样 SFT（含 20 万非推理数据）和全场景 RL 来恢复通用能力。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>That's the alignment tax, or catastrophic forgetting. I'd set up a regression suite covering general chat, instruction following, safety and knowledge, and track it at every checkpoint. To mitigate it, I'd mix in other domains and rewards, keep a KL penalty or replay some SFT data, try interpolating weights with the pre-RL model, and finish with a general-purpose SFT or RL stage — which is essentially what DeepSeek-R1's later stages do.</p></div>
+</section>
+
+<section class="concept" id="c-sc-11">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 11：小模型想要推理能力——做 RL 还是蒸馏？</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>有强教师时，先蒸馏（SFT on teacher traces，或 on-policy distillation）通常更划算；再在其上做 RL 进一步提升。R1 论文和 Yue et al. 都观察到蒸馏能带来 RL 难以带来的新推理模式。</p><p class="en">With a strong teacher, distill first, then RL on top.</p></div>
+  <div class="deep"><p>理由：小模型直接 RL 受限于自身探索能力（base 采不到的正确路径学不到）；蒸馏直接提供新的推理模式。on-policy 蒸馏还能缓解暴露偏差。没有教师或需要超越教师时，再依靠 RLVR。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If a strong teacher is available, I'd distill first — either SFT on teacher reasoning traces or on-policy distillation with per-token teacher feedback — because a small model's RL is limited by what it can already sample, while distillation injects new reasoning patterns. DeepSeek-R1 found distillation beat running large-scale RL directly on small models. Then I'd apply RLVR on top to sharpen and adapt to the target distribution.</p></div>
+</section>
+
+<section class="concept" id="c-sc-12">
+  <div class="concept-head"><span class="pri p1">★</span><h3>场景 12：如何判断你的 RL 改进是真的？（评估设计）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>多种子、置信区间、在 held-out 与时间切分基准上评估、报告 pass@1（多样本平均）和 pass@k、控制采样设置、检查污染、与等算力 baseline（含调好的 GRPO/PPO、BoN）比较。</p><p class="en">Multiple seeds, confidence intervals, held-out benchmarks, matched compute baselines.</p></div>
+  <div class="deep"><p>RL 结果方差大：同一配置不同种子差几个点很正常；AIME 这类小测试集（30 题）每题 3.3 分，要用多次采样平均的 pass@1 与 bootstrap 置信区间。见 <a href="m13-eval.html">模块 13</a>。还要报告：训练奖励曲线与评估曲线是否一致、回答长度、在多个 base 模型族上是否成立（spurious rewards 的教训）。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>RL results are noisy, so I'd run multiple seeds and report confidence intervals, average pass@1 over many samples per problem — especially on tiny benchmarks like AIME — and also report pass@k. I'd evaluate on held-out and time-split benchmarks to rule out contamination, keep decoding settings fixed, and compare against equally tuned baselines at matched compute, including best-of-N. And I'd check the result holds on more than one model family, since some RLVR effects turned out to be specific to Qwen models.</p></div>
+</section>
+
+<!-- ===================================================== §11 -->
+<h2 class="sec" id="s-ex"><span class="num">§11 · EXERCISES</span>练习</h2>
+<p class="sec-intro">推导题请在纸上完整写出每一步，然后用英文口述一遍（这是白板面试的真实形式）。计算题的答案都已用代码核对。</p>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.1</b> · 难度 ★★</div>
+<p>从 \(J(\theta)=\mathbb E_{\tau\sim p_\theta}[R(\tau)]\) 出发，推导策略梯度的轨迹形式，并说明为什么不需要知道环境转移概率。</p>
+<details><summary>提示</summary><div class="inner">\(\nabla p=p\nabla\log p\)；写出 \(\log p_\theta(\tau)\) 的分解。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(\nabla J=\sum_\tau\nabla p_\theta(\tau)R(\tau)=\sum_\tau p_\theta(\tau)\nabla\log p_\theta(\tau)R(\tau)=\mathbb E[\nabla\log p_\theta(\tau)R(\tau)]\)。\(\log p_\theta(\tau)=\log\rho_0(s_0)+\sum_t\log\pi_\theta(a_t|s_t)+\sum_t\log P(s_{t+1}|s_t,a_t)\)，只有中间项依赖 θ，所以 \(\nabla J=\mathbb E[\sum_t\nabla\log\pi_\theta(a_t|s_t)R(\tau)]\)。转移概率项梯度为 0，因此只需能从环境采样，不需要知道 P。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.2</b> · 难度 ★★</div>
+<p>证明：对任意只依赖状态的函数 \(b(s)\)，\(\mathbb E_{a\sim\pi_\theta(\cdot|s)}[\nabla_\theta\log\pi_\theta(a|s)\,b(s)]=0\)。再说明为什么 b 依赖 a 时不成立。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(=b(s)\sum_a\pi_\theta(a|s)\frac{\nabla\pi_\theta(a|s)}{\pi_\theta(a|s)}=b(s)\nabla_\theta\sum_a\pi_\theta(a|s)=b(s)\nabla_\theta 1=0\)。若 b 依赖 a，则不能把 b 提到求和号外，\(\sum_a\nabla\pi(a|s)b(s,a)\) 一般不为 0。例：两动作，\(b(s,a)=\mathbb 1[a=1]\)，结果为 \(\nabla\pi(1|s)\ne0\)。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.3</b> · 难度 ★★</div>
+<p>用"因果性"论证：在策略梯度中，可以把总回报 \(R(\tau)\) 换成 reward-to-go \(\sum_{t'\ge t}r_{t'}\)。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>对 \(t'\lt t\)：\(\mathbb E[\nabla\log\pi(a_t|s_t)r_{t'}]=\mathbb E_{h_t}[r_{t'}\,\mathbb E_{a_t\sim\pi(\cdot|s_t)}[\nabla\log\pi(a_t|s_t)]]=0\)，因为 \(r_{t'}\) 在 \(h_t\)（含 \(s_t\)）给定时是确定的，内层期望是 score 的期望 = 0。所以这些项的期望为 0，可以去掉（去掉后方差通常更小）。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.4</b> · 难度 ★★★</div>
+<p>推导：\(\max_\pi\mathbb E_{y\sim\pi}[r(y)]-\beta\,\mathrm{KL}(\pi\|\pi_{\text{ref}})\) 的最优解为 \(\pi^*\propto\pi_{\text{ref}}e^{r/\beta}\)，并求最优值。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>目标 \(=-\beta\sum_y\pi\log\frac{\pi}{\pi_{\text{ref}}e^{r/\beta}}=-\beta\,\mathrm{KL}(\pi\|\pi^*)+\beta\log Z\)，\(Z=\sum_y\pi_{\text{ref}}e^{r/\beta}\)。KL ≥ 0 且仅在 \(\pi=\pi^*\) 时取 0，所以最优解 \(\pi^*\)，最优值 \(\beta\log Z\)。（代码中用 2 万个随机 Dirichlet 分布验证没有一个超过 \(\beta\log Z\)。）</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.5</b> · 难度 ★★★</div>
+<p>从 11.4 的结论出发，完整推导 DPO 损失；指出哪一步必须用到"BT 只依赖同一 prompt 下的奖励差"。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>反解：\(r=\beta\log\frac{\pi^*}{\pi_{\text{ref}}}+\beta\log Z(x)\)。代入 \(P(y_w\succ y_l)=\sigma(r_w-r_l)\)，\(\beta\log Z(x)\) 在差中抵消（这一步用到 BT 只依赖同 prompt 奖励差）。用 \(\pi_\theta\) 代替 \(\pi^*\)，对偏好数据做 MLE：\(\mathcal L=-\mathbb E\log\sigma(\beta\log\frac{\pi_\theta(y_w)}{\pi_{\text{ref}}(y_w)}-\beta\log\frac{\pi_\theta(y_l)}{\pi_{\text{ref}}(y_l)})\)。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.6</b> · 难度 ★★</div>
+<p>手算 GAE：γ=1, λ=0.9，三步奖励 (0, 0, 1)，\(V(s_0..s_2)=(0.5,0.6,0.7)\)，第 3 步后终止。求 \(\hat A_0,\hat A_1,\hat A_2\) 与 value targets。再分别给出 λ=0 与 λ=1 的结果。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>δ₀ = 0+0.6−0.5 = 0.1；δ₁ = 0+0.7−0.6 = 0.1；δ₂ = 1+0−0.7 = 0.3。\(\hat A_2=0.3\)；\(\hat A_1=0.1+0.9\times0.3=0.37\)；\(\hat A_0=0.1+0.9\times0.37=0.433\)。Targets = A+V = (0.933, 0.97, 1.0)。λ=0：A=δ=(0.1,0.1,0.3)。λ=1：A = G−V = (1−0.5, 1−0.6, 1−0.7) = (0.5, 0.4, 0.3)。（代码已验证。）</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.7</b> · 难度 ★</div>
+<p>PPO-clip，ε=0.2。对下面五组 (ratio, A) 求目标值，并判断该 token 是否产生梯度：(1.5, +1)、(0.5, +1)、(1.5, −1)、(0.5, −1)、(1.1, +1)。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>(1.5,+1)：min(1.5, 1.2)=1.2，被截断，<b>无梯度</b>。(0.5,+1)：min(0.5, 0.8)=0.5，未截断，有梯度（推高）。(1.5,−1)：min(−1.5, −1.2)=−1.5，未截断，有梯度（压低）。(0.5,−1)：min(−0.5, −0.8)=−0.8，被截断，<b>无梯度</b>。(1.1,+1)：在区间内，1.1，有梯度。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.8</b> · 难度 ★★</div>
+<p>RLOO：一个 prompt 采样 4 个回答，奖励 (1, 0, 0, 1)。求每个回答的 RLOO 优势；证明 RLOO 优势 \(=\frac{k}{k-1}(r_i-\bar r)\)，并说明为什么 RLOO 无偏而"减组均值"有轻微偏差。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>回答 1：1 − (0+0+1)/3 = 2/3；回答 2：0 − 2/3 = −2/3；回答 3：−2/3；回答 4：2/3。一般地 \(r_i-\frac{k\bar r-r_i}{k-1}=\frac{(k-1)r_i-k\bar r+r_i}{k-1}=\frac{k}{k-1}(r_i-\bar r)\)。RLOO baseline 不含 \(r_i\)，与样本 i 独立，满足 baseline 无偏条件；组均值含 \(r_i\)，\(\mathbb E[\nabla\log\pi(y_i)\bar r]=\frac1k\mathbb E[\nabla\log\pi(y_i)r_i]\ne0\)，等价于把梯度整体乘 \((k-1)/k\)——方向不变，只是缩放（GRPO 再除以 std 时情况更复杂）。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.9</b> · 难度 ★★</div>
+<p>GRPO：G=8，奖励 [1,0,0,1,1,0,0,0]。求组内标准化优势（用总体标准差）。如果奖励是 [1,1,1,1,1,1,1,1] 呢？这个 prompt 对梯度的贡献是什么？</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>均值 3/8 = 0.375，方差 = 0.375×0.625 = 0.234，std = 0.484。正确：(1−0.375)/0.484 = 1.291；错误：−0.375/0.484 = −0.775。全对时 std=0、优势全为 0，策略梯度项为 0，只剩 KL 项（若有）——这就是 DAPO 动态采样要过滤它的原因。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.10</b> · 难度 ★★</div>
+<p>BT 奖励模型：\(r_w=1.0,r_l=0.2\)。求 loss 与 \(\partial\mathcal L/\partial r_w\)。如果 \(r_w=0.2,r_l=1.0\)（排错）呢？</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>m=0.8：loss = −log σ(0.8) = log(1+e^{−0.8}) ≈ 0.371；\(\partial\mathcal L/\partial r_w=-\sigma(-0.8)\approx-0.310\)。排错 m=−0.8：loss ≈ 1.171，梯度 \(-\sigma(0.8)\approx-0.690\)——排错时梯度更大。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.11</b> · 难度 ★★</div>
+<p>DPO：β=0.1，\(\log\pi_\theta(y_w)=-10,\log\pi_\theta(y_l)=-12,\log\pi_{\text{ref}}(y_w)=-11,\log\pi_{\text{ref}}(y_l)=-11.5\)。求隐式奖励、margin、loss，以及对两个 logprob 的梯度。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(\hat r_w=0.1\times(−10+11)=0.1\)；\(\hat r_l=0.1\times(−12+11.5)=−0.05\)；margin m = 0.15。loss = −log σ(0.15) ≈ 0.621。\(\partial\mathcal L/\partial\log\pi(y_w)=-0.1\,\sigma(-0.15)\approx-0.0463\)，对 \(y_l\) 为 +0.0463。（代码已验证。）</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.12</b> · 难度 ★★★</div>
+<p>证明 k3 估计器 \(k_3=(r-1)-\log r\)（\(r=p(x)/q(x)\)，\(x\sim q\)）是 \(\mathrm{KL}(q\|p)\) 的无偏估计且逐样本非负。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(\mathbb E_q[r]=\sum_xq\frac pq=1\)，所以 \(\mathbb E_q[r-1]=0\)；\(\mathbb E_q[-\log r]=\mathbb E_q[\log\frac qp]=\mathrm{KL}(q\|p)\)。故 \(\mathbb E[k_3]=\mathrm{KL}\)。非负：\(\log r\le r-1\)（log 的切线不等式，log 是凹函数），等号仅在 r=1。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.13</b> · 难度 ★★</div>
+<p>推导 GAE 的闭式 \(\sum_l(\gamma\lambda)^l\delta_{t+l}\)：从 k 步优势的伸缩和出发，按权重 \((1-\lambda)\lambda^{k-1}\) 加权求和。</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(\hat A^{(k)}_t=\sum_{l=0}^{k-1}\gamma^l\delta_{t+l}\)。\((1-\lambda)\sum_{k\ge1}\lambda^{k-1}\sum_{l\lt k}\gamma^l\delta_{t+l}=\sum_{l\ge0}\gamma^l\delta_{t+l}(1-\lambda)\sum_{k\ge l+1}\lambda^{k-1}=\sum_l\gamma^l\delta_{t+l}\lambda^l\)，因为 \((1-\lambda)\sum_{j\ge l}\lambda^j=\lambda^l\)。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.14</b> · 难度 ★★</div>
+<p>Dr. GRPO 的长度偏差：两条错误回答，优势都是 −1，长度分别 100 和 1000 个 token。在原始 GRPO 归一化（每条除以自身长度）下，每个 token 获得的梯度权重分别是多少？在 DAPO token-level 归一化下呢？</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>GRPO（G=2）：每 token 权重 \(\frac1G\cdot\frac1{|o_i|}\)：短回答 1/200，长回答 1/2000——长的错误回答每 token 惩罚小 10 倍，导致错误回答倾向变长。Token-level：所有 token 权重都是 \(1/(100+1000)=1/1100\)，长回答的每个 token 与短回答一样被惩罚（整体上长回答因 token 多而贡献更大）。</p>
+</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 11.15</b> · 难度 ★★</div>
+<p>某题模型单次采样正确率 p=0.05。GRPO 组大小 G=8 时，一组中至少有一个正确回答（从而有非零优势）的概率是多少？G=64 呢？</p>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(1-(1-p)^G\)：G=8 → 1−0.95⁸ ≈ 0.337；G=64 → 1−0.95⁶⁴ ≈ 0.963。所以难题需要更大的 G 或课程学习才能提供梯度信号。</p>
+</div></details></div>
+
+<!-- ===================================================== cheat sheet -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚过一遍。每个公式都要能写出来并用一句英文解释。</p>
+<div class="table-wrap"><table>
+  <tr><th>主题</th><th>公式 / 结论</th></tr>
+  <tr><td>Return / 目标</td><td>\(G_t=\sum_k\gamma^kr_{t+k}\)；\(J=\mathbb E_\pi[G_0]\)</td></tr>
+  <tr><td>V / Q / A</td><td>\(V=\mathbb E_a[Q]\)，\(A=Q-V\)，\(\mathbb E_{a\sim\pi}[A]=0\)</td></tr>
+  <tr><td>Bellman 期望</td><td>\(V^\pi(s)=\sum_a\pi(a|s)[r+\gamma\sum_{s'}PV^\pi(s')]\)</td></tr>
+  <tr><td>Bellman 最优</td><td>\(Q^*(s,a)=r+\gamma\sum_{s'}P\max_{a'}Q^*(s',a')\)；γ-压缩 → 唯一不动点</td></tr>
+  <tr><td>TD error</td><td>\(\delta_t=r_t+\gamma V(s_{t+1})-V(s_t)\)，\(\mathbb E[\delta_t|s,a]=A^\pi\)</td></tr>
+  <tr><td>Score 引理</td><td>\(\mathbb E_{a\sim\pi}[\nabla\log\pi(a|s)]=0\)</td></tr>
+  <tr><td>策略梯度</td><td>\(\nabla J=\mathbb E[\sum_t\nabla\log\pi(a_t|s_t)\hat A_t]\)；loss = −logp·A（A detach）</td></tr>
+  <tr><td>Baseline</td><td>任何 \(b(s)\) 无偏；RLOO \(\hat A_i=\frac{k}{k-1}(r_i-\bar r)\)</td></tr>
+  <tr><td>GAE</td><td>\(\hat A_t=\delta_t+\gamma\lambda\hat A_{t+1}\)；λ=0 → TD，λ=1 → MC−V；target = A+V</td></tr>
+  <tr><td>重要性采样</td><td>\(\mathbb E_\pi f=\mathbb E_\mu[\frac\pi\mu f]\)；ratio \(\rho=e^{\log\pi_\theta-\log\pi_{\text{old}}}\)</td></tr>
+  <tr><td>PPO-clip</td><td>\(\min(\rho A,\mathrm{clip}(\rho,1\pm\epsilon)A)\)，ε=0.2；A&gt;0 且 ρ&gt;1+ε、A&lt;0 且 ρ&lt;1−ε 时无梯度</td></tr>
+  <tr><td>PPO 总 loss</td><td>\(-L^{\text{CLIP}}+c_1(V-\hat R)^2-c_2\mathcal H\)</td></tr>
+  <tr><td>RLHF 四模型</td><td>policy（训）、ref（冻）、RM（冻）、critic（训，常从 RM 初始化）</td></tr>
+  <tr><td>KL-shaped reward</td><td>\(r_t=-\beta\log\frac{\pi}{\pi_{\text{ref}}}+\mathbb 1[t=T]r_\psi\)</td></tr>
+  <tr><td>Bradley–Terry</td><td>\(P(y_w\succ y_l)=\sigma(r_w-r_l)\)；\(\mathcal L=-\log\sigma(r_w-r_l)\)；\(\partial_{r_w}=-\sigma(-m)\)</td></tr>
+  <tr><td>KL 正则最优</td><td>\(\pi^*=\pi_{\text{ref}}e^{r/\beta}/Z\)，最优值 \(\beta\log Z\)</td></tr>
+  <tr><td>DPO</td><td>\(-\log\sigma(\beta[\log\frac{\pi(y_w)}{\pi_{\text{ref}}(y_w)}-\log\frac{\pi(y_l)}{\pi_{\text{ref}}(y_l)}])\)；init loss = log 2 ≈ 0.693</td></tr>
+  <tr><td>DPO 梯度</td><td>\(-\beta\sigma(\hat r_l-\hat r_w)(\nabla\log\pi(y_w)-\nabla\log\pi(y_l))\)</td></tr>
+  <tr><td>SimPO</td><td>\(-\log\sigma(\frac\beta{|y_w|}\log\pi(y_w)-\frac\beta{|y_l|}\log\pi(y_l)-\gamma)\)，无 ref</td></tr>
+  <tr><td>IPO</td><td>\((h-\frac1{2\tau})^2\)，h = log-ratio 差</td></tr>
+  <tr><td>GRPO 优势</td><td>\(\hat A_i=(r_i-\text{mean})/\text{std}\)，广播到所有 token；全对/全错 → 0</td></tr>
+  <tr><td>GRPO KL (k3)</td><td>\(\frac{\pi_{\text{ref}}}{\pi_\theta}-\log\frac{\pi_{\text{ref}}}{\pi_\theta}-1\ge0\)，放在 loss 里</td></tr>
+  <tr><td>KL 估计器</td><td>k1=−log r（无偏、可负）；k2=½(log r)²（有偏）；k3=(r−1)−log r（无偏、非负）</td></tr>
+  <tr><td>Dr. GRPO</td><td>去掉 1/|o|（长度偏差）和 ÷std（难度偏差）</td></tr>
+  <tr><td>DAPO</td><td>clip-higher (0.2 / 0.28)、dynamic sampling、token-level loss、overlong 软惩罚、无 KL</td></tr>
+  <tr><td>BoN KL</td><td>\(\log N-\frac{N-1}{N}\)</td></tr>
+  <tr><td>至少一个正样本</td><td>\(1-(1-p)^G\)</td></tr>
+  <tr><td>DeepSeekMath GRPO 设置</td><td>G=64，β=0.04，lr=1e-6</td></tr>
+  <tr><td>R1 流程</td><td>冷启动（数千条）→ 推理 RL + 语言一致性 → 拒绝采样 SFT（~60万+~20万）→ 全场景 RL；蒸馏只 SFT</td></tr>
+  <tr><td>Yue et al. 2025</td><td>RLVR 胜在小 k，大 k 时 base 反超 → sharpening；蒸馏可扩展边界</td></tr>
+</table></div>
+
+<h3 id="s-qlist">高频面试题清单</h3>
+<div class="table-wrap"><table>
+  <tr><th>#</th><th>问题</th><th>答案位置</th></tr>
+  <tr><td>1</td><td>Define an MDP. How does LLM generation map onto it?</td><td><a href="#c-mdp">MDP</a> · <a href="#c-llm-mdp">LLM as MDP</a></td></tr>
+  <tr><td>2</td><td>What are V, Q and the advantage? Why use advantages?</td><td><a href="#c-value">价值函数</a></td></tr>
+  <tr><td>3</td><td>Derive the Bellman expectation equation.</td><td><a href="#c-bellman">Bellman</a></td></tr>
+  <tr><td>4</td><td>Compare Monte Carlo and TD learning.</td><td><a href="#c-dpmctd">DP/MC/TD</a></td></tr>
+  <tr><td>5</td><td>On-policy vs off-policy? Is PPO on-policy?</td><td><a href="#c-taxonomy">分类</a></td></tr>
+  <tr><td>6</td><td>Token-level vs sequence-level view of RLHF?</td><td><a href="#c-llm-mdp">LLM as MDP</a></td></tr>
+  <tr><td>7</td><td>Derive the policy gradient theorem.</td><td><a href="#c-pg-theorem">PG 定理</a></td></tr>
+  <tr><td>8</td><td>Why does a baseline not introduce bias? Prove it.</td><td><a href="#c-baseline">Baseline</a></td></tr>
+  <tr><td>9</td><td>Why is REINFORCE high-variance? How to reduce it?</td><td><a href="#c-pg-theorem">PG 定理</a> · <a href="#c-baseline">Baseline</a></td></tr>
+  <tr><td>10</td><td>Derive GAE and explain λ.</td><td><a href="#c-gae">GAE</a></td></tr>
+  <tr><td>11</td><td>What is importance sampling and where does it appear in PPO?</td><td><a href="#c-is">IS</a></td></tr>
+  <tr><td>12</td><td>Explain PPO's clipped objective — walk through the cases.</td><td><a href="#c-ppo-clip">PPO-Clip</a></td></tr>
+  <tr><td>13</td><td>Why does PPO need a trust region at all?</td><td><a href="#c-trpo">TRPO</a></td></tr>
+  <tr><td>14</td><td>What are the four models in PPO-based RLHF?</td><td><a href="#c-ppo-rlhf">PPO for RLHF</a></td></tr>
+  <tr><td>15</td><td>KL in the reward vs KL in the loss?</td><td><a href="#c-ppo-rlhf">PPO for RLHF</a> · <a href="#c-code-kl">KL 代码</a></td></tr>
+  <tr><td>16</td><td>Why do we need the KL penalty to the reference model?</td><td><a href="#c-ppo-rlhf">PPO for RLHF</a> · <a href="#c-kl-or-not">要不要 KL</a></td></tr>
+  <tr><td>17</td><td>What implementation details matter for PPO-RLHF?</td><td><a href="#c-ppo-details">实现细节</a></td></tr>
+  <tr><td>18</td><td>Which tokens get loss in SFT? What's packing?</td><td><a href="#c-sft">SFT</a></td></tr>
+  <tr><td>19</td><td>How does SFT differ from RL? Why do we need RL after SFT?</td><td><a href="#c-sft-bc">SFT vs RL</a></td></tr>
+  <tr><td>20</td><td>What is exposure bias?</td><td><a href="#c-sft-bc">SFT vs RL</a></td></tr>
+  <tr><td>21</td><td>What is rejection sampling fine-tuning / STaR?</td><td><a href="#c-rft">RFT</a></td></tr>
+  <tr><td>22</td><td>Walk me through the InstructGPT pipeline.</td><td><a href="#c-instructgpt">InstructGPT</a></td></tr>
+  <tr><td>23</td><td>Derive the Bradley–Terry reward-model loss.</td><td><a href="#c-bt">BT</a></td></tr>
+  <tr><td>24</td><td>Derive the optimal policy of KL-regularized RL.</td><td><a href="#c-kl-optimal">KL 最优</a></td></tr>
+  <tr><td>25</td><td>What is reward over-optimization? How do you detect/mitigate it?</td><td><a href="#c-overopt">过优化</a> · <a href="#c-sc-1">场景 1</a></td></tr>
+  <tr><td>26</td><td>Derive DPO.</td><td><a href="#c-dpo">DPO</a></td></tr>
+  <tr><td>27</td><td>Interpret the DPO gradient. What's the implicit reward?</td><td><a href="#c-dpo-grad">DPO 梯度</a></td></tr>
+  <tr><td>28</td><td>Why does the chosen likelihood decrease in DPO?</td><td><a href="#c-dpo-issues">DPO 问题</a> · <a href="#c-sc-4">场景 4</a></td></tr>
+  <tr><td>29</td><td>Compare IPO, KTO, SimPO, ORPO.</td><td><a href="#c-dpo-variants">变体</a></td></tr>
+  <tr><td>30</td><td>PPO vs DPO — when would you use which?</td><td><a href="#c-ppo-vs-dpo">PPO vs DPO</a> · <a href="#c-sc-6">场景 6</a></td></tr>
+  <tr><td>31</td><td>What is RLVR? Give examples of verifiers.</td><td><a href="#c-rlvr">RLVR</a></td></tr>
+  <tr><td>32</td><td>Write down the GRPO objective. Why no critic?</td><td><a href="#c-grpo">GRPO</a> · <a href="#c-sc-2">场景 2</a></td></tr>
+  <tr><td>33</td><td>Why k3 for the KL estimator?</td><td><a href="#c-grpo">GRPO</a> · <a href="#c-code-kl">KL 代码</a></td></tr>
+  <tr><td>34</td><td>Describe the DeepSeek-R1 training pipeline.</td><td><a href="#c-r1">R1</a></td></tr>
+  <tr><td>35</td><td>What biases does Dr. GRPO fix? What does DAPO change?</td><td><a href="#c-grpo-fixes">Dr. GRPO / DAPO</a></td></tr>
+  <tr><td>36</td><td>What is entropy collapse and how do you fix it?</td><td><a href="#c-entropy-collapse">Entropy</a> · <a href="#c-sc-3">场景 3</a></td></tr>
+  <tr><td>37</td><td>RLOO vs GRPO vs PPO baselines?</td><td><a href="#c-rloo">RLOO</a></td></tr>
+  <tr><td>38</td><td>ORM vs PRM?</td><td><a href="#c-prm">PRM</a></td></tr>
+  <tr><td>39</td><td>Does RL teach new reasoning or just elicit it?</td><td><a href="#c-elicit-debate">争论</a></td></tr>
+  <tr><td>40</td><td>What is on-policy distillation? RL or distill for a small model?</td><td><a href="#c-opd">OPD</a> · <a href="#c-sc-11">场景 11</a></td></tr>
+  <tr><td>41</td><td>What is Constitutional AI / RLAIF?</td><td><a href="#c-cai">CAI</a></td></tr>
+  <tr><td>42</td><td>Implement GRPO / DPO / PPO losses.</td><td><a href="#c-code-grpo">GRPO 代码</a> · <a href="#c-code-dpo">DPO 代码</a> · <a href="#c-code-ppo">PPO 代码</a></td></tr>
+</table></div>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m06" data-title="模块 06 自测卡片"></div>
+<div class="footer-nav"><a href="m05-pretraining.html">← 05 预训练</a><a href="m07-reasoning.html">07 推理能力与测试时计算 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m06.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>

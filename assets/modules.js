@@ -51,7 +51,7 @@ window.MODULES = [
     title: 'Agents',
     desc: '工具调用、规划、记忆、多智能体、长程任务失败原因、agent RL 和评估。',
     topics: 'ReAct · function calling · Reflexion · 多智能体协调 · long-horizon · 多轮 RL · SWE-bench' },
-  { id: 'm11', num: '11', phase: 'p2', pri: 3, status: 'planned', file: 'modules/m11-interp.html',
+  { id: 'm11', num: '11', phase: 'p2', pri: 3, status: 'ready', file: 'modules/m11-interp.html',
     title: '可解释性',
     desc: '被问到时能聊：探针、因果干预、SAE、steering、circuits。',
     topics: 'logit lens · probing · activation patching · SAE · superposition · steering vectors · induction heads' },
