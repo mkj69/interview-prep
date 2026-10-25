@@ -67,7 +67,7 @@ window.MODULES = [
     title: 'ML Coding 手写题',
     desc: '14 道必须能从空白文件写出的题，每题给题面、关键坑、参考实现和测试。',
     topics: 'softmax/CE · LayerNorm/RMSNorm · MHA/GQA · RoPE · mini-GPT · KV cache 生成 · top-p · AdamW · BPE · PPO/DPO/GRPO loss · micrograd' },
-  { id: 'm15', num: '15', phase: 'p3', pri: 2, status: 'planned', file: 'modules/m15-algorithms.html',
+  { id: 'm15', num: '15', phase: 'p3', pri: 2, status: 'ready', file: 'modules/m15-algorithms.html',
     title: '算法题（按题型）',
     desc: '约 90 题精选，每类给 Python 模板和代表题。练习时关掉 AI 补全。',
     topics: '双指针 · 滑动窗口 · 单调栈 · 二分答案 · BFS/DFS · 拓扑 · 并查集 · 堆 · 回溯 · DP · Trie' },
