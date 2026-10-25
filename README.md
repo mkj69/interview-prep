@@ -14,3 +14,12 @@ Live site: https://mkj69.github.io/interview-prep/
 - `review.html` — daily review queue across all modules (keyboard: space to reveal, 1/2/3 to rate).
 
 Explanations are in Chinese; English answers are written to be spoken aloud in interviews.
+
+## Verifying the PyTorch code
+
+The site was written in a sandbox without PyTorch, so every PyTorch block was checked against an equivalent NumPy implementation. The PyTorch blocks themselves are saved as standalone tests in `tests/torch/` (82 files). On any machine with PyTorch:
+
+```bash
+pip install torch numpy
+python tests/run_torch_tests.py
+```
