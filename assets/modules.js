@@ -59,7 +59,7 @@ window.MODULES = [
     title: '生成模型补充',
     desc: 'VAE、GAN、Diffusion、Flow matching / rectified flow、离散扩散语言模型。',
     topics: 'ELBO · score matching · DDPM · flow matching · rectified flow · discrete diffusion' },
-  { id: 'm13', num: '13', phase: 'p2', pri: 2, status: 'planned', file: 'modules/m13-eval.html',
+  { id: 'm13', num: '13', phase: 'p2', pri: 2, status: 'ready', file: 'modules/m13-eval.html',
     title: '评估与实验方法',
     desc: 'RS 面试很看重的"你怎么设计实验"：benchmark、污染、LLM-as-judge、显著性、消融。',
     topics: 'benchmark 设计 · 数据污染 · judge 偏差 · 置信区间 · 多种子 · 消融设计' },

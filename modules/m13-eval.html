@@ -1,0 +1,1191 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13 · 评估与实验方法 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m13">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 13 · Phase 4</div>
+<h1 class="title">评估与<em>实验方法</em></h1>
+<p class="lede">Research Scientist 面试里，“你怎么知道它真的变好了？”几乎一定会被问到。这一章讲怎么设计 benchmark、怎么发现和避免数据污染、怎么用 LLM 当裁判、怎么给分数加误差条、怎么设计消融实验，以及最常见的评估陷阱。最后有可以直接手写的统计代码和 12+ 道场景题。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完以后你应该能做到：(1) 口头推导准确率的标准误 \(\sqrt{p(1-p)/n}\)，并当场算出“1000 题的 benchmark 上 2 个点的差距是否显著”；(2) 说清楚为什么比较两个模型要用<strong>配对</strong>检验（McNemar / paired bootstrap），以及它为什么比非配对检验强很多；(3) 给出一套完整的数据污染检测和缓解方案；(4) 讲清楚 LLM-as-judge 的三大偏差和对应缓解办法；(5) 设计一个让审稿人挑不出毛病的消融实验（同等调参的 baseline、compute-matched、多 seed）；(6) 遇到“新方法在 benchmark 上涨了 3 个点，你信吗？”这类开放题时，按固定框架回答。
+<br><br><b>建议顺序：</b>先读 §5 统计严谨性（最容易被追问、最能拉开差距），再读 §3 污染和 §4 LLM-as-judge，然后 §6 实验设计、§7 陷阱，最后用 §9 场景题练口语。§1、§2 可以速读。
+<br><b>和其他模块的关系：</b>pass@k、可验证奖励的评估和 <a href="m06-rl-posttraining.html">06 Post-training</a>、<a href="m07-reasoning.html">07 推理</a> 直接相关；Bradley–Terry 模型和 06 里 reward model / DPO 用的是同一个公式；agent 评估（SWE-bench 等）见 <a href="m10-agents.html">10 Agents</a>；研究讨论轮的“怎么验证你的想法”见 <a href="m16-research.html">16 研究讨论轮</a>。</div>
+
+<!-- ============================================================ §1 -->
+<h2 class="sec" id="s-types"><span class="num">§1 · EVALUATION LANDSCAPE</span>评估的类型</h2>
+<p class="sec-intro">先建立一张地图：评估在回答什么问题、由谁来打分、数据是固定的还是动态的。面试里常见的开场问题是“How would you evaluate X?”，第一步永远是先说清楚你要测的是哪一类东西。</p>
+
+<section class="concept" id="c-landscape">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>能力 / 安全 / 产品评估；内在 vs 外在评估</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>评估先分“测什么”（能力、安全、产品体验）和“怎么测”（内在指标如 perplexity，还是外在的下游任务），不同目的对应完全不同的数据、指标和决策门槛。</p><p class="en">First decide what you are measuring — capability, safety, or product quality — and whether an intrinsic proxy like perplexity is enough or you need an extrinsic downstream task.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>类别</th><th>回答的问题</th><th>典型例子</th><th>特点</th></tr>
+      <tr><td>能力评估 capability</td><td>模型<em>能</em>做到什么？</td><td>MMLU、GPQA、MATH/AIME、HumanEval、LiveCodeBench、SWE-bench</td><td>通常有标准答案，可自动打分；容易饱和、容易被污染</td></tr>
+      <tr><td>安全评估 safety</td><td>模型会不会做<em>不该做</em>的事？</td><td>拒答率与过度拒答、越狱鲁棒性、危险能力评估（生物/网络安全）、red teaming</td><td>关注尾部风险，平均分意义不大；“没测出来”不等于“没有”</td></tr>
+      <tr><td>产品评估 product</td><td>用户觉得好不好用？</td><td>A/B 测试、用户偏好、Arena 式成对比较、满意度、任务完成率</td><td>开放式、主观；依赖人或 LLM 裁判；分布要贴近真实流量</td></tr>
+    </table>
+    <p><strong>内在评估（intrinsic）</strong>：直接看模型本身的量，比如验证集 loss、perplexity、bits-per-byte。便宜、平滑、低方差，适合预训练阶段做快速对比和 scaling law 拟合。缺点是和下游能力的关系不一定单调：tokenizer 不同时 perplexity 根本不可比（要换成 bits-per-byte），而且 post-training（RLHF）往往会让 perplexity 变差但用户体验变好。</p>
+    <p><strong>外在评估（extrinsic）</strong>：在下游任务上测，比如答题正确率、代码通过率、agent 任务成功率。贴近我们真正关心的东西，但噪声大、离散、对 prompt 格式敏感。</p>
+    <div class="box why"><span class="lbl">直觉</span>一个实用的分层：<b>训练中</b>用内在指标（loss）+ 少量低噪声的外在指标（例如用 log-likelihood 打分的多选题）盯住趋势；<b>checkpoint 选择</b>用一套固定的外在 benchmark；<b>发布决策</b>用人类/Arena 评估 + 安全评估。每一层的噪声容忍度和成本不同。</div>
+    <p>另外一个常被问的区分：<strong>离线评估 vs 在线评估</strong>。离线是固定数据集；在线是 A/B 测试（真实用户、真实分布，但慢、贵、有伦理和产品风险）。离线指标的价值取决于它和在线指标的相关性，这本身需要被验证。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把“benchmark 分数高”当成“模型好”。benchmark 只是你关心的能力的一个<em>样本</em>和一个<em>代理</em>，代理和目标之间的差距就是 construct validity（见 §2）。另一个误区是跨 tokenizer 比较 perplexity。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Before picking a metric I'd ask what decision the eval is supposed to drive. For capability I'd use automatically graded benchmarks, for safety I care about tail behavior and refusal trade-offs, and for product quality I need human or model-judged preferences on realistic traffic. Intrinsic metrics like validation loss are cheap and low-variance, so they're great for tracking pretraining, but they don't always track downstream quality — RLHF can make perplexity worse while users prefer the model. So in practice I layer them: loss during training, a fixed benchmark suite for checkpoint selection, and human or arena-style evals before a release.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why can't you compare perplexity across two models with different tokenizers?</b><details><summary>思路</summary><div class="inner">perplexity 是“每个 token”的平均负对数似然取指数。tokenizer 不同，同一段文本被切成的 token 数不同，每个 token 的平均信息量也就不同。词表大的模型每个 token 承载更多字符，per-token loss 天然更高。解决办法是归一化到与 tokenizer 无关的单位：bits-per-byte（总 NLL / ln2 / UTF-8 字节数）或 bits-per-character。</div></details></li>
+    <li><b>Your offline metric went up but the A/B test is flat. What do you do?</b><details><summary>思路</summary><div class="inner">(1) 检查离线数据分布和线上流量的差异（任务类型、长度、语言）；(2) 检查离线指标是否饱和或者测的是用户不在乎的维度；(3) 检查 A/B 的统计功效是否足够（样本量、效应大小）；(4) 检查是否有 novelty effect 或其他维度退化（延迟、长度、拒答率）抵消了收益；(5) 长期做法：持续测量离线指标和线上指标的相关性，淘汰不相关的离线指标。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-arena">
+  <div class="concept-head"><span class="pri p1">★</span><h3>静态 benchmark vs Arena（Elo / Bradley–Terry）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>静态 benchmark 是固定题目 + 自动打分；Arena 让用户对两个匿名模型的回答投票，用 Bradley–Terry 模型 \(P(i \succ j)=\sigma(s_i-s_j)\) 拟合出每个模型的强度分数，再换算成 Elo 尺度。</p><p class="en">Static benchmarks are fixed question sets with automatic grading; arenas collect pairwise human votes and fit a Bradley–Terry model, where the win probability is a sigmoid of the strength difference.</p></div>
+  <div class="deep">
+    <h4>Bradley–Terry 模型</h4>
+    <p>给每个模型一个实数强度 \(s_i\)。模型 \(i\) 赢 \(j\) 的概率是</p>
+    $$P(i \succ j) = \frac{e^{s_i}}{e^{s_i}+e^{s_j}} = \sigma(s_i - s_j).$$
+    <p>这和 <a href="m06-rl-posttraining.html">06</a> 里训练 reward model 用的公式完全一样（把“模型”换成“回答”，\(s\) 换成 reward \(r(x,y)\)）。给定一组对战记录 \((i,j,y)\)，\(y=1\) 表示 \(i\) 赢，最大化对数似然</p>
+    $$\ell(s) = \sum_{(i,j,y)} \Big[ y\log\sigma(s_i-s_j) + (1-y)\log\sigma(s_j-s_i) \Big].$$
+    <p>这就是一个没有截距、特征是 “\(+1\) 在 \(i\) 位置、\(-1\) 在 \(j\) 位置” 的 logistic regression。注意 \(s\) 只能确定到一个常数平移（所有 \(s_i\) 加同一个数，似然不变），所以要固定一个锚点（比如均值为 0，或某个基准模型为 1000 分）。</p>
+    <h4>Elo 尺度</h4>
+    <p>Elo 用以 10 为底、除以 400 的写法：\(P(i\succ j)=1/(1+10^{-(R_i-R_j)/400})\)。对比 \(\sigma(s_i-s_j)\) 得 \(R = 400\, s/\ln 10 \approx 173.7\,s\)。所以 <b>Elo 差 100 分 ≈ 胜率 64%</b>，差 200 分 ≈ 76%，差 400 分 ≈ 91%。</p>
+    <table>
+      <tr><th></th><th>在线 Elo（逐场更新）</th><th>Bradley–Terry MLE（一次性拟合）</th></tr>
+      <tr><td>更新方式</td><td>\(R_i \mathrel{+}= K(y-E_i)\)，每场比赛后更新</td><td>用全部数据最大化似然</td></tr>
+      <tr><td>顺序依赖</td><td>有：同样的比赛换个顺序结果不同；近期比赛权重大</td><td>没有：结果只取决于对战记录集合</td></tr>
+      <tr><td>适用</td><td>选手实力随时间变化（国际象棋）</td><td>模型权重固定不变（LLM），更合适</td></tr>
+      <tr><td>不确定性</td><td>难以给出</td><td>可以用 bootstrap（重采样对战记录）给置信区间</td></tr>
+    </table>
+    <p>Chatbot Arena（现 LMArena）最初用在线 Elo，后来转为 BT MLE + bootstrap 置信区间，见 <a href="https://arxiv.org/abs/2403.04132" target="_blank" rel="noreferrer">Chiang et al. 2024（arXiv 2403.04132）</a>。</p>
+    <h4>两种范式的优缺点</h4>
+    <table>
+      <tr><th></th><th>静态 benchmark</th><th>Arena 成对比较</th></tr>
+      <tr><td>优点</td><td>便宜、可复现、可自动化、可细分能力</td><td>开放式真实 prompt，难以直接污染，能捕捉“好不好用”</td></tr>
+      <tr><td>缺点</td><td>饱和、污染、和真实使用脱节</td><td>投票者分布偏（偏技术用户、偏短对话）；被风格（长度、markdown、语气）影响；投票噪声大；可以被选择性提交和私下测试“刷榜”</td></tr>
+    </table>
+    <p>关于 Arena 被刷榜的系统性批评，见 <a href="https://arxiv.org/abs/2504.20879" target="_blank" rel="noreferrer">“The Leaderboard Illusion”（arXiv 2504.20879）</a>：它指出部分厂商可以私下测试多个变体、只公开最好的那个，这本身就是一种“多重比较后挑最大值”的选择偏差（见 §5 多重比较）。Arena 后来也加入了 style control：在 BT 回归里加入长度、markdown 数量等协变量，把“风格”效应从“内容”效应里分离出去。</p>
+  </div>
+  <details class="deep"><summary>推导：为什么 MM 迭代能拟合 BT</summary><div class="inner">
+    <p>令 \(p_i = e^{s_i}\)，\(W_i\) 为 \(i\) 的总胜场，\(N_{ij}\) 为 \(i,j\) 对战场数。对数似然为 \(\ell = \sum_i W_i \log p_i - \sum_{i&lt;j} N_{ij}\log(p_i+p_j)\)。对 \(p_i\) 求偏导并令其为 0：</p>
+    $$\frac{W_i}{p_i} = \sum_{j\ne i}\frac{N_{ij}}{p_i+p_j} \quad\Rightarrow\quad p_i = \frac{W_i}{\sum_{j\ne i} N_{ij}/(p_i+p_j)}.$$
+    <p>把右边的 \(p\) 用上一轮的值代入，就得到 Zermelo / Hunter (2004) 的 MM（minorize–maximize）迭代，每步保证似然不下降。每步之后把 \(p\) 归一化（比如几何平均为 1）以消除平移自由度。代码见 <a href="#c-code-bt">§8</a>。存在唯一解的条件：对战图强连通（不存在一组模型从未输给组外模型），否则某些 \(s_i\to\infty\)，实践中加一点 L2 正则即可。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 以为 Elo 分数有绝对意义；它只有差值有意义，而且取决于参赛模型池。(2) 用在线 Elo 给固定权重的模型排名，结果依赖对战顺序。(3) 只报点估计不报置信区间：排行榜上相邻的模型分差往往小于 CI 宽度。(4) 忘了 BT 假设“传递性”和“单一维度强度”；现实中偏好可能非传递，且依赖 prompt 类别。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Arena-style evaluation collects pairwise votes between anonymous models and fits a Bradley–Terry model, where the probability that model i beats model j is the sigmoid of their strength difference. It's just logistic regression with plus-one and minus-one features, and the scores are only identified up to a constant, so you anchor one model. The Elo scale is a rescaling — about 174 Elo points per logit, so a hundred-point gap means roughly a 64 percent win rate. I prefer fitting BT by maximum likelihood over online Elo updates, because model weights don't change and MLE doesn't depend on the order of battles, and you can bootstrap the battles to get confidence intervals. The main caveats are voter distribution, style effects like length and markdown, and selection effects from private testing.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Two models are 15 Elo points apart on the leaderboard. Is one better?</b><details><summary>思路</summary><div class="inner">15 Elo ≈ 0.086 logit ≈ 52% 胜率，差距很小。要看 bootstrap 置信区间是否重叠（严格说要看差值的 CI 是否包含 0），还要看投票数量、prompt 类别（可能在 coding 上一个好，写作上另一个好）、是否控制了风格。结论通常是“统计上无法区分，或者差异实际意义很小”。</div></details></li>
+    <li><b>How would you handle ties?</b><details><summary>思路</summary><div class="inner">最简单：把平局记为各赢半场（\(y=0.5\)），BT 似然仍然适用（这是“分数式”的交叉熵）。更正式的做法有 Rao–Kupper 或 Davidson 扩展，给平局单独建模一个参数。也可以直接丢弃平局，但会损失信息。</div></details></li>
+    <li><b>How does this relate to reward modeling?</b><details><summary>思路</summary><div class="inner">完全同一个模型：reward model 用 \(P(y_w \succ y_l|x)=\sigma(r(x,y_w)-r(x,y_l))\)，区别只是强度 \(r\) 由神经网络参数化、依赖 prompt 和回答，而 Arena 里每个模型只有一个标量。DPO 也是在这个 BT 似然上把 \(r\) 换成 \(\beta\log\frac{\pi}{\pi_{ref}}\)。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-human-eval">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>人工评估：设计、一致性和成本</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>人工评估是开放式任务的“金标准”，但它本身也有噪声：要写清楚评分标准、盲评并随机化顺序、测量标注者间一致性（Cohen's κ / Krippendorff's α），并把它当成另一个有误差的测量来处理。</p><p class="en">Human evaluation is the gold standard for open-ended tasks, but it is itself a noisy measurement: you need clear rubrics, blinding and randomized order, and inter-annotator agreement statistics.</p></div>
+  <div class="deep">
+    <p><strong>设计要点：</strong></p>
+    <ul>
+      <li><b>成对比较优于绝对打分</b>：人对“A 和 B 哪个好”判断更稳定，1–10 分的绝对打分在不同标注者之间尺度不一致（有人严有人松）。</li>
+      <li><b>盲评 + 随机化</b>：隐藏模型身份，随机 A/B 位置，避免位置偏差和品牌偏差。</li>
+      <li><b>细化 rubric</b>：把“好”拆成可判断的维度（正确性、完整性、简洁性、安全性），并给出示例。</li>
+      <li><b>专家 vs 众包</b>：数学证明、代码、医学等需要领域专家；众包工人倾向于奖励“看起来自信、长、格式好”的回答，可能看不出事实错误。</li>
+      <li><b>测量一致性</b>：同一题让多人标注，计算一致率。原始一致率会被“碰巧一致”夸大，所以用 Cohen's κ：</li>
+    </ul>
+    $$\kappa = \frac{p_o - p_e}{1 - p_e},$$
+    <p>\(p_o\) 是观察到的一致率，\(p_e\) 是两人独立随机按各自标签分布打分时的期望一致率。κ=0 表示和瞎猜一样，κ=1 完全一致。多人或有缺失时用 Fleiss' κ 或 Krippendorff's α。</p>
+    <div class="box why"><span class="lbl">直觉</span>人和人之间的一致率是任何自动评估的<b>天花板参考</b>：如果两个人类专家只有 75% 的时候意见一致，那么 LLM 裁判和人类有 75% 一致就已经“和再找一个人差不多”了。MT-Bench 论文报告 GPT-4 裁判与人类在非平局样本上的一致率约 85%，而人与人之间约 81%（<a href="https://arxiv.org/abs/2306.05685" target="_blank" rel="noreferrer">Zheng et al. 2023，arXiv 2306.05685</a>）。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把人工评估当成没有误差的真值。人工标注同样需要误差条、需要检查标注者质量（插入已知答案的“gold questions”）、需要报告一致性。另一个误区是让标注者看到模型名字。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For human evaluation I'd use blinded pairwise comparisons rather than absolute scores, because people are much more consistent at saying which of two answers is better than at assigning a number. I'd randomize the order, write a rubric with concrete examples, and use domain experts when correctness is hard to verify, since crowd workers tend to reward confident, long, well-formatted answers. I'd always report inter-annotator agreement, like Cohen's kappa, because human-human agreement is the ceiling for any automatic judge. And I'd treat human labels as a noisy measurement with its own error bars, not as ground truth.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Two annotators agree 90% of the time on a binary label. Is that good?</b><details><summary>思路</summary><div class="inner">不一定。如果两人都把 95% 的样本标成“正例”，那么随机一致率 \(p_e = 0.95^2+0.05^2 = 0.905\)，κ = (0.90−0.905)/(1−0.905) ≈ −0.05，几乎没有超过瞎猜。类别不平衡时一定要看 κ 而不是原始一致率。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §2 -->
+<h2 class="sec" id="s-design"><span class="num">§2 · BENCHMARK DESIGN</span>Benchmark 设计</h2>
+<p class="sec-intro">如果你做过 benchmark（或者面试官做过），这一节会被问得很细：你怎么保证它测的是你声称的能力？怎么控制难度？怎么防止模型走捷径？分数饱和后怎么办？核心概念是 construct validity。</p>
+
+<section class="concept" id="c-validity">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Construct validity：分数到底测的是什么</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Construct validity 指 benchmark 分数和你想测的抽象能力（“推理”“编程能力”）之间的对应程度；高分可能来自记忆、格式技巧、数据捷径，而不是目标能力。</p><p class="en">Construct validity asks whether the score actually reflects the abstract ability you claim to measure, rather than memorization, format tricks, or dataset shortcuts.</p></div>
+  <div class="deep">
+    <p>任何 benchmark 都是：<b>抽象能力（construct）→ 具体任务定义 → 采样出的题目 → 打分规则 → 一个数字</b>。每一步都可能引入偏差：</p>
+    <table>
+      <tr><th>环节</th><th>可能出的问题</th><th>例子</th></tr>
+      <tr><td>任务定义</td><td>任务只覆盖能力的一个狭窄切面</td><td>用小学应用题代表“数学推理”；用 LeetCode 式函数补全代表“软件工程”</td></tr>
+      <tr><td>题目采样</td><td>分布偏、覆盖不全、题目有错</td><td>MMLU 中有相当比例的错误标注（<a href="https://arxiv.org/abs/2406.04127" target="_blank" rel="noreferrer">“Are We Done with MMLU?”，arXiv 2406.04127</a>）</td></tr>
+      <tr><td>打分规则</td><td>正确答案被判错，或错误答案被判对</td><td>答案抽取正则太严格；单元测试太弱，错误代码也能通过</td></tr>
+      <tr><td>聚合</td><td>平均分掩盖了子类差异</td><td>总分上涨全部来自一个容易的子类</td></tr>
+    </table>
+    <p><strong>怎么论证 construct validity：</strong></p>
+    <ul>
+      <li><b>收敛效度</b>：和其他测同一能力的 benchmark 高度相关。</li>
+      <li><b>区分效度</b>：和测<em>不同</em>能力的指标相关性低。比如一个“推理”benchmark 如果和“知识量”（MMLU）的相关性几乎为 1，它可能主要在测知识。</li>
+      <li><b>消融式检验</b>：去掉关键信息（题干、图片）后模型应该做不出来；如果还能做出来，就存在捷径（见下一个概念）。</li>
+      <li><b>人工审查错误样本</b>：看模型答错/答对的原因，而不是只看总分。</li>
+      <li><b>天花板检验</b>：人类专家能做到多少？如果专家也只有 70%，模型 70% 可能已经接近噪声上限（题目歧义/错误）。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>把 benchmark 当成一台测量仪器。好的仪器要“准”（validity：测的是想测的东西）也要“稳”（reliability：重复测量结果一致）。ML 社区通常只关注一个数字，而忽略了仪器本身的校准。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>“模型在 X 推理 benchmark 上超过人类，所以模型推理超过人类。”这个推论同时依赖 construct validity（benchmark 测的是推理）和 external validity（推广到 benchmark 之外的分布），两者通常都没有被验证。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A benchmark is a measurement instrument, so the first question is construct validity: does the score actually reflect the ability we claim, or can it be achieved through memorization, format tricks, or shortcuts? I'd check it in a few ways — convergent validity with other benchmarks for the same skill, discriminant validity against things like pure knowledge, ablations where I remove key information and confirm the task becomes unsolvable, and a manual review of failure cases. I'd also measure an expert human ceiling, because label noise caps what a model can meaningfully score.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you build a benchmark that measures reasoning rather than knowledge?</b><details><summary>思路</summary><div class="inner">核心思路是“把需要的知识放进题目里”，让模型只能靠推理：(1) 在题目中给出新定义的规则、符号或运算（模型训练时不可能见过）；(2) 控制题目所需知识对所有模型都可得；(3) 用程序化生成控制难度和推理步数；(4) 测和知识类 benchmark 的相关性做区分效度检验。一个例子是 knowledge-orthogonal reasoning 的思路，相关阅读：KOR-Bench（<a href="https://arxiv.org/abs/2410.06526" target="_blank" rel="noreferrer">arXiv 2410.06526</a>）。</div></details></li>
+    <li><b>What's the difference between reliability and validity?</b><details><summary>思路</summary><div class="inner">reliability = 重复测量的一致性（换 seed、换 prompt 措辞、换题目子集，分数是否稳定）；validity = 测的是不是你想测的东西。一个 benchmark 可以非常稳定但测错了东西（比如稳定地测格式遵循能力）。reliability 是 validity 的必要条件，不是充分条件。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-shortcuts">
+  <div class="concept-head"><span class="pri p1">★</span><h3>难度校准、捷径与标注伪影</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>好 benchmark 的难度要有区分度（不能全对也不能全错），并且要用“部分输入 baseline”（只看答案选项、只看假设句）检查是否存在模型可以利用的统计捷径。</p><p class="en">A good benchmark needs discriminative difficulty, and you should run partial-input baselines to detect statistical shortcuts the model could exploit.</p></div>
+  <div class="deep">
+    <h4>难度校准</h4>
+    <ul>
+      <li><b>区分度</b>：如果所有前沿模型都在 95% 以上或都在 5% 以下，benchmark 无法区分它们。理想情况下，题目难度分布要覆盖目标模型的能力范围。</li>
+      <li><b>对抗式筛选（adversarial filtering）</b>：保留当前强模型做错的题。好处是难度高；坏处是 benchmark 会对“被用来筛选的那个模型”有偏（它在这些题上的分数被人为压低），而且可能筛出大量<em>标注错误</em>的题（模型“做错”是因为答案本身错了）。</li>
+      <li><b>项目反应理论（IRT）</b>：给每道题估计难度和区分度参数，给每个模型估计能力参数（形式上和 BT 很像：\(P(\text{correct}) = \sigma(a_q(\theta_m - b_q))\)）。可以用来挑出信息量最大的题，构建更小但同样可靠的子集。</li>
+      <li><b>分级难度</b>：程序化生成可以直接控制推理步数、干扰项数量、输入长度，画出“能力随难度变化”的曲线，比单一平均分信息量大得多。</li>
+    </ul>
+    <h4>捷径与标注伪影（shortcuts / annotation artifacts）</h4>
+    <p>经典例子：NLI 数据集中，众包工人写“矛盾”假设句时经常用否定词（not、never），结果只看假设句、不看前提的分类器就能远超随机（<a href="https://arxiv.org/abs/1803.02324" target="_blank" rel="noreferrer">Gururangan et al. 2018，arXiv 1803.02324</a>）。LLM 时代的类似问题：</p>
+    <ul>
+      <li>多选题中正确答案往往最长或最具体；正确答案位置分布不均匀。</li>
+      <li>只给选项、不给题干，模型也能远超 25%（说明选项本身泄露信息，或者题目被记住了）。</li>
+      <li>多模态 benchmark 中不看图也能答对（语言先验足够）。</li>
+      <li>代码题的测试用例太少，硬编码输出或只处理常见情况也能通过。</li>
+    </ul>
+    <p><strong>检测方法：</strong>跑“部分输入 baseline”（choices-only、question-only、no-image）；打乱选项顺序看分数变化；对测试用例做变异测试；人工检查高分模型答对的“理由”是否正确。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为 adversarial filtering 只会让 benchmark 更难、更好。它同时会富集标注错误、对筛选模型产生偏差，并且让“相对于筛选模型的进步”被夸大。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd calibrate difficulty so the benchmark discriminates among the models we care about — nothing saturated, nothing at floor. Adversarial filtering raises difficulty, but it biases the benchmark against the filtering model and tends to enrich mislabeled items, so I'd audit those. To catch shortcuts, I'd run partial-input baselines: choices only, question only, no image. If a model does far above chance without the key input, the benchmark leaks the answer. For code, I'd check that tests are strong enough that hard-coded or partial solutions fail.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>A model gets 60% on a 4-choice benchmark when shown only the answer choices. What does that tell you?</b><details><summary>思路</summary><div class="inner">随机是 25%，60% 说明存在严重的信息泄露：要么选项本身有可利用的模式（长度、措辞、只有一个选项“合理”），要么题目和选项一起被记住了（污染）。下一步：(1) 用一个没在网上数据训练过的小分类器做 choices-only 看是不是“伪影”；(2) 改写选项、打乱顺序后重测；(3) 做污染检测（§3）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-formats">
+  <div class="concept-head"><span class="pri p1">★</span><h3>题目格式与打分方式</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>同一个能力，用多选 log-likelihood 打分、多选生成打分、开放生成 + 精确匹配、程序验证、LLM 裁判，会得到差别很大的分数；格式和打分规则是评估定义的一部分，必须报告清楚。</p><p class="en">The same capability scored by log-likelihood, generated multiple choice, exact match, program verification, or an LLM judge can give very different numbers, so format and scoring are part of the eval definition.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>方式</th><th>做法</th><th>优点</th><th>缺点</th></tr>
+      <tr><td>Log-likelihood 多选（cloze）</td><td>比较每个选项的对数似然（常按长度归一化），选最大</td><td>不需要生成，低方差，适合 base model 和训练中监控</td><td>不反映生成能力；长度归一化方式（按 token / 按字符）影响结果；不适合 chat model</td></tr>
+      <tr><td>生成式多选</td><td>让模型输出字母 A/B/C/D</td><td>贴近使用方式</td><td>依赖格式遵循；答案抽取会出错；位置偏差</td></tr>
+      <tr><td>开放生成 + 精确匹配</td><td>抽取最终答案与标准答案比较（数学、短答案 QA）</td><td>自动化、无选项提示</td><td>等价答案判错（\(1/2\) vs \(0.5\)），需要规范化或符号等价检查</td></tr>
+      <tr><td>程序验证</td><td>运行单元测试、证明检查器（Lean）、模拟器</td><td>客观、难以“糊弄”（取决于测试强度）</td><td>测试覆盖不足时会误判；环境搭建成本高</td></tr>
+      <tr><td>LLM / 人工裁判</td><td>按 rubric 打分或成对比较</td><td>适用于开放式任务</td><td>偏差和噪声（见 §4）</td></tr>
+    </table>
+    <h4>pass@k：采样多次的指标</h4>
+    <p>代码和数学常用 pass@k：采样 \(k\) 个答案，至少一个正确的概率。直接采 \(k\) 个估计方差很大，标准做法是采 \(n \ge k\) 个，数出 \(c\) 个正确，用无偏估计（<a href="https://arxiv.org/abs/2107.03374" target="_blank" rel="noreferrer">Chen et al. 2021，Codex，arXiv 2107.03374</a>）：</p>
+    $$\widehat{\text{pass@}k} = 1 - \frac{\binom{n-c}{k}}{\binom{n}{k}}.$$
+    <p>含义：从 \(n\) 个样本里无放回地抽 \(k\) 个，全都错误的概率是 \(\binom{n-c}{k}/\binom{n}{k}\)。注意朴素估计 \(1-(1-c/n)^k\) 是<b>有偏</b>的（因为 \(f(\hat p)=1-(1-\hat p)^k\) 是凹函数，由 Jensen 不等式，期望会低估）。代码见 <a href="#c-code-passk">§8</a>。还常见 <b>maj@k</b>（多数投票正确率）和 <b>avg@k</b>（\(k\) 次采样的平均正确率，即用多次采样降低 pass@1 估计的方差）。pass@k 在 RL 研究中的讨论（RLVR 是否只提升 pass@1 而不扩展 pass@大k）见 <a href="m06-rl-posttraining.html">06</a>。</p>
+  </div>
+  <details class="deep"><summary>推导：pass@k 无偏估计为什么无偏</summary><div class="inner">
+    <p>设单次采样正确概率为 \(p\)，真实 pass@k \(= 1-(1-p)^k\)。我们采 \(n\) 个样本，\(c \sim \text{Bin}(n,p)\)。考虑这样一个随机试验：从 \(n\) 个样本中无放回随机选 \(k\) 个，记事件 \(A\) = “这 \(k\) 个都错”。</p>
+    <p>一方面，给定 \(c\)，\(P(A|c) = \binom{n-c}{k}/\binom{n}{k}\)。另一方面，无条件地看，这 \(k\) 个样本就是 \(k\) 个独立同分布的采样（无放回地从 i.i.d. 序列里取一个随机子集，子集本身仍然是 i.i.d.），所以 \(P(A) = (1-p)^k\)。由全期望：\(\mathbb{E}_c\big[\binom{n-c}{k}/\binom{n}{k}\big] = P(A) = (1-p)^k\)。因此 \(1-\binom{n-c}{k}/\binom{n}{k}\) 是 \(1-(1-p)^k\) 的无偏估计。∎</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 比较两个模型时一个用 0-shot 一个用 5-shot，或一个用 CoT 一个不用。(2) 拿别人论文里的数字和自己跑的数字直接比（prompt、答案抽取、采样温度都不同）。(3) 报告 pass@k 时不说 n 和温度。(4) 数学题只做字符串匹配，把等价答案判错。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Format and scoring are part of the definition of a benchmark. Log-likelihood scoring of choices is low-variance and works for base models, but it doesn't test generation. Generated answers need robust extraction and equivalence checking, and code needs strong tests. For sampling-based metrics I'd report pass@k with the unbiased estimator — sample n completions, count c correct, and compute one minus n-minus-c choose k over n choose k — and always state n and the temperature. When comparing models, I make sure the shot count, prompting, and extraction are identical.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why is 1−(1−c/n)^k biased?</b><details><summary>思路</summary><div class="inner">\(f(x)=1-(1-x)^k\) 对 \(x\in[0,1]\) 是凹函数（\(k\ge2\)），\(\hat p=c/n\) 是 \(p\) 的无偏估计，由 Jensen：\(\mathbb{E}[f(\hat p)] \le f(\mathbb{E}\hat p) = f(p)\)，所以系统性低估。§8 的模拟里 \(p=0.2,n=10,k=5\)：真值 0.672，朴素估计均值约 0.596，无偏估计均值约 0.675。</div></details></li>
+    <li><b>Length-normalized vs unnormalized log-likelihood for multiple choice — which and why?</b><details><summary>思路</summary><div class="inner">不归一化时长选项的总对数似然天然更低（更多 token 相乘），偏向短选项；按 token 数归一化又依赖 tokenizer；按字符/字节数归一化与 tokenizer 无关。不同框架（如 lm-eval-harness 报告 acc 和 acc_norm）选择不同，导致同一模型分数不同。原则：固定一种方式、所有模型一致、并报告。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-saturation">
+  <div class="concept-head"><span class="pri p1">★</span><h3>饱和、知识 vs 推理解耦、动态/程序化 benchmark</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>静态 benchmark 会饱和（分数接近上限或噪声上限）并逐渐被污染；对策是持续更新（时间切分）、程序化生成（可调难度、无限新题）、以及把知识和推理解耦的设计。</p><p class="en">Static benchmarks saturate and get contaminated over time; the remedies are continual refresh with time splits, procedural generation with controllable difficulty, and designs that decouple knowledge from reasoning.</p></div>
+  <div class="deep">
+    <p><strong>饱和（saturation）</strong>：当前沿模型都在 90% 以上时，剩下的错误往往由标注错误和题目歧义主导，分数差异主要反映噪声。典型历程：GLUE → SuperGLUE → MMLU → MMLU-Pro / GPQA → HLE 等更难的集合。识别信号：(1) 头部模型分差小于 CI；(2) 剩余错题人工审查大多是坏题；(3) 和其他能力指标的相关性下降。</p>
+    <p><strong>知识 vs 推理解耦</strong>：很多“推理” benchmark 实际上也大量依赖领域知识，导致分数混合了两种能力。解耦思路：</p>
+    <ul>
+      <li>在题目中提供所需知识（规则、定义），只测运用能力（knowledge-orthogonal）。</li>
+      <li>用虚构实体或新定义的符号，避免模型调用记忆。</li>
+      <li>反过来，用覆盖面极广的知识题测知识广度，例如 SuperGPQA 覆盖 285 个研究生学科（<a href="https://arxiv.org/abs/2502.14739" target="_blank" rel="noreferrer">arXiv 2502.14739</a>）。</li>
+    </ul>
+    <p><strong>动态 / 程序化 benchmark</strong>：</p>
+    <table>
+      <tr><th>方式</th><th>例子</th><th>优点</th><th>风险</th></tr>
+      <tr><td>时间切分，持续更新</td><td>LiveCodeBench（按题目发布日期，只用模型训练截止日期之后的题，<a href="https://arxiv.org/abs/2403.07974" target="_blank" rel="noreferrer">arXiv 2403.07974</a>）；LiveBench（定期发布新题，<a href="https://arxiv.org/abs/2406.19314" target="_blank" rel="noreferrer">arXiv 2406.19314</a>）</td><td>天然抗污染；能看到“截止日期前后”的分数断崖（污染证据）</td><td>不同时间段的题难度不同，跨时间比较要小心</td></tr>
+      <tr><td>模板扰动</td><td>GSM-Symbolic（把 GSM8K 题目模板化，换名字和数字，<a href="https://arxiv.org/abs/2410.05229" target="_blank" rel="noreferrer">arXiv 2410.05229</a>）</td><td>测鲁棒性；同一题的多个变体给出分布而不是单点</td><td>模板本身可能被学到</td></tr>
+      <tr><td>程序化生成 / 游戏环境</td><td>逻辑谜题、规划、交互游戏；相关阅读：KORGym（<a href="https://arxiv.org/abs/2505.14552" target="_blank" rel="noreferrer">arXiv 2505.14552</a>）</td><td>无限新题、可调难度、自动验证、可多轮交互</td><td>生成器分布狭窄，模型可能学会“生成器”本身；与真实任务的相关性需要验证</td></tr>
+    </table>
+    <p><strong>Datasheets / 文档</strong>：发布 benchmark 时应附带文档（参考 “Datasheets for Datasets”, Gebru et al.）：数据来源、收集方式、标注流程与一致性、已知问题、许可、预期用途与非预期用途、canary 字符串（见 §3）、版本号。版本化非常重要：修复错题后分数不能和旧版直接比较。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>认为程序化生成就“永远不会被污染”。如果生成器代码公开，开发者可以针对生成器的分布大量训练，benchmark 就变成了训练任务，分数不再代表泛化能力。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Static benchmarks have a life cycle: they get saturated, then contaminated, and at the top end the remaining errors are mostly label noise. I'd watch for signs like frontier models being separated by less than the confidence interval. The main remedies are time-split benchmarks like LiveCodeBench, where you only score problems released after a model's cutoff; perturbation sets like GSM-Symbolic, which give you a distribution over variants of each problem; and procedurally generated tasks with controllable difficulty. For reasoning specifically, I like designs that put the required knowledge in the prompt so that the score isolates reasoning from memorized knowledge.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If you design a procedurally generated benchmark, how do you stop people from overfitting to the generator?</b><details><summary>思路</summary><div class="inner">(1) 保留私有的生成器变体或私有种子/参数区间作为 held-out 测试；(2) 测<em>分布外</em>泛化：训练用难度 1–5，测试用 6–10，或者换规则组合；(3) 同时报告在其他真实任务上的迁移；(4) 定期更新规则族。核心是：区分“学会了这个生成器”和“学会了这种能力”。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §3 -->
+<h2 class="sec" id="s-contam"><span class="num">§3 · DATA CONTAMINATION</span>数据污染</h2>
+<p class="sec-intro">污染是 LLM 评估中最常被追问的问题之一，因为预训练数据是整个互联网，benchmark 题目几乎不可避免地会出现在网上。你需要能说出：污染有哪些类型，怎么检测（白盒和黑盒），怎么缓解。</p>
+
+<section class="concept" id="c-contam-types">
+  <div class="concept-head"><span class="pri p1">★</span><h3>污染的类型</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>污染指测试数据（或其近似版本）出现在训练数据中，使分数反映记忆而不是泛化；按程度分为题目污染、题目+答案污染、改写/翻译后的语义污染，以及通过调参和反复选择造成的间接污染。</p><p class="en">Contamination means test items or close variants appear in training data, so the score reflects memorization rather than generalization; it ranges from verbatim to paraphrased leakage, plus indirect leakage through repeated selection on the test set.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>类型</th><th>描述</th><th>严重程度 / 难检测程度</th></tr>
+      <tr><td>输入污染</td><td>只有题目出现在训练数据中（没有答案）</td><td>中等；模型熟悉题目格式和内容</td></tr>
+      <tr><td>输入 + 答案污染</td><td>题目和标准答案都出现（如 GitHub 上的数据集文件、解题博客）</td><td>严重；模型可直接背答案</td></tr>
+      <tr><td>近似 / 改写污染</td><td>改写、翻译、换数字后的版本出现在训练中</td><td>n-gram 检测不到，需要语义检测</td></tr>
+      <tr><td>微调阶段污染</td><td>SFT / RL 数据（包括合成数据）中混入测试题或极近似题</td><td>常被忽视；合成数据的“种子”题可能来自测试集</td></tr>
+      <tr><td>间接污染（test-set overfitting）</td><td>没有直接训练测试题，但反复在测试集上看分数来选择超参、checkpoint、数据配比</td><td>最隐蔽；本质是 adaptive overfitting（见 §7）</td></tr>
+    </table>
+    <p>还有一个维度：<strong>污染对分数的影响并不一致</strong>。被污染不一定导致分数虚高（模型可能见过但没记住），没有被检测到也不代表干净。真正关心的是“污染导致的分数膨胀有多大”，这需要对照实验（同分布的干净题 vs 可能污染的题）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只检查预训练数据而忽略合成的 SFT/RL 数据。用强模型生成“类似 GSM8K/MATH 的题目”时，生成的题目可能与测试题近乎相同。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I think of contamination as a spectrum. At one end, the test questions and answers appear verbatim in pretraining data, for example a dataset file on GitHub. Then there are paraphrased or translated versions, which n-gram checks miss, and leakage through fine-tuning or synthetic data seeded from test questions. And the subtlest form is indirect: repeatedly selecting checkpoints or hyperparameters on the test set. What I really care about is not whether an item was seen, but how much the score is inflated, and that requires a controlled comparison against clean items from the same distribution.</p></div>
+</section>
+
+<section class="concept" id="c-contam-detect">
+  <div class="concept-head"><span class="pri p1">★</span><h3>检测方法：n-gram 重叠、Min-K% Prob、canary、guided completion</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>有训练数据时用 n-gram 重叠（白盒）；没有训练数据时用模型行为（黑盒）：Min-K% Prob 看低概率 token 的对数似然、guided completion 看模型能否续写出题目原文、顺序可交换性检验、以及“截止日期前后”的性能断崖；canary 字符串用于事后追查。</p><p class="en">With access to training data, use n-gram overlap; without it, use behavioral signals like Min-K% Prob, guided completion, exchangeability tests, and performance drops after the training cutoff; canary strings help trace leakage.</p></div>
+  <div class="deep">
+    <h4>1. n-gram 重叠（需要训练数据）</h4>
+    <p>把训练语料和测试题都规范化（小写、去标点），对每道测试题计算其 n-gram 有多少比例出现在训练语料中，超过阈值就标记为污染。GPT-3 论文用 13-gram 重叠；后来很多工作用 8–13 gram 或最长公共子串。工程上要建索引（哈希集合、Bloom filter、suffix array），因为语料是万亿 token 级。</p>
+    <p>局限：(1) 抓不到改写和翻译；(2) 阈值和 n 的选择影响很大（太小误报：常见短语；太大漏报）；(3) 很短的题目（少于 n 个词）无法判断；(4) 需要能访问训练数据。进阶：用 embedding 相似度或 LLM 判断语义重复来捕捉改写。代码见 <a href="#c-code-ngram">§8</a>。</p>
+
+    <h4>2. Min-K% Prob（黑盒，需要 logits）</h4>
+    <p><a href="https://arxiv.org/abs/2310.16789" target="_blank" rel="noreferrer">Shi et al. 2023（arXiv 2310.16789）</a>提出：对一段文本，取模型给每个 token 的对数概率，挑出最低的 \(k\%\) 个 token，求平均。直觉：见过的文本，即使是“意外”的 token 概率也不会太低；没见过的文本会有一些非常低概率的离群 token。</p>
+    $$\text{Min-K\%}(x) = \frac{1}{|S_k|}\sum_{x_i \in S_k} \log p(x_i \mid x_{&lt;i}),$$
+    <p>\(S_k\) 是对数概率最低的 \(k\%\) token 集合。分数高于阈值则判为“见过”。比直接用平均 perplexity 好，因为平均值会被大量容易的 token 主导。局限：需要阈值校准（需要已知见过/没见过的参照文本），且准确率在大规模、去重良好的语料上有限；后续有 Min-K%++ 等改进。</p>
+
+    <h4>3. Guided completion / 续写测试（黑盒，只需生成）</h4>
+    <p><a href="https://arxiv.org/abs/2308.08493" target="_blank" rel="noreferrer">Golchin &amp; Surdeanu（“Time Travel in LLMs”，arXiv 2308.08493）</a>：给模型数据集名称、split 名称和题目的前半部分，让它续写后半部分（guided instruction），与不给数据集信息的 general instruction 对比；如果 guided 续写与原文高度重合（精确匹配或近似匹配），说明模型记住了该数据集实例。</p>
+
+    <h4>4. 顺序可交换性检验（黑盒，需要 log-prob）</h4>
+    <p><a href="https://arxiv.org/abs/2310.17623" target="_blank" rel="noreferrer">Oren et al.（“Proving Test Set Contamination in Black Box Language Models”，arXiv 2310.17623）</a>：如果数据集的题目顺序本身没有意义（可交换），那么没见过数据集的模型给“原始顺序”和“随机打乱顺序”的似然应该相同；如果模型给原始顺序显著更高的似然，说明它见过整个文件。这能给出有统计保证的 p 值，但只能检测“整份数据集按原顺序”被训练的情况。</p>
+
+    <h4>5. 性能断崖与扰动对比</h4>
+    <ul>
+      <li><b>时间断崖</b>：按题目发布时间画准确率；如果训练截止日期之前的题明显比之后的题容易做对（控制难度后），是污染的强证据。LiveCodeBench 论文就展示了这种现象。</li>
+      <li><b>重新出一份同分布新题</b>：GSM1k 重新人工编写了 1000 道 GSM8K 风格的题，发现部分模型在新题上掉分明显，且掉分与模型生成 GSM8K 原题的概率相关（<a href="https://arxiv.org/abs/2405.00332" target="_blank" rel="noreferrer">Zhang et al. 2024，arXiv 2405.00332</a>）。</li>
+      <li><b>扰动</b>：改名字、改数字、改选项顺序；如果分数大幅下降，说明模型依赖表面形式。</li>
+    </ul>
+
+    <h4>6. Canary 字符串</h4>
+    <p>在 benchmark 文件中嵌入一个唯一的随机字符串（BIG-bench 首先采用），并声明“包含此字符串的文档不应用于训练”。用途：(1) 数据团队可以过滤含 canary 的文档；(2) 如果模型能补全出 canary GUID，说明它训练过这份文件。局限：依赖于数据团队主动过滤；被复制、改写后的副本可能丢失 canary。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 认为“n-gram 检测为零”就代表干净（改写污染检测不到）。(2) 认为 Min-K% 能精确判断单条样本（在单条样本上的准确率有限，更适合数据集级别的统计）。(3) 认为“掉分”一定是污染（新题也可能更难；需要控制难度）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If I have the training data, I start with n-gram overlap — normalize both sides and flag test items where, say, more than half of their 13-grams appear in the corpus — plus embedding similarity to catch paraphrases. If I only have black-box access, I look at behavior: Min-K% Prob, which averages the log-probs of the least likely tokens, guided completion, where I give the model the dataset name and the start of an item and see whether it reproduces the rest, and exchangeability tests that compare the likelihood of the canonical order against shuffled orders. The most convincing evidence is usually a controlled comparison: a performance drop on freshly written items from the same distribution, or a cliff for problems released after the training cutoff.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why use the lowest-k% tokens instead of average log-likelihood?</b><details><summary>思路</summary><div class="inner">平均对数似然主要由大量“容易”的 token（虚词、常见搭配）决定，见过与没见过的文本在这些 token 上差别不大。区别主要体现在少数“意外”token 上：没见过的文本中这些 token 概率极低，见过的文本被记住后这些 token 概率被抬高。只看最低的 k% 相当于聚焦在信息量最大的部分，信噪比更高。</div></details></li>
+    <li><b>A model scores 90% on a benchmark and 75% on your freshly written equivalent. Is that contamination?</b><details><summary>思路</summary><div class="inner">不能直接下结论。先确认新题的难度与原题一致：(1) 让其他已知“干净”的模型（比如训练截止日期早于 benchmark 发布的模型，或人类）在两份题上都做，看它们是否也掉分；(2) 计算掉分的置信区间；(3) 看掉分是否与“模型对原题的记忆程度”（续写能力、Min-K%）相关——GSM1k 就是这么论证的。如果其他模型不掉、该模型掉，且与记忆指标相关，就是污染的强证据。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-contam-mitigate">
+  <div class="concept-head"><span class="pri p1">★</span><h3>缓解：held-out、时间切分、私有测试集、扰动变体</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>缓解污染的思路是“让测试题不可能出现在训练数据中”：训练前去污染（decontamination），使用训练截止日期之后的新题，保留不公开的私有测试集，以及动态生成扰动变体。</p><p class="en">Mitigation means making it impossible for test items to be in training data: decontaminate before training, use post-cutoff items, keep private held-out sets, and generate fresh perturbed variants.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>训练侧去污染</b>：在预训练、SFT、RL 数据中，用 n-gram/embedding 匹配删除与所有评估集重叠的文档。注意要覆盖所有阶段（尤其是合成数据）。在论文中报告去污染方法和被删除的比例。</li>
+      <li><b>报告干净子集分数</b>：把测试集分为“检测到重叠”和“未检测到重叠”两部分，分别报告分数；如果两者接近，说明污染影响不大（GPT-3 / GPT-4 技术报告的做法）。</li>
+      <li><b>时间切分</b>：只在模型训练截止日期之后发布的题上评估（LiveCodeBench、LiveBench 的思路）。缺点：需要持续投入出题；不同时间窗口的题难度不同。</li>
+      <li><b>私有 held-out 集</b>：只开放提交接口或只由维护方运行评估，题目不公开（例如一些 benchmark 保留私有测试集）。缺点：透明度和可复现性降低；需要信任维护方；通过反复提交仍然可能过拟合（所以要限制提交次数）。</li>
+      <li><b>扰动 / 动态变体</b>：每次评估时重新生成数值和实体（GSM-Symbolic），或使用程序化生成器。</li>
+      <li><b>canary + 加密发布</b>：数据集以加密压缩包形式发布（防止被网页爬虫直接抓取），并附带 canary。</li>
+      <li><b>组织层面</b>：在内部，评估数据与训练数据由不同团队管理；测试集只在最终报告时运行，开发过程中用独立的验证集。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>污染问题的本质是<b>测试集不再独立于训练过程</b>。所有缓解措施都是为了恢复这种独立性：要么在空间上隔离（私有集），要么在时间上隔离（截止日期之后），要么在内容上隔离（每次生成新题）。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为私有测试集就完全安全。通过大量提交和观察分数反馈，可以对私有测试集过拟合（adaptive data analysis 问题），所以需要限制提交频率，或者只在最终阶段评估一次。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Contamination breaks the independence between the test set and the training process, so every mitigation tries to restore that independence. On the training side, I'd decontaminate every stage — pretraining, SFT, RL, and especially synthetic data — and report scores separately on flagged and clean subsets. On the eval side, I'd use time-split items released after the cutoff, private held-out sets with limited submissions, and perturbed or procedurally regenerated variants. Organizationally, I'd keep a separate dev set for day-to-day decisions and touch the real test set only for the final report.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>You're reviewing a paper whose model was trained on web data after the benchmark was released. What would you ask for?</b><details><summary>思路</summary><div class="inner">(1) 去污染方法和重叠统计；(2) 干净子集 vs 重叠子集的分数对比；(3) 在训练截止日期之后发布的同类 benchmark 上的结果；(4) 扰动变体上的结果；(5) 与基线模型在同样条件下的比较（基线是否同样可能被污染）。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §4 -->
+<h2 class="sec" id="s-judge"><span class="num">§4 · LLM-AS-A-JUDGE</span>LLM 当裁判</h2>
+<p class="sec-intro">开放式任务（对话、写作、长回答）没有标准答案，人工评估又贵又慢，所以大量评估（AlpacaEval、MT-Bench、Arena-Hard，以及 RL 训练中的 reward）用一个强 LLM 当裁判。面试会问：怎么设计、有哪些偏差、怎么缓解、怎么验证它可信。</p>
+
+<section class="concept" id="c-judge-modes">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Pairwise vs Pointwise，参考答案与 rubric</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Pointwise 让裁判给单个回答打绝对分（可扩展、可复用，但尺度不稳定）；pairwise 让裁判比较两个回答（更稳定、更接近人类判断方式，但需要 \(O(n^2)\) 次比较且有位置偏差）；给参考答案和细化 rubric 能显著提高可靠性。</p><p class="en">Pointwise grading gives an absolute score and scales well but is poorly calibrated; pairwise comparison is more reliable and closer to how humans judge, but costs more and suffers from position bias; reference answers and detailed rubrics help a lot.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th></th><th>Pointwise（单独打分）</th><th>Pairwise（成对比较）</th></tr>
+      <tr><td>输出</td><td>1–10 分 或 rubric 各项通过/不通过</td><td>A 更好 / B 更好 / 平局</td></tr>
+      <tr><td>成本</td><td>每个回答一次，\(O(n)\)</td><td>每对一次；通常和一个固定 baseline 比较以降到 \(O(n)\)</td></tr>
+      <tr><td>稳定性</td><td>分数尺度漂移、分数集中在 7–8 分、区分度差</td><td>相对判断更稳定；对细微差异更敏感</td></tr>
+      <tr><td>主要偏差</td><td>冗长偏差、自我偏好</td><td>位置偏差、冗长偏差、自我偏好</td></tr>
+      <tr><td>典型例子</td><td>MT-Bench single-answer grading；rubric-based grading</td><td>AlpacaEval（对比参考模型的胜率）、Arena-Hard</td></tr>
+    </table>
+    <p><strong>提高可靠性的设计：</strong></p>
+    <ul>
+      <li><b>给参考答案</b>：数学、事实类问题给裁判标准答案（reference-guided grading），可以弥补裁判自身推理能力不足。</li>
+      <li><b>细粒度 rubric / checklist</b>：把“好不好”拆成多个可以二元判断的检查项（是否回答了问题、是否有事实错误、是否遵循格式要求），每项单独判断，再聚合。二元判断比 1–10 分更稳定。</li>
+      <li><b>先推理后判断</b>：让裁判先写分析再给结论（CoT judging），通常比直接给分更准，但也可能被长篇大论的回答“说服”。</li>
+      <li><b>输出结构化</b>：要求 JSON 等固定格式，方便解析；解析失败要计数和报告。</li>
+      <li><b>温度 0 或多次采样平均</b>：降低裁判本身的随机性。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>用 pointwise 1–10 分直接比较两个模型的平均分，结果差 0.1 分就下结论。pointwise 分数区分度低、方差大；要比较两个模型，pairwise 胜率或配对检验更合适。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There are two main modes. Pointwise grading scores each response on its own, which is cheap and reusable, but the scale isn't well calibrated and scores tend to cluster. Pairwise comparison asks which of two responses is better; it's more reliable and closer to how humans judge, but it introduces position bias and more comparisons, so people usually compare against a fixed baseline. Either way, reliability improves a lot if you give the judge a reference answer for verifiable questions and break the rubric into binary checklist items instead of asking for a single holistic score.</p></div>
+</section>
+
+<section class="concept" id="c-judge-bias">
+  <div class="concept-head"><span class="pri p1">★</span><h3>三大偏差：位置、冗长、自我偏好（及缓解）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>LLM 裁判偏爱某个位置的回答（position bias）、偏爱更长的回答（verbosity bias）、偏爱自己或同家族模型生成的回答（self-preference bias）；缓解方法分别是交换顺序取平均、长度控制回归、换用不同家族的裁判或多裁判集成。</p><p class="en">LLM judges favor a particular position, longer answers, and their own generations; mitigate by swapping order, length-controlled regression, and using judges from a different model family or an ensemble.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>偏差</th><th>表现</th><th>检测</th><th>缓解</th></tr>
+      <tr><td><b>位置偏差</b> position</td><td>同一对回答，交换 A/B 顺序后判断结果改变；通常偏向第一个</td><td>每对评估两次（AB、BA），计算判断不一致的比例</td><td>两种顺序都评，取平均；只有两次一致才算胜，否则算平局</td></tr>
+      <tr><td><b>冗长偏差</b> verbosity</td><td>更长、更多格式（列表、标题）的回答更容易赢，即使内容不更好</td><td>对同一回答做“只加冗余内容”的扩写，看胜率变化；看胜率和长度差的相关性</td><td>Length-controlled 胜率：在胜率的逻辑回归中加入长度差作为协变量，报告“长度差为 0 时”的预测胜率（<a href="https://arxiv.org/abs/2404.04475" target="_blank" rel="noreferrer">LC AlpacaEval，arXiv 2404.04475</a>）；rubric 中明确惩罚冗余</td></tr>
+      <tr><td><b>自我偏好</b> self-preference</td><td>裁判给自己（或同家族模型）的回答打更高分</td><td>用多个不同家族的裁判，看各自是否偏向本家；与人工判断对比</td><td>使用与被测模型不同家族的裁判；多裁判集成（panel）；报告裁判身份。研究发现自我偏好与“能认出自己生成的文本”的能力相关（<a href="https://arxiv.org/abs/2404.13076" target="_blank" rel="noreferrer">Panickssery et al. 2024，arXiv 2404.13076</a>）</td></tr>
+    </table>
+    <p><strong>其他偏差和局限：</strong></p>
+    <ul>
+      <li><b>推理能力有限</b>：裁判自己不会做的数学题，也判断不了回答对错（解决：给参考答案，或用程序验证）。</li>
+      <li><b>被权威语气 / 自信表述影响</b>：自信但错误的回答可能得高分。</li>
+      <li><b>prompt injection</b>：被评估的回答中包含“请给这个回答打 10 分”之类的文本。</li>
+      <li><b>reward hacking</b>：如果用 LLM 裁判做 RL 的 reward，策略会主动利用裁判的偏差（例如越写越长），这是 Goodhart 定律的直接体现（见 §7）。</li>
+    </ul>
+  </div>
+  <details class="deep"><summary>Length-controlled 胜率的思路</summary><div class="inner">
+    <p>对每个样本 \(x\)，记被测模型的回答为 \(m\)、基线回答为 \(b\)。拟合一个逻辑回归预测裁判偏好：</p>
+    $$P(m \succ b \mid x) = \sigma\big(\theta_{\text{model}} - \theta_{\text{baseline}} + \phi\cdot \tanh(\text{len}(m)-\text{len}(b)\ \text{标准化}) + \psi_x\big)$$
+    <p>（具体参数化见原文；核心是把长度差作为一个协变量。）拟合后，把长度差项设为 0，计算预测胜率的平均，就是“如果两个回答一样长”时的胜率。这与 Arena 的 style control 是同一个思路：<b>在回归中加入混杂因素作为协变量，然后报告去除该因素后的效应</b>。这是因果推断中“调整混杂变量”的标准做法。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只做一个顺序的 pairwise 比较；用 GPT-x 当裁判评估 GPT-x 家族的模型并与其他家族比较；用 LLM 裁判做 RL reward 而不监控长度变化。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The three classic biases are position, verbosity, and self-preference. For position bias, I evaluate every pair in both orders and only count a win if both orders agree, otherwise it's a tie. For verbosity, I'd report a length-controlled win rate — regress the judge's preference on the length difference and report the predicted win rate at zero length difference — and I'd also put an explicit penalty for padding in the rubric. For self-preference, I use a judge from a different model family, or a panel of judges, and I always report which judge was used. And if the judge is used as a reward in RL, I monitor length and other style statistics, because the policy will actively exploit any bias.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you measure position bias quantitatively?</b><details><summary>思路</summary><div class="inner">对 N 对回答，每对评估 AB 和 BA 两次。(1) 一致率 = 两次判断指向同一个回答的比例；(2) 第一位置胜率 = 所有判断中第一个位置获胜的比例（无偏应为 50%，用二项检验看是否显著偏离）。还可以构造“两个完全相同的回答”作对照，理想情况下应判平局或 50/50。</div></details></li>
+    <li><b>Could you train your own judge? What are the risks?</b><details><summary>思路</summary><div class="inner">可以：用人类偏好数据微调一个较小的裁判模型（相当于 reward model / generative verifier）。好处是便宜、可控、可针对特定领域。风险：(1) 继承训练数据中人类标注者的偏差；(2) 分布外泛化差，对新模型的风格可能失效；(3) 如果用于 RL 优化会被 hack；(4) 需要持续用新的人类标注重新验证。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-judge-validate">
+  <div class="concept-head"><span class="pri p1">★</span><h3>验证裁判：与人类的一致性</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在信任 LLM 裁判之前，要在一份人工标注的子集上测它与人类的一致率，并和人与人之间的一致率对比；同时要测系统级相关性（模型排名是否一致），而不仅仅是样本级一致率。</p><p class="en">Before trusting a judge, measure its agreement with humans on a labeled subset and compare to human–human agreement, at both the item level and the system ranking level.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>样本级一致率</b>：在每一对回答上，裁判和人类是否选同一个。参照：人与人之间的一致率。MT-Bench 论文报告 GPT-4 在非平局样本上与人类专家约 85% 一致，人与人约 81%（<a href="https://arxiv.org/abs/2306.05685" target="_blank" rel="noreferrer">arXiv 2306.05685</a>）。</li>
+      <li><b>系统级相关性</b>：用裁判给一组模型排名，与人类（或 Arena）排名计算 Spearman / Kendall 相关。样本级一致率中等时，系统级排名也可能很一致（因为噪声会被平均掉），但系统级排名会受系统性偏差（如长度偏差）影响。</li>
+      <li><b>分层检查</b>：按任务类型（数学、代码、写作、安全）分别计算一致率；裁判可能在写作上可靠、在数学上不可靠。</li>
+      <li><b>对抗性检查</b>：故意构造“长但错”“短但对”“含 prompt 注入”的回答，看裁判是否上当。</li>
+      <li><b>持续监控</b>：被评估模型变强、风格变化后，原来验证过的裁判可能失效；需要定期重新抽样人工验证。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只报告“与人类 80% 一致”而不报告人与人一致率和类别分布；只验证一次就永久使用；用被评估的同一批数据调 judge prompt，然后用这批数据报告一致率（过拟合）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd validate the judge against a human-labeled subset before using it at scale. I'd report item-level agreement alongside human–human agreement, which is the realistic ceiling, and system-level rank correlation, since what we often care about is whether the judge ranks models correctly. I'd break agreement down by task category, run adversarial probes like long-but-wrong answers, and re-validate periodically, because a judge that was reliable for last year's models may not be reliable for today's.</p></div>
+</section>
+
+<!-- ============================================================ §5 -->
+<h2 class="sec" id="s-stats"><span class="num">§5 · STATISTICAL RIGOR</span>统计严谨性</h2>
+<p class="sec-intro">这是本章最重要、也最容易拉开差距的一节。面试官很喜欢问：“模型 A 在 1000 道题上 72%，模型 B 70%，A 更好吗？”你需要当场推导标准误、知道应该用配对检验、能算出需要多少题。下面每个公式都要能从头推出来。</p>
+
+<section class="concept" id="c-se">
+  <div class="concept-head"><span class="pri p1">★</span><h3>准确率的标准误 \(\sqrt{p(1-p)/n}\)：推导与使用</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把每道题的得分看成独立同分布的伯努利随机变量，准确率是样本均值，其方差为 \(p(1-p)/n\)，所以标准误 \(\text{SE}=\sqrt{p(1-p)/n}\)，95% 置信区间约为 \(\hat p \pm 1.96\,\text{SE}\)。\(n=1000,\ p\approx 0.7\) 时 SE ≈ 1.45 个百分点，CI 约 ±2.8 个点。</p><p class="en">Treat each question as an i.i.d. Bernoulli draw; accuracy is a sample mean with variance p(1−p)/n, so the standard error is the square root of that and the 95% interval is about plus or minus 1.96 standard errors.</p></div>
+  <div class="deep">
+    <h4>推导</h4>
+    <p>设每道题的得分 \(X_i \in \{0,1\}\)，\(X_i \overset{iid}{\sim} \text{Bernoulli}(p)\)。这里的“随机性”来自：我们把 benchmark 看成从一个更大的“题目总体”中随机抽出的 \(n\) 道题，我们关心的是模型在总体上的准确率 \(p\)（这是评估统计学的基本视角，见 <a href="https://arxiv.org/abs/2411.00640" target="_blank" rel="noreferrer">Miller 2024，“Adding Error Bars to Evals”，arXiv 2411.00640</a>）。</p>
+    <ol>
+      <li>单个伯努利变量：\(\mathbb{E}[X_i]=p\)，\(\mathbb{E}[X_i^2]=p\)（因为 \(X_i^2=X_i\)），所以 \(\text{Var}(X_i)=p-p^2=p(1-p)\)。</li>
+      <li>样本均值 \(\hat p = \frac1n\sum_i X_i\)。期望：\(\mathbb{E}[\hat p]=p\)（无偏）。</li>
+      <li>独立变量的方差可加：\(\text{Var}(\sum_i X_i)=\sum_i \text{Var}(X_i)= np(1-p)\)。</li>
+      <li>常数提出来要平方：\(\text{Var}(\hat p) = \frac{1}{n^2}\cdot np(1-p) = \frac{p(1-p)}{n}\)。</li>
+      <li>标准误是估计量的标准差：\(\text{SE}(\hat p)=\sqrt{p(1-p)/n}\)，实际中用 \(\hat p\) 代入。</li>
+      <li>由中心极限定理，\(n\) 较大时 \(\hat p \approx \mathcal{N}(p, \text{SE}^2)\)，所以 95% CI 为 \(\hat p \pm 1.96\,\text{SE}\)。</li>
+    </ol>
+    <h4>需要记住的数字</h4>
+    <table>
+      <tr><th>n</th><th>SE（p=0.5，最坏情况）</th><th>95% CI 半宽</th><th>SE（p=0.9）</th></tr>
+      <tr><td>100</td><td>5.0%</td><td>±9.8%</td><td>3.0%</td></tr>
+      <tr><td>500</td><td>2.24%</td><td>±4.4%</td><td>1.34%</td></tr>
+      <tr><td>1,000</td><td>1.58%</td><td>±3.1%</td><td>0.95%</td></tr>
+      <tr><td>10,000</td><td>0.5%</td><td>±1.0%</td><td>0.3%</td></tr>
+    </table>
+    <p>快速心算：\(p=0.5\) 时 \(\text{SE}=0.5/\sqrt n\)；95% CI 半宽 \(\approx 1/\sqrt n\)。比如 AIME 一年只有 30 题，\(p=0.5\) 时 SE ≈ 9.1 个点，单次运行几乎无法区分模型——这就是为什么数学竞赛评估要多次采样取平均（avg@k）并合并多年题目。</p>
+    <h4>两个重要扩展</h4>
+    <ul>
+      <li><b>小样本或 p 接近 0/1</b>：正态近似失效（例如 0/20 时 CI 会是 [0,0]，显然不对）。用 <b>Wilson 区间</b> 或精确的 Clopper–Pearson 区间。0/20 时 Wilson 95% 区间约为 [0, 16.1%]。</li>
+      <li><b>题目不独立（聚类）</b>：如果多道题共享同一篇文章（阅读理解）或同一个模板，它们的得分相关，有效样本量小于 \(n\)，朴素 SE 会低估。要用<b>聚类标准误</b>：\(\text{SE}_{\text{cluster}} = \frac{1}{n}\sqrt{\sum_{c}\big(\sum_{i\in c}(x_i-\bar x)\big)^2}\)。§8 的模拟中，100 篇文章 × 每篇 10 道完全相关的题，聚类 SE 是朴素 SE 的约 3 倍（\(\approx\sqrt{10}\)）。</li>
+      <li><b>每题得分本身有随机性</b>（采样温度 &gt; 0）：总方差 = 题目抽样方差 + 生成随机性方差。对每题采样 \(k\) 次取平均可以降低后者（但不能降低前者）。</li>
+    </ul>
+  </div>
+  <details class="deep"><summary>推导：带采样随机性时的方差分解</summary><div class="inner">
+    <p>设第 \(i\) 题的“真实正确概率”为 \(q_i\)（模型在这道题上采样无限多次的正确率），题目从总体中抽取，\(\mathbb{E}[q_i]=p\)。每题采样 \(k\) 次，得分 \(s_i = \frac1k\sum_{j} X_{ij}\)，\(X_{ij}\sim\text{Bern}(q_i)\)。由全方差公式：</p>
+    $$\text{Var}(s_i) = \text{Var}(\mathbb{E}[s_i|q_i]) + \mathbb{E}[\text{Var}(s_i|q_i)] = \text{Var}(q_i) + \frac{\mathbb{E}[q_i(1-q_i)]}{k}.$$
+    <p>所以 \(\text{Var}(\bar s) = \frac{1}{n}\Big(\text{Var}(q) + \frac{\mathbb{E}[q(1-q)]}{k}\Big)\)。第一项是题目抽样带来的、只能靠增加题目数量降低；第二项来自生成随机性，可以靠增加 \(k\) 降低。当 \(k=1\) 时两项相加正好等于 \(p(1-p)\)（验证：\(\text{Var}(q)+\mathbb{E}[q]-\mathbb{E}[q^2] = \mathbb{E}[q]-\mathbb{E}[q]^2 = p(1-p)\)），与前面的公式一致。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 把 SE 和标准差混淆（SE 是“均值的”标准差，随 \(\sqrt n\) 缩小）。(2) 在小 benchmark（如 30 题）上报告不带误差条的单次结果。(3) 用两个模型各自的 CI 是否重叠来判断差异是否显著——这个方法过于保守，且忽略了配对结构（见下一个概念）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If I treat the benchmark as a random sample of questions from a larger population, each score is a Bernoulli draw with variance p times one minus p. Accuracy is the sample mean, so its variance is p(1−p) over n, and the standard error is the square root of that. On a thousand questions at seventy percent, that's about 1.45 points, so the 95% interval is roughly plus or minus 2.8 points. Two caveats: if questions are clustered, like several questions per passage, I'd use clustered standard errors because the naive ones are too small; and with small n or accuracy near zero or one, I'd use a Wilson interval instead of the normal approximation.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why can we treat a fixed benchmark as random at all?</b><details><summary>思路</summary><div class="inner">因为我们关心的不是“模型在这 1000 道具体题上的分数”（那是确定的，没有误差），而是“模型在这类题目上的能力”，即在题目总体上的期望准确率。benchmark 是这个总体的一个样本，换一批同分布的题分数会不同，SE 衡量的就是这种波动。如果你真的只关心这 1000 道题本身（比如它就是产品的全部用例），那题目抽样误差确实不存在，只剩下生成随机性。</div></details></li>
+    <li><b>Is the normal approximation OK for a 30-question benchmark at 50% accuracy?</b><details><summary>思路</summary><div class="inner">经验法则是 \(np\) 和 \(n(1-p)\) 都至少 10 左右，30×0.5=15，勉强可用，但 SE ≈ 9.1 个点、CI ±18 点，基本说明结果不可靠。更好的做法：每题采样多次（降低生成方差），合并多个年份的题目，并用 Wilson/bootstrap 区间。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-bootstrap">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Bootstrap 置信区间</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Bootstrap：从 \(n\) 道题中<b>有放回</b>地重抽 \(n\) 道，重新计算指标，重复 \(B\) 次（如 10,000 次），取分布的 2.5% 和 97.5% 分位数作为 95% CI；适用于任何指标（F1、pass@k、胜率、中位数），不需要解析公式。</p><p class="en">Resample the questions with replacement, recompute the metric, repeat thousands of times, and take the 2.5th and 97.5th percentiles; it works for any metric without a closed-form variance.</p></div>
+  <div class="deep">
+    <p><strong>为什么有效</strong>：我们不知道题目总体的分布，就用经验分布（这 \(n\) 道题，每道概率 \(1/n\)）近似它。从经验分布中抽样 = 有放回地重抽原样本。重抽得到的统计量的波动，近似于“如果真能从总体重新抽 benchmark”时统计量的波动。</p>
+    <p><strong>要点：</strong></p>
+    <ul>
+      <li><b>重抽单位要和独立单位一致</b>：题目之间独立就按题目重抽；如果题目按文章聚类，就按文章重抽（cluster bootstrap）；如果同一题采样多次，按题目重抽，不能把多次采样当成独立题目（否则 CI 会过窄）。</li>
+      <li><b>B 的选择</b>：CI 用 1,000–10,000 次足够；分位数估计需要的 B 比估计标准误多。</li>
+      <li><b>百分位法 vs 其他</b>：最简单的是百分位法（percentile）；样本小或统计量有偏时可以用 BCa（偏差校正加速）区间。</li>
+      <li><b>对准确率</b>，bootstrap CI 和 \(\hat p \pm 1.96\,\text{SE}\) 几乎一样（§8 中验证）。bootstrap 的真正价值在于复杂指标：F1、BLEU、Elo、胜率差、多个子集的宏平均等。</li>
+    </ul>
+    <p>代码见 <a href="#c-code-ci">§8</a>：用 numpy 一次生成 \((B,n)\) 的索引矩阵，向量化计算，非常短。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 按“样本”而不是按“独立单位”重抽，比如同一题 8 次采样被当成 8 道独立题。(2) 对两个模型分别 bootstrap 再比较 CI，而不是对差值做配对 bootstrap。(3) 以为 bootstrap 能修复小样本问题——\(n\) 很小时经验分布本身就是总体的糟糕近似。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The bootstrap approximates the unknown distribution of questions with the empirical one: I resample the n questions with replacement, recompute the metric, repeat that ten thousand times, and take the 2.5th and 97.5th percentiles. For plain accuracy it agrees with the analytic interval, but its real value is for metrics without a simple formula, like F1, win rates, or Elo. The key detail is to resample the independent unit — the question, or the passage if questions are clustered — and never treat multiple samples of the same question as independent questions.</p></div>
+</section>
+
+<section class="concept" id="c-paired">
+  <div class="concept-head"><span class="pri p1">★</span><h3>配对检验：McNemar 与 paired bootstrap</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>两个模型在<b>同一批题</b>上评估时，应该看每道题上的得分差 \(d_i=a_i-b_i\)，其标准误是 \(\text{sd}(d)/\sqrt n\)；因为两个模型在题目难度上高度相关，配对 SE 往往比非配对 SE 小好几倍。二元结果可用 McNemar 检验，只看两个模型“意见不一致”的题。</p><p class="en">When two models answer the same questions, analyze per-question differences; because question difficulty is shared, the paired standard error is often several times smaller than the unpaired one. McNemar's test uses only the discordant questions.</p></div>
+  <div class="deep">
+    <h4>为什么配对更强</h4>
+    <p>差值的方差：</p>
+    $$\text{Var}(\bar a - \bar b) = \frac{1}{n}\Big(\text{Var}(a)+\text{Var}(b) - 2\,\text{Cov}(a,b)\Big).$$
+    <p>非配对检验相当于假设 \(\text{Cov}(a,b)=0\)。但实际上两个模型在同一道题上的表现高度正相关（容易的题两个都对，难的题两个都错），协方差项很大，减掉后方差显著变小。§8 的模拟中：两个模型准确率都约 70%、只在 8% 的题上表现不同，非配对 SE ≈ 2.2 个点，配对 SE ≈ 0.7 个点，小了 3 倍多。等价地说，要达到同样的统计功效，配对设计需要的题目数量少得多。</p>
+    <p>对于 0/1 得分，\(d_i\in\{-1,0,1\}\)。记 \(n_{10}\) = A 对 B 错的题数，\(n_{01}\) = A 错 B 对的题数，则 \(\bar d = (n_{10}-n_{01})/n\)，且</p>
+    $$\widehat{\text{Var}}(d_i) \approx \frac{n_{10}+n_{01}}{n} - \bar d^{\,2}.$$
+    <p>只有不一致的题贡献方差。两个模型越相似，不一致的题越少，能检测到的差异就越小。</p>
+    <h4>McNemar 检验</h4>
+    <p>零假设：两个模型准确率相同 ⇔ 在不一致的题中，“A 对 B 错”和“A 错 B 对”的可能性相同。所以在 \(m=n_{10}+n_{01}\) 道不一致的题中，\(n_{10}\sim\text{Binomial}(m, 1/2)\)。</p>
+    <ul>
+      <li><b>精确检验</b>（\(m\) 较小时）：双侧 p 值 \(=2\cdot P(\text{Bin}(m,\tfrac12)\le \min(n_{10},n_{01}))\)。例：9 比 1，\(p = 2\cdot\frac{\binom{10}{0}+\binom{10}{1}}{2^{10}} = \frac{22}{1024}\approx 0.021\)。</li>
+      <li><b>卡方近似</b>（\(m\) 较大时）：\(\chi^2 = \frac{(|n_{10}-n_{01}|-1)^2}{n_{10}+n_{01}}\)，服从自由度 1 的卡方分布（\(-1\) 是连续性校正）。\(\chi^2 &gt; 3.84\) 对应 \(p&lt;0.05\)。</li>
+    </ul>
+    <p>注意：两个模型都对和都错的题（一致的题）完全不影响检验——它们不包含关于“哪个更好”的信息。</p>
+    <h4>Paired bootstrap</h4>
+    <p>对题目索引重抽一次，<b>同时</b>取两个模型在这些题上的分数，计算差值；重复 \(B\) 次。差值分布的分位数给出差值的 CI；CI 不包含 0 则差异显著。优点：适用于任意指标（比如两个模型的 F1 差、胜率差），自动考虑相关性。</p>
+    <h4>回到经典问题</h4>
+    <p>“1000 题，A 72% B 70%，A 更好吗？”回答模板：</p>
+    <ol>
+      <li>非配对视角：\(\text{SE}_{\text{diff}}=\sqrt{0.72\cdot0.28/1000+0.70\cdot0.30/1000}\approx 2.03\) 个点，差值 2 个点 ≈ 1 个 SE，不显著（\(z\approx 0.98\)）。</li>
+      <li>但应该用配对检验：取决于不一致题的数量。如果两个模型只在 100 道题上不一致（比如 60 比 40），\(\chi^2=(20-1)^2/100=3.61\)，\(p\approx0.057\)，接近但不显著；如果只在 50 道题上不一致（35 比 15），\(\chi^2 = (20-1)^2/50 = 7.22\)，\(p\approx 0.007\)，显著。同样 2 个点的差距，结论取决于两个模型有多相似。</li>
+      <li>还要考虑：多个 seed / 采样随机性、prompt 敏感性、是否进行了多重比较、实际意义是否足够大。</li>
+    </ol>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 用两个独立 CI 是否重叠判断显著性（太保守，而且忽略配对）。(2) 在两个模型的不同题目子集上比较（失去配对结构）。(3) 认为“差 2 个点”有固定的显著性——显著性取决于不一致题的数量。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>When two models are evaluated on the same questions, I always use a paired analysis. The variance of the difference is Var(a) plus Var(b) minus twice the covariance, and since both models find the same questions easy or hard, that covariance is large, so the paired standard error can be several times smaller than the unpaired one. For binary outcomes, McNemar's test looks only at the discordant questions: under the null, each discordant question is equally likely to favor either model, so it's a binomial test with p equals one half. For arbitrary metrics I'd use a paired bootstrap — resample question indices once and compute both models' scores on the same resample. So whether a two-point gap on a thousand questions is significant really depends on how many questions the models disagree on.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why don't the questions both models get right matter for McNemar?</b><details><summary>思路</summary><div class="inner">在零假设（两模型等价）下，一致的题对两个模型的贡献完全相同，不提供任何关于“谁更好”的信息；差值 \(d_i=0\)，不影响均值差。它们只影响“差值的比例”（除以 n），但在条件于不一致题数 m 之后，检验统计量只依赖 \(n_{10}\) 与 \(n_{01}\) 的分配。</div></details></li>
+    <li><b>What if each model is sampled at temperature 1 and gets a different score every run?</b><details><summary>思路</summary><div class="inner">每题对每个模型采样 k 次，用每题平均分 \(\bar a_i,\bar b_i\)（在 [0,1] 之间）代替 0/1，然后对差值 \(\bar a_i-\bar b_i\) 做配对 t 检验或 paired bootstrap（按题重抽）。McNemar 只适用于二元结果。也可以报告每次运行之间的方差，但不要把 k 次运行当成 k 倍的题目。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-power">
+  <div class="concept-head"><span class="pri p1">★</span><h3>统计功效与样本量：“检测 2 个点的差距需要多少题？”</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>要以显著性 \(\alpha=0.05\)（双侧）和功效 80% 检测差值 \(\delta\)，需要 \(n=(z_{1-\alpha/2}+z_{1-\beta})^2\sigma_d^2/\delta^2 \approx 7.85\,\sigma_d^2/\delta^2\)。非配对检测 70% vs 72% 约需每个模型 8,000 题；配对且两模型只在 10% 的题上不一致时约需 2,000 题。</p><p class="en">Required sample size is (z for alpha plus z for power) squared, times the variance of the difference, over delta squared; roughly 8,000 questions unpaired versus about 2,000 paired to detect a two-point gap.</p></div>
+  <div class="deep">
+    <h4>推导</h4>
+    <p>设估计的差值 \(\hat\delta \approx \mathcal{N}(\delta, \sigma_d^2/n)\)，其中 \(\sigma_d^2\) 是“每题差值”的方差（配对时）或两个方差之和（非配对时，每个模型 \(n\) 题）。</p>
+    <ol>
+      <li>检验规则：当 \(|\hat\delta| &gt; z_{1-\alpha/2}\cdot \sigma_d/\sqrt n\) 时拒绝零假设。\(\alpha=0.05\) 时 \(z_{0.975}=1.96\)。</li>
+      <li>功效 = 真实差值为 \(\delta\) 时拒绝的概率。忽略反方向那一侧（很小），要求 \(P\big(\hat\delta &gt; 1.96\,\sigma_d/\sqrt n\big) \ge 1-\beta\)。</li>
+      <li>标准化：\(P\Big(Z &gt; 1.96 - \frac{\delta\sqrt n}{\sigma_d}\Big) \ge 1-\beta\)，即 \(\frac{\delta\sqrt n}{\sigma_d} - 1.96 \ge z_{1-\beta}\)。功效 80% 时 \(z_{0.8}=0.84\)。</li>
+      <li>解出 \(n \ge \frac{(1.96+0.84)^2\,\sigma_d^2}{\delta^2} = \frac{7.85\,\sigma_d^2}{\delta^2}\)。</li>
+    </ol>
+    <h4>算例：检测 70% vs 72%</h4>
+    <p><b>非配对</b>（两个模型在不同的题上评估，或者忽略配对）：\(\sigma_d^2 = 0.7\cdot0.3 + 0.72\cdot0.28 = 0.4116\)，</p>
+    $$n = \frac{7.85\times 0.4116}{0.02^2} \approx 8{,}077 \text{ 题（每个模型）}.$$
+    <p><b>配对</b>：假设两个模型在 10% 的题上不一致（A 对 B 错 4%，A 错 B 对 6%，差值 −2 个点）。每题差值 \(d_i\in\{-1,0,1\}\)，\(\sigma_d^2 = 0.10 - 0.02^2 = 0.0996\)，</p>
+    $$n = \frac{7.85\times 0.0996}{0.0004} \approx 1{,}955 \text{ 题}.$$
+    <p>§8 的模拟验证了：用 1,955 题、配对 z 检验，实际功效 ≈ 81%。结论：<b>配对设计把所需题目数减少了 4 倍</b>，而且两个模型越相似（不一致率越低），配对的优势越大。</p>
+    <h4>反过来：最小可检测效应（MDE）</h4>
+    <p>给定 \(n\)，能可靠检测的最小差值是 \(\text{MDE} = 2.8\,\sigma_d/\sqrt n\)。非配对、\(p=0.5\) 时：</p>
+    <table>
+      <tr><th>benchmark 大小 n</th><th>100</th><th>500</th><th>1,000</th><th>5,000</th><th>10,000</th></tr>
+      <tr><td>MDE（非配对，80% 功效）</td><td>19.8 点</td><td>8.9 点</td><td>6.3 点</td><td>2.8 点</td><td>2.0 点</td></tr>
+    </table>
+    <p>也就是说，在一个 500 题的 benchmark 上，用非配对比较，低于约 9 个点的差距大概率检测不到。很多论文声称的“1–2 个点的提升”在统计上是站不住的。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 只在实验做完后才计算功效（事后功效分析意义不大）；应该在设计实验时就估计所需样本量。(2) 功效不足的实验得出“没有显著差异”就当成“没有差异”——absence of evidence is not evidence of absence。(3) 忘记功效公式里 \(\sigma_d\) 取决于是否配对。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For a two-sided test at alpha 0.05 with 80 percent power, n is about 7.85 times the variance of the per-question difference, divided by delta squared. If I compare 70 versus 72 percent unpaired, the variance is about 0.41, which gives around eight thousand questions per model. But if the two models are evaluated on the same questions and disagree on only ten percent of them, the variance of the difference drops to about 0.1, and I need only around two thousand questions. Turning it around, on a 500-question benchmark the minimum detectable effect unpaired is close to nine points, which is why I'm skeptical of one- or two-point claims without paired tests.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your benchmark only has 300 questions and you can't get more. How do you make comparisons more reliable?</b><details><summary>思路</summary><div class="inner">(1) 配对分析（最重要）；(2) 每题多次采样取平均，降低生成方差（但不降低题目抽样方差）；(3) 使用连续指标替代 0/1（例如正确答案的 log-prob、部分得分），连续指标方差更小；(4) 合并多个相关 benchmark 并预先注册主要指标；(5) 诚实报告 MDE，把结论限制在能检测到的效应大小上。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-seeds">
+  <div class="concept-head"><span class="pri p1">★</span><h3>随机种子、多重比较与效应大小</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>评估结果的方差不仅来自题目抽样，还来自训练种子、数据顺序、采样温度和 prompt；要用多个种子报告均值和标准差。同时测试很多对比时要校正多重比较（Bonferroni / Holm / BH），并报告效应大小而不只是 p 值。</p><p class="en">Variance also comes from training seeds, data order, sampling, and prompts, so report means and spread over seeds; correct for multiple comparisons, and report effect sizes rather than just p-values.</p></div>
+  <div class="deep">
+    <h4>方差来源</h4>
+    <table>
+      <tr><th>来源</th><th>怎么测量</th><th>怎么降低</th></tr>
+      <tr><td>题目抽样</td><td>SE / bootstrap</td><td>更多题目；配对比较</td></tr>
+      <tr><td>生成随机性（温度 &gt; 0）</td><td>同一 checkpoint 多次采样</td><td>每题采样 k 次取平均；或用 greedy（但 greedy 也不是真确定性：GPU 非确定性、batch 组成会影响）</td></tr>
+      <tr><td>训练随机性（初始化、数据顺序、dropout）</td><td>不同种子训练多个模型</td><td>多种子（≥3，越多越好），报告均值 ± 标准差或 CI</td></tr>
+      <tr><td>checkpoint 选择</td><td>相邻 checkpoint 的分数波动</td><td>平均最后几个 checkpoint；用独立验证集选</td></tr>
+      <tr><td>prompt / 格式</td><td>多个 prompt 模板</td><td>报告多模板均值和范围（见 §7）</td></tr>
+    </table>
+    <p>微调和小模型训练中，种子之间的差异可能和方法之间的差异一样大。<a href="https://arxiv.org/abs/2406.10229" target="_blank" rel="noreferrer">Madaan et al. 2024（“Quantifying Variance in Evaluation Benchmarks”，arXiv 2406.10229）</a>系统测量了不同种子训练的模型在常用 benchmark 上的 seed variance，可作为参考。</p>
+    <h4>多重比较</h4>
+    <p>如果你在 20 个 benchmark 上测试新方法，每个都用 \(\alpha=0.05\)，即使方法完全无效，期望也会有 1 个“显著”结果；至少出现一个假阳性的概率是 \(1-0.95^{20}\approx 64\%\)。</p>
+    <ul>
+      <li><b>Bonferroni</b>：每个检验用 \(\alpha/m\)。控制族错误率（FWER），简单但保守。</li>
+      <li><b>Holm</b>：p 值排序后逐步检验，同样控制 FWER，但更有力。</li>
+      <li><b>Benjamini–Hochberg</b>：控制错误发现率（FDR），适合探索性的大量比较。</li>
+      <li><b>更好的做法</b>：预先注册主要指标（primary metric），其他作为次要/探索性结果报告。</li>
+    </ul>
+    <p>隐蔽的多重比较：尝试了很多超参、很多 prompt、很多 checkpoint，最后只报告最好的那个（“garden of forking paths”）。这和直接在测试集上调参是一样的。</p>
+    <h4>效应大小与实际意义</h4>
+    <p>p 值只说明“差异不太可能是零”，不说明差异有多大、是否重要。在 100 万个样本上，0.1 个点的差异也可能显著，但没有实际意义。应该报告：差值本身 + 置信区间（最重要），以及必要时的标准化效应（Cohen's d = 差值 / 标准差）。并且要和“实际有意义的最小差异”比较（比如同一模型不同种子之间的波动幅度）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 只用一个种子、一次运行就报告结果。(2) 在 10 个 benchmark 上比较，只挑显著的写进摘要。(3) 把 p&lt;0.05 当作“效果重要”的证据。(4) 把 greedy 解码当作完全确定的（硬件和 batch 的非确定性也会导致输出变化）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There are several sources of variance beyond question sampling: training seeds, data order, sampling temperature, checkpoint choice, and prompt format. For fine-tuning experiments in particular, seed-to-seed variance can be as large as the effect of the method, so I'd run at least three seeds and report the mean with a confidence interval. If I'm testing across many benchmarks, I'd either pre-register a primary metric or correct for multiple comparisons with something like Holm or Benjamini–Hochberg. And I'd always report the effect size with an interval, because a tiny difference can be statistically significant with enough data and still not matter.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>You can only afford three training seeds per method. How do you compare two methods?</b><details><summary>思路</summary><div class="inner">3 个种子对 3 个种子，自由度很低，t 检验的功效很小。可以：(1) 让两个方法共享种子（同样的初始化和数据顺序）形成配对，降低方差；(2) 把题目层面的配对分析和种子层面的方差结合起来（层次模型或者两层 bootstrap：先抽种子，再抽题目）；(3) 报告每个种子的结果和范围，让读者看到重叠程度；(4) 在多个 benchmark 上看方向是否一致（但注意多重比较）。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §6 -->
+<h2 class="sec" id="s-exp"><span class="num">§6 · EXPERIMENT DESIGN</span>实验设计与消融</h2>
+<p class="sec-intro">Research Scientist 面试的研究讨论轮几乎一定会问：“你怎么证明你的方法有效？你会做哪些消融？baseline 怎么选？”这一节给出一套可复用的框架。核心原则：<b>你要排除的不是“方法无效”，而是所有其他可以解释结果的原因。</b></p>
+
+<section class="concept" id="c-hypothesis">
+  <div class="concept-head"><span class="pri p1">★</span><h3>从假设出发：可证伪的预测</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>好的实验从一个具体、可证伪的假设出发：“因为机制 M，方法 X 在条件 C 下应该提升指标 Y，而在条件 C' 下不应该”；同时写下“什么结果会让我放弃这个假设”，并在看结果之前确定主要指标。</p><p class="en">Start from a specific, falsifiable hypothesis — because of mechanism M, method X should improve Y under condition C but not C' — and decide in advance what result would refute it.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>提升是结果，机制是假设</b>：“我的方法提升了 GSM8K”不是假设；“显式中间步骤减少了长依赖的误差累积，因此提升应该随推理步数增加而增大”才是。后者给出了可检验的<em>形状</em>预测。</li>
+      <li><b>预测剂量—反应关系</b>：如果机制成立，效果应该随某个变量单调变化（步数、模型大小、数据量）。只在一个点上测量很难区分真实效果和噪声。</li>
+      <li><b>预测在哪里不应该有效</b>（负对照）：如果你的方法据称改善长上下文检索，它在短上下文任务上应该没有效果。如果短上下文也大幅提升，说明可能是别的原因（比如多训练了 token）。</li>
+      <li><b>事先确定主要指标和分析方法</b>，避免看了结果再挑指标。</li>
+      <li><b>先做最便宜的“杀死假设”的实验</b>：快速、小规模、能明确否定假设的实验优先于漂亮但昂贵的实验。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I try to phrase every project as a falsifiable hypothesis about a mechanism, not just "my method improves the benchmark." That gives me predictions about the shape of the effect — for example, the gain should grow with the number of reasoning steps — and about where it shouldn't help, which serves as a negative control. I also write down in advance what result would make me abandon the idea, fix the primary metric, and run the cheapest experiment that could kill the hypothesis first.</p></div>
+</section>
+
+<section class="concept" id="c-baselines">
+  <div class="concept-head"><span class="pri p1">★</span><h3>强 baseline，同等调参，compute-matched 比较</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>新方法必须和<b>同等认真调参</b>的强 baseline 比较，在相同的计算预算（训练 FLOPs、推理 token 数、样本数）下比较；否则提升可能只是来自更多调参、更多算力或更多数据。</p><p class="en">Compare against strong baselines tuned with the same effort, under matched compute — training FLOPs, inference tokens, samples — otherwise gains may just come from more tuning, compute, or data.</p></div>
+  <div class="deep">
+    <h4>同等调参</h4>
+    <p>最常见的问题：新方法调了 50 组超参，baseline 用的是原论文默认值。很多“新方法打败旧方法”的结论在重新调好 baseline 后消失了（经典例子：语言模型和度量学习领域的多篇“重新审视”论文显示，调好的旧 baseline 能追平很多新方法）。做法：给所有方法相同的调参预算（同样的搜索空间大小和试验次数），报告搜索空间；学习率至少对每个方法单独扫描。</p>
+    <h4>Compute-matched</h4>
+    <table>
+      <tr><th>场景</th><th>需要匹配的量</th><th>例子</th></tr>
+      <tr><td>训练方法 / 架构</td><td>训练 FLOPs、训练 token 数、参数量（激活参数 vs 总参数）</td><td>新架构多了 20% FLOPs，应和一个大 20% 的 baseline 或者训练更久的 baseline 比</td></tr>
+      <tr><td>测试时计算（推理方法）</td><td>生成 token 总数 / 样本数 / 墙钟时间</td><td>树搜索用了 64 个样本，应该和 best-of-64 或 majority@64 比，而不是和单次采样比</td></tr>
+      <tr><td>RL / post-training</td><td>RL 步数、rollout 数、reward model 调用次数</td><td>新 RL 算法 vs PPO/GRPO 在同样数量的 rollout 下比较</td></tr>
+      <tr><td>数据方法</td><td>token 数量、数据重复次数</td><td>数据过滤方法要在相同 token 预算下比较，而不是“过滤后的数据训练相同步数”（后者 epoch 数可能不同）</td></tr>
+    </table>
+    <p>最理想的形式：画出“性能 vs 计算量”的曲线，比较两条曲线（例如 scaling curve 或 Pareto front），而不是比较单个点。如果新方法的曲线整体在上方，结论就很强。</p>
+    <h4>Baseline 选择清单</h4>
+    <ul>
+      <li><b>最简单的 baseline</b>：随机、多数类、只用提示词、更多采样（best-of-N / self-consistency）、更长训练。</li>
+      <li><b>当前最强方法</b>（SOTA）在相同设置下复现，而不是抄论文里的数字。</li>
+      <li><b>“去掉关键部分”的版本</b>（这就是消融）。</li>
+      <li><b>“只增加计算 / 数据 / 参数”的版本</b>：排除“提升只是因为更多资源”。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 测试时计算的方法和单次采样比较。(2) MoE 和同总参数量的 dense 模型比（应该说明比较的是激活参数还是总参数，以及 FLOPs）。(3) 直接引用其他论文报告的 baseline 数字（评估设置不同）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The baseline has to be strong and tuned with the same budget as my method — at minimum a separate learning-rate sweep for each — and I'd rerun it in my own setup rather than copying numbers from a paper. Then I'd match compute: training FLOPs and tokens for architecture changes, and number of samples or generated tokens for test-time methods. A search method using 64 samples should be compared against best-of-64 or majority voting over 64, not a single sample. Ideally I'd plot performance against compute for both methods and compare the curves rather than single points.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your method adds 15% training FLOPs. How do you set up a fair comparison?</b><details><summary>思路</summary><div class="inner">(1) 把 baseline 训练多 15% 的 token（或者加大 15% 的模型），在相同 FLOPs 下比较；(2) 更好：在几个规模上做，画 loss vs FLOPs 曲线（或拟合 scaling law），看新方法是否在整条曲线上占优，以及优势是否随规模变化（如果优势随规模缩小，可能在大规模下消失）；(3) 同时报告墙钟时间和显存，因为 FLOPs 相同不代表实际成本相同。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-ablation">
+  <div class="concept-head"><span class="pri p1">★</span><h3>消融设计</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>消融实验一次去掉（或替换）一个组件，测量它对结果的贡献；要包含“只加计算不加想法”的对照、组件之间的交互作用，以及在多个种子下的误差条。</p><p class="en">Ablations remove or replace one component at a time to measure its contribution, including compute-only controls, interactions between components, and error bars over seeds.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Leave-one-out</b>：完整方法分别去掉每个组件。回答“每个组件是否必要”。</li>
+      <li><b>Add-one-in</b>：从 baseline 出发逐个添加组件。回答“每个组件单独是否有用”。两种方式结果可能不同（组件间有交互）。</li>
+      <li><b>交互作用</b>：如果有 2–3 个关键组件，做完整的因子设计（\(2^k\) 种组合），看是否存在“单独无效、合在一起有效”的情况。</li>
+      <li><b>替换而不只是删除</b>：删除一个模块会同时减少参数和计算；用一个相同成本的“无意义版本”替换（例如用随机数据替代你的特殊数据、用随机 reward 替代你的 reward）更能隔离“想法本身”的贡献。</li>
+      <li><b>超参敏感性</b>：画出关键超参（比如 \(\beta\)、温度、混合比例）的扫描曲线。如果只在一个很窄的范围有效，说明方法脆弱。</li>
+      <li><b>机制验证</b>：除了最终指标，还要测量中间量来验证你声称的机制（例如你说方法降低了 attention entropy，就把 entropy 画出来）。</li>
+      <li><b>负结果也报告</b>：哪些尝试没有效果，有助于读者理解方法的边界。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>一个强有力的消融表应该让读者确信：(1) 每个组件都有贡献；(2) 提升不是来自额外计算/数据/调参；(3) 提升的机制与你说的一致。在面试中描述自己的项目时，按这三点组织消融，会显得非常有条理。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 消融在单个种子上，差异小于种子方差。(2) 删除组件后不重新调超参（完整方法的超参是为完整方法调的，对消融版本可能不是最优，这会夸大组件的贡献）。(3) 消融只在一个 benchmark 上做。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd design ablations to answer three questions: is each component necessary, is the gain coming from the idea rather than extra compute or data, and does the mechanism work the way I claim. So I'd do leave-one-out ablations, a compute-matched control where I replace a component with a same-cost but uninformative version, and a factorial design if I suspect interactions. I'd retune the key hyperparameters for each variant, run multiple seeds, and also measure intermediate quantities that the claimed mechanism predicts, not just the final score.</p></div>
+</section>
+
+<section class="concept" id="c-proxies">
+  <div class="concept-head"><span class="pri p1">★</span><h3>小规模代理实验：何时可信、何时误导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>小模型/小数据实验便宜，但结论可能不迁移到大规模：方法的收益可能随规模缩小（大模型已经学会了）、反转，或者只在大规模才出现（涌现）；要在至少 2–3 个规模上看趋势，并用平滑指标（loss）而不只是离散准确率做代理。</p><p class="en">Small-scale proxies are cheap but may not transfer: gains can shrink, reverse, or only appear at scale; check the trend across at least two or three scales and use smooth metrics like loss.</p></div>
+  <div class="deep">
+    <p><strong>小规模实验何时会误导：</strong></p>
+    <ul>
+      <li><b>收益随规模消失</b>：很多架构改进和正则化技巧在小模型上有效，但大模型本身已经具备对应能力，收益趋近于零。</li>
+      <li><b>超参不迁移</b>：标准参数化（SP）下最优学习率随宽度变化，小模型上调好的学习率在大模型上不是最优，这会让比较失真。μP 的动机正是让超参可以从小模型迁移（见 <a href="m05-pretraining.html">05</a>）。</li>
+      <li><b>离散指标的“涌现”</b>：小模型在某个任务上准确率接近 0，看不出两个方法的差异；但用连续指标（正确答案的 log-prob、部分得分）可能已经能看到趋势。“涌现”在多大程度上是指标选择造成的，见 05 中关于 Wei 2022 与 Schaeffer 2023 的讨论。</li>
+      <li><b>能力门槛</b>：例如 RL 方法需要基础模型有一定成功率才能获得奖励信号；在太弱的模型上 RL 实验可能得出“完全无效”的错误结论。</li>
+    </ul>
+    <p><strong>做法：</strong>(1) 在 3 个以上规模上实验，看收益是增大、不变还是缩小，外推趋势；(2) 用 loss 或其他平滑指标作为主要代理，再用少量大规模实验验证下游指标；(3) 使用 μP 等让超参可迁移的参数化；(4) 在预测大规模结果时写下预测并事后检验，建立自己对“哪些结论能迁移”的直觉。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Small proxies are essential for iteration speed, but I don't trust a single small-scale point. Gains often shrink with scale because bigger models already have the capability, hyperparameters don't transfer under standard parameterization, and discrete metrics can sit at zero for small models and hide real differences. So I'd run at least three scales and look at whether the gap grows or shrinks, use smooth metrics like loss as the main proxy, use muP-style parameterization so tuned hyperparameters transfer, and validate the final claim with a smaller number of larger runs.</p></div>
+</section>
+
+<section class="concept" id="c-sanity">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Sanity check 与可复现性</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在相信任何结果之前先做 sanity check：评估管线在已知模型上能否复现公开数字、随机/空输入 baseline、人工看样本、检查答案抽取；可复现性要求固定并记录代码版本、数据版本、prompt、解码参数、种子和硬件。</p><p class="en">Before trusting any result, run sanity checks — reproduce known numbers, run trivial baselines, read samples, audit answer extraction — and log code, data, prompts, decoding settings, seeds, and hardware.</p></div>
+  <div class="deep">
+    <h4>评估管线 sanity check 清单</h4>
+    <ul>
+      <li><b>复现已知结果</b>：用你的管线评估一个公开模型，结果应与官方报告接近（在合理误差内）。不一致时先查管线。</li>
+      <li><b>平凡 baseline</b>：随机答案、总是选 A、空 prompt、只看选项。它们应该在预期水平（例如四选一 25%）。</li>
+      <li><b>看样本</b>：随机抽 20–50 个样本，人工看模型输出、抽取的答案和评分。这是发现 bug 最高效的方法：答案抽取失败、截断（max_tokens 太小）、chat template 错误、停止词错误等。</li>
+      <li><b>答案抽取失败率</b>：统计“无法解析”的比例；不同模型的格式习惯不同，抽取失败会系统性地偏向某些模型。</li>
+      <li><b>完美输入检查</b>：把标准答案当作模型输出送入评分器，应得 100%；把明显错误的答案送入，应得 0%。</li>
+      <li><b>训练侧</b>：能否在一个小 batch 上过拟合；loss 初始值是否接近 \(\ln V\)（随机初始化的语言模型）。</li>
+    </ul>
+    <h4>可复现性</h4>
+    <ul>
+      <li>记录：代码 commit、数据集版本和哈希、完整 prompt 模板（包括 system prompt 和 chat template）、few-shot 示例、解码参数（温度、top-p、max tokens、停止词）、种子、模型 checkpoint 哈希、推理框架和版本、硬件。</li>
+      <li>保存每个样本的原始输出（而不只是分数），方便事后重新评分和错误分析。</li>
+      <li>注意 GPU 非确定性：即使 greedy 解码，不同 batch size、不同推理引擎、不同硬件也可能导致输出不同，因此即使“确定性”评估也要报告重复运行的方差。</li>
+      <li>使用统一的评估框架（如 lm-evaluation-harness 等）有助于可比性，但仍要报告配置。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只看总分不看样本；max_tokens 太小导致推理模型的长回答被截断后判错；chat 模型不使用 chat template 评估；比较时不同模型用了不同的推理框架。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Before trusting a number, I sanity-check the pipeline: reproduce a published result for a known model, run trivial baselines like always answering A, feed the gold answers through the grader to make sure it gives a hundred percent, and read a few dozen raw samples. That last one catches most bugs — truncation from a small max-tokens setting, wrong chat templates, broken answer extraction. For reproducibility I log the code commit, data version, exact prompts, decoding parameters, seeds, and inference stack, and I save raw generations so I can re-grade later.</p></div>
+</section>
+
+<!-- ============================================================ §7 -->
+<h2 class="sec" id="s-pitfalls"><span class="num">§7 · PITFALLS</span>常见陷阱</h2>
+<p class="sec-intro">这一节是“评估中会出什么错”的清单。面试官经常给一个结果让你挑毛病（“这个结论有什么问题？”），你可以按这里的顺序逐条检查。</p>
+
+<section class="concept" id="c-prompt-sens">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Prompt 敏感性与格式效应</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>同一个模型、同一个 benchmark，仅仅改变 prompt 格式（分隔符、空格、大小写、选项标签、few-shot 示例的选择和顺序）就可能导致准确率变化数个到数十个百分点；比较模型时应报告多个 prompt 的分布，而不是单一 prompt 的分数。</p><p class="en">Changing only the prompt format — separators, spacing, casing, option labels, few-shot choice and order — can swing accuracy by many points, so report a distribution over prompts rather than a single number.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2310.11324" target="_blank" rel="noreferrer">Sclar et al.（arXiv 2310.11324）</a>显示，在 few-shot 设置下，仅改变语义无关的格式细节，某些模型在某些任务上的准确率差距可达数十个百分点，而且不同模型对格式的偏好不同——这意味着用某个固定格式比较两个模型，排名可能被格式决定。</p>
+    <p><strong>格式效应的来源：</strong></p>
+    <ul>
+      <li>few-shot 示例的选择、顺序、标签分布（例如示例中正确答案多为 A，会诱导模型选 A）。</li>
+      <li>分隔符和空白字符（tokenization 不同）。</li>
+      <li>是否使用 chat template、system prompt 内容。</li>
+      <li>答案格式要求（“只输出字母” vs 允许解释）以及是否允许 CoT。</li>
+      <li>多选题中正确答案的位置（模型有位置偏好）。</li>
+    </ul>
+    <p><strong>应对：</strong>(1) 用多个 prompt 模板评估，报告均值和范围（或最差情况）；(2) 打乱选项顺序并平均（circular evaluation：每个选项轮流放到每个位置）；(3) 所有模型用相同的 prompt，或者每个模型各自用其推荐格式并说明；(4) 对 chat 模型使用正确的 chat template。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Prompt sensitivity is a big confound. Changing semantically irrelevant formatting — separators, spacing, option labels, or the choice and order of few-shot examples — can move accuracy by many points, and different models prefer different formats, so a single-prompt comparison can flip the ranking. I'd evaluate over several templates and report the mean and spread, rotate the answer options so each appears in every position, and use each model's proper chat template.</p></div>
+</section>
+
+<section class="concept" id="c-goodhart">
+  <div class="concept-head"><span class="pri p1">★</span><h3>排行榜过拟合与 Goodhart 定律</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>当一个指标变成优化目标，它就不再是好的指标（Goodhart）：社区反复在同一个测试集上选择模型和方法，会造成 adaptive overfitting；用 LLM 裁判或 reward model 做优化目标时，策略会主动利用其漏洞（reward hacking）。</p><p class="en">When a measure becomes a target it ceases to be a good measure: repeated selection on the same test set causes adaptive overfitting, and optimizing against a judge or reward model invites reward hacking.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Adaptive overfitting</b>：每次根据测试集分数做一个决定（选超参、选 checkpoint、选数据配比、决定要不要发论文），测试集信息就泄漏一点。成千上万的研究者在同一个测试集上迭代多年，测试集分数会系统性地高于真实泛化。有意思的是，ImageNet / CIFAR 的重新采集测试集研究发现，模型的排名大致保持，但绝对准确率普遍下降——说明分布偏移的影响比 adaptive overfitting 更大，但两者都存在。</li>
+      <li><b>选择性提交</b>：私下测试多个变体只公布最好的（见 §1 Arena 讨论），在统计上等价于取多个噪声测量的最大值，期望会高于真实值（winner's curse）。</li>
+      <li><b>为 benchmark 专门训练</b>：针对某个 benchmark 的格式和分布大量构造训练数据，分数上涨但能力没有对应提升。</li>
+      <li><b>Reward hacking</b>：RL 优化 LLM 裁判分数 → 回答越来越长、越来越多格式、更多讨好；优化单元测试通过率 → 修改测试或硬编码输出。监控：长度、格式统计、人工抽检、用不同的保留裁判（held-out judge）评估。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>任何指标都是“目标能力 + 可利用的漏洞”。优化压力越大，越倾向于找到漏洞，因为漏洞通常比真正的能力更容易获得。解决办法是：不要让任何单一指标承受全部优化压力；保留不参与优化的 held-out 评估；定期更换指标。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Goodhart's law applies directly: once a benchmark becomes the target, it stops measuring what it used to. Every decision made by looking at test scores leaks information, so a community iterating on the same test set for years will overfit it, and private testing of many variants with only the best one published creates a winner's-curse bias. In RL the same thing happens faster — if the reward is an LLM judge, the policy learns to be longer and more sycophantic. My defenses are to keep held-out evaluations that are never used for decisions, monitor style statistics like length, and use a separate judge for final evaluation than the one used for training.</p></div>
+</section>
+
+<section class="concept" id="c-misc-pitfalls">
+  <div class="concept-head"><span class="pri p1">★</span><h3>其他陷阱：tokenization、cherry-picking、不公平调参、数据划分泄漏</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>tokenization 影响 perplexity 可比性和字符级任务；cherry-picking 示例或 benchmark 会误导；新方法调参多于 baseline 会夸大收益；训练/验证/测试集之间的重复或相关样本会导致泄漏。</p><p class="en">Tokenization breaks comparability and character-level tasks; cherry-picking misleads; unequal tuning inflates gains; and duplicates or correlated items across splits cause leakage.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>陷阱</th><th>表现</th><th>检查/修复</th></tr>
+      <tr><td><b>Tokenization</b></td><td>跨 tokenizer 比较 per-token perplexity；字符级任务（数字母、拼写、多位数算术）受 tokenization 影响而非“推理”；prompt 末尾的空格改变 tokenization 导致分数变化</td><td>用 bits-per-byte；在分析字符级失败时考虑 tokenization；检查 prompt 末尾空格</td></tr>
+      <tr><td><b>Cherry-picking</b></td><td>论文中只展示最好的样例；只报告有提升的 benchmark；只报告最好的种子</td><td>随机抽样展示样例；报告全部预先选定的 benchmark；报告所有种子</td></tr>
+      <tr><td><b>不公平调参</b></td><td>新方法广泛调参，baseline 用默认超参</td><td>相同调参预算；报告搜索空间（见 §6）</td></tr>
+      <tr><td><b>数据划分泄漏</b></td><td>同一文档、同一用户、同一代码仓库、同一模板的样本同时出现在训练集和测试集；随机划分时间序列数据</td><td>按组划分（group split：按文档/用户/仓库）；按时间划分；划分后做近似去重</td></tr>
+      <tr><td><b>测试集上做决策</b></td><td>用测试集选 checkpoint、早停、选 prompt</td><td>独立验证集；测试集只用一次</td></tr>
+      <tr><td><b>截断与超时</b></td><td>max_tokens 太小，长推理被截断；agent 任务超时设置不同</td><td>统计截断比例；所有模型相同的预算</td></tr>
+      <tr><td><b>聚合方式</b></td><td>微平均 vs 宏平均（按子任务平均）给出不同排名；子集大小差异</td><td>说明聚合方式；同时报告子类分数</td></tr>
+    </table>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A few other pitfalls I always check: tokenization, since per-token perplexity isn't comparable across tokenizers and character-level failures are often tokenization artifacts; cherry-picking of examples, seeds, or benchmarks; unequal tuning budgets between the method and the baseline; and split leakage, where the same document, user, repository, or template appears in both train and test. For leakage, I split by group or by time rather than randomly, and I near-dedup across splits.</p></div>
+</section>
+
+<section class="concept" id="c-review-checklist">
+  <div class="concept-head"><span class="pri p1">★</span><h3>“这个结果可信吗？”——审查清单</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>面对任何“方法 X 提升了 Y 个点”的结论，按固定顺序检查：统计显著性（误差条、配对、种子）→ 公平性（baseline 调参、compute-matched）→ 有效性（污染、捷径、prompt 敏感性）→ 外部有效性（多个 benchmark、多个规模、人工检查）。</p><p class="en">For any claimed gain, check in order: statistical significance, fairness of the comparison, validity of the measurement, and external validity across benchmarks and scales.</p></div>
+  <div class="deep">
+    <ol>
+      <li><b>噪声</b>：benchmark 多大？SE 是多少？差异是否超过 2 倍 SE？是否做了配对检验？几个种子？</li>
+      <li><b>公平性</b>：baseline 是否同样认真调参？计算/数据/参数是否匹配？评估设置（shot 数、prompt、解码）是否一致？</li>
+      <li><b>测量有效性</b>：是否可能污染？是否存在捷径？换 prompt 是否稳定？答案抽取是否对两个模型同样可靠？</li>
+      <li><b>多重比较</b>：报告了多少 benchmark / 变体？是否只挑了好的？</li>
+      <li><b>外部有效性</b>：提升是否在多个 benchmark、多个规模上一致？在保留的新数据上是否成立？人工看样本是否支持？</li>
+      <li><b>机制</b>：有没有证据支持声称的原因？消融是否排除了其他解释？</li>
+    </ol>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>When I see a claimed improvement, I go through four questions in order. Is it real — benchmark size, standard error, paired test, number of seeds? Is it fair — equally tuned baselines, matched compute, identical eval settings? Is the measurement valid — contamination, shortcuts, prompt sensitivity, answer extraction? And does it generalize — consistent across benchmarks and scales, holding up on fresh data, supported by reading samples? Only after that would I ask whether the evidence supports the claimed mechanism.</p></div>
+</section>
+
+<!-- ============================================================ §8 -->
+<h2 class="sec" id="s-code"><span class="num">§8 · CODE</span>手写代码：numpy / 标准库</h2>
+<p class="sec-intro">下面的代码都只依赖 numpy 和 Python 标准库，全部经过测试（含模拟验证覆盖率、功效、无偏性）。面试中可能被要求现场写 bootstrap、McNemar、pass@k 或 Bradley–Terry 拟合，每段都在 30 行以内，值得能默写。</p>
+
+<section class="concept" id="c-code-ci">
+  <div class="concept-head"><span class="pri p1">★</span><h3>准确率 SE、Wilson 区间、bootstrap CI、聚类 SE</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>解析 CI 用 \(\hat p\pm1.96\sqrt{\hat p(1-\hat p)/n}\)；小样本用 Wilson；任意指标用向量化 bootstrap（一次生成 \((B,n)\) 索引矩阵）；相关题目用聚类 SE。</p><p class="en">Analytic interval for accuracy, Wilson for small samples, vectorized bootstrap for any metric, and clustered standard errors for correlated questions.</p></div>
+  <pre><code class="language-python">import math
+import random
+import numpy as np
+# ---------- 1. accuracy SE + normal CI ----------
+def accuracy_ci(correct, z=1.96):
+    """correct: 0/1 array. Returns (acc, se, (lo, hi)) using the CLT."""
+    x = np.asarray(correct, dtype=float)
+    n = len(x)
+    p = x.mean()
+    se = math.sqrt(p * (1 - p) / n)      # population-variance form
+    return p, se, (p - z * se, p + z * se)
+
+def wilson_ci(k, n, z=1.96):
+    """Wilson score interval: better than normal CI when p near 0/1 or n small."""
+    p = k / n
+    denom = 1 + z**2 / n
+    center = (p + z**2 / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denom
+    return center - half, center + half
+# ---------- 2. bootstrap CI ----------
+def bootstrap_ci(scores, n_boot=10_000, alpha=0.05, stat=np.mean, seed=0):
+    """Percentile bootstrap: resample questions with replacement."""
+    rng = np.random.default_rng(seed)
+    x = np.asarray(scores, dtype=float)
+    n = len(x)
+    idx = rng.integers(0, n, size=(n_boot, n))       # (B, n) resampled indices
+    stats = stat(x[idx], axis=1)
+    lo, hi = np.quantile(stats, [alpha / 2, 1 - alpha / 2])
+    return stat(x), (lo, hi)
+# ---------- 5. clustered SE ----------
+def clustered_se(scores, clusters):
+    """Questions sharing a passage/template are correlated -&gt; cluster-robust SE."""
+    x = np.asarray(scores, float); c = np.asarray(clusters)
+    n = len(x); mu = x.mean()
+    s = 0.0
+    for g in np.unique(c):
+        r = x[c == g] - mu
+        s += r.sum() ** 2
+    return math.sqrt(s) / n</code></pre>
+  <div class="deep">
+    <p>测试结果（\(n=1000\)，真实 \(p=0.7\) 的模拟数据）：观测准确率 0.687，SE 0.0147，正态 CI [0.658, 0.716]，bootstrap CI [0.659, 0.716]——两者几乎一致。在 2000 次重复模拟中，正态 CI 的实际覆盖率为 95.0%。Wilson 区间：0/20 → [0, 0.161]；18/20 → [0.699, 0.972]。聚类例子：100 篇文章 × 10 道完全相关的题，朴素 SE 0.016，聚类 SE 0.050。</p>
+    <p>Wilson 区间公式（对应代码）：</p>
+    $$\frac{\hat p + \frac{z^2}{2n}}{1+\frac{z^2}{n}} \pm \frac{z}{1+\frac{z^2}{n}}\sqrt{\frac{\hat p(1-\hat p)}{n} + \frac{z^2}{4n^2}}.$$
+    <p>它来自反解 \(|\hat p - p| \le z\sqrt{p(1-p)/n}\)（用<em>真实</em> \(p\) 而不是 \(\hat p\) 计算 SE）这个关于 \(p\) 的二次不等式，所以即使 \(\hat p=0\) 也能给出非零宽度的区间。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-code-paired">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Paired bootstrap、配对 SE 与 McNemar 检验</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Paired bootstrap 对题目索引只重抽一次、两个模型共用；McNemar 只用不一致题数 \(n_{10},n_{01}\)：小样本用精确二项检验，大样本用带连续性校正的卡方。</p><p class="en">Paired bootstrap shares one index resample across both models; McNemar uses only the discordant counts, with an exact binomial test for small counts.</p></div>
+  <pre><code class="language-python"># ---------- 3. paired comparison ----------
+def paired_bootstrap(a, b, n_boot=10_000, seed=0):
+    """a, b: per-question scores of models A and B on the SAME questions.
+    Resample question indices jointly; return mean diff, 95% CI, two-sided p."""
+    rng = np.random.default_rng(seed)
+    a = np.asarray(a, dtype=float); b = np.asarray(b, dtype=float)
+    d = a - b
+    n = len(d)
+    idx = rng.integers(0, n, size=(n_boot, n))
+    boot = d[idx].mean(axis=1)
+    lo, hi = np.quantile(boot, [0.025, 0.975])
+    # p-value: shift bootstrap distribution to be centred at 0 (null), count |.| &gt;= observed
+    obs = d.mean()
+    p = np.mean(np.abs(boot - obs) &gt;= abs(obs))
+    return obs, (lo, hi), p
+
+def paired_se(a, b):
+    """Analytic paired SE of mean difference: sd(a-b)/sqrt(n)."""
+    d = np.asarray(a, float) - np.asarray(b, float)
+    return d.mean(), d.std(ddof=1) / math.sqrt(len(d))
+
+def mcnemar(a, b, exact=None):
+    """a, b: 0/1 correctness. Only discordant pairs matter.
+    n01 = A wrong &amp; B right, n10 = A right &amp; B wrong."""
+    a = np.asarray(a).astype(bool); b = np.asarray(b).astype(bool)
+    n10 = int(np.sum(a &amp; ~b))
+    n01 = int(np.sum(~a &amp; b))
+    m = n10 + n01
+    if m == 0:
+        return n10, n01, 1.0
+    if exact is None:
+        exact = m &lt; 25
+    if exact:
+        # under H0 each discordant pair is A-wins w.p. 1/2 -&gt; Binomial(m, 1/2)
+        k = min(n10, n01)
+        tail = sum(math.comb(m, i) for i in range(k + 1)) / 2**m
+        p = min(1.0, 2 * tail)
+    else:
+        chi2 = (abs(n10 - n01) - 1) ** 2 / m            # continuity-corrected
+        p = math.erfc(math.sqrt(chi2 / 2))              # chi2(1) survival = erfc(sqrt(x/2))
+    return n10, n01, p</code></pre>
+  <div class="deep">
+    <p>测试结果：模拟两个准确率约 70% 的相关模型（在 8% 的题上不同）。配对差值 +0.6 个点，95% CI [−0.7, +1.9]，p ≈ 0.41；配对解析 SE 0.68 个点，与 bootstrap CI 宽度/3.92 吻合；非配对 SE 2.23 个点——配对 SE 小了 3 倍多。McNemar：26 比 20，p ≈ 0.46。精确检验例子 9 比 1：\(p = 22/1024 \approx 0.0215\)（与手算一致）。</p>
+    <p>卡方分布自由度 1 的生存函数等于 \(\text{erfc}(\sqrt{x/2})\)，因为 \(\chi^2_1 = Z^2\)，\(P(Z^2&gt;x) = P(|Z|&gt;\sqrt x) = \text{erfc}(\sqrt{x/2})\)。这样就不需要 scipy。</p>
+    <p>关于 p 值的写法：代码中的 bootstrap p 值把 bootstrap 分布平移到以 0 为中心（模拟零假设），再看有多大比例的 |平移后的值| 不小于观测值。这是一个常见的近似做法；面试中更常见的是直接看 CI 是否包含 0。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-code-power">
+  <div class="concept-head"><span class="pri p1">★</span><h3>样本量计算器与 MDE</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(n = (z_{1-\alpha/2}+z_{\text{power}})^2\sigma_d^2/\delta^2\)；非配对 \(\sigma_d^2=p_1(1-p_1)+p_2(1-p_2)\)，配对 \(\sigma_d^2=\text{Var}(a_i-b_i)\)。用 erf 二分法求正态分位数，只需标准库。</p><p class="en">Sample size is z-alpha plus z-power squared, times the variance of the difference, over delta squared; the normal quantile can be computed by bisection on erf.</p></div>
+  <pre><code class="language-python"># ---------- 4. sample size ----------
+def norm_ppf(q):
+    """Inverse standard normal CDF via bisection on erf (stdlib only)."""
+    lo, hi = -10.0, 10.0
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        if 0.5 * (1 + math.erf(mid / math.sqrt(2))) &lt; q:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+def n_unpaired(p1, p2, alpha=0.05, power=0.8):
+    """Questions per model to detect p1 vs p2 with two independent samples."""
+    za = norm_ppf(1 - alpha / 2); zb = norm_ppf(power)
+    var = p1 * (1 - p1) + p2 * (1 - p2)
+    return math.ceil((za + zb) ** 2 * var / (p1 - p2) ** 2)
+
+def n_paired(delta, sd_diff, alpha=0.05, power=0.8):
+    """Questions needed when both models answer the same questions.
+    sd_diff = std of per-question difference (a_i - b_i)."""
+    za = norm_ppf(1 - alpha / 2); zb = norm_ppf(power)
+    return math.ceil(((za + zb) * sd_diff / delta) ** 2)
+
+def mde(n, p=0.5, alpha=0.05, power=0.8):
+    """Minimum detectable effect (unpaired, equal p) for a benchmark of size n."""
+    za = norm_ppf(1 - alpha / 2); zb = norm_ppf(power)
+    return (za + zb) * math.sqrt(2 * p * (1 - p) / n)</code></pre>
+  <div class="deep">
+    <p>测试结果：<code>n_unpaired(0.70, 0.72)</code> = 8077；<code>n_unpaired(0.50, 0.52)</code> = 9804；配对（不一致率 10%，\(\sigma_d=\sqrt{0.0996}\)）= 1955。用 1955 题模拟 3000 次配对 z 检验，实际功效 0.812 ≈ 80%。MDE（非配对，\(p=0.5\)）：n=100 → 19.8 点，500 → 8.9，1000 → 6.3，5000 → 2.8，10000 → 2.0。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-code-passk">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>pass@k 无偏估计</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(1-\binom{n-c}{k}/\binom{n}{k}\) 用乘积形式 \(1-\prod_{i=n-c+1}^{n}(1-k/i)\) 计算，数值稳定。</p><p class="en">Compute one minus the ratio of binomial coefficients as a product for numerical stability.</p></div>
+  <pre><code class="language-python">import numpy as np
+from math import comb
+
+def pass_at_k(n, c, k):
+    """Unbiased pass@k (Chen et al. 2021): n samples, c correct.
+    = 1 - C(n-c, k) / C(n, k), computed stably as a product."""
+    if n - c &lt; k:
+        return 1.0
+    return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))</code></pre>
+  <div class="deep">
+    <p>为什么乘积形式等价：\(\frac{\binom{n-c}{k}}{\binom{n}{k}} = \frac{(n-c)!\,(n-k)!}{(n-c-k)!\,n!} = \prod_{i=n-c+1}^{n}\frac{i-k}{i}\)（分子分母都写成 \(c\) 项连乘后约分）。测试：与 <code>math.comb</code> 精确值对比 5 组参数全部一致；\(p=0.2,n=10,k=5\) 模拟 20000 次，无偏估计均值 0.675（真值 0.672），朴素估计均值 0.596（明显低估）。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-code-ngram">
+  <div class="concept-head"><span class="pri p1">★</span><h3>n-gram 污染检测器</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>规范化文本 → 对训练语料建 n-gram 倒排索引 → 对每道测试题计算其 n-gram 在索引中出现的比例，超过阈值判为污染，并返回命中的文档。</p><p class="en">Normalize text, index corpus n-grams, then flag test items whose fraction of n-grams found in the corpus exceeds a threshold.</p></div>
+  <pre><code class="language-python">import re
+from collections import defaultdict
+
+def normalize(text):
+    """Lowercase, strip punctuation, collapse whitespace -&gt; list of word tokens."""
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return text.split()
+
+def ngrams(tokens, n):
+    return {tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)}
+
+class NgramIndex:
+    """Index the training corpus once; query many benchmark items."""
+    def __init__(self, n=13):
+        self.n = n
+        self.index = defaultdict(set)          # ngram -&gt; set(doc_id)
+
+    def add(self, doc_id, text):
+        for g in ngrams(normalize(text), self.n):
+            self.index[g].add(doc_id)
+
+    def check(self, item, threshold=0.5):
+        """Return overlap fraction = |item ngrams found in corpus| / |item ngrams|."""
+        grams = ngrams(normalize(item), self.n)
+        if not grams:                           # item shorter than n words
+            return 0.0, set(), False
+        hits = [g for g in grams if g in self.index]
+        docs = set().union(*(self.index[g] for g in hits)) if hits else set()
+        frac = len(hits) / len(grams)
+        return frac, docs, frac &gt;= threshold</code></pre>
+  <div class="deep">
+    <p>测试：语料中包含一道 GSM8K 风格原题（带答案），用 8-gram：原题重叠率 1.0 并命中正确文档；改了数字和名词的改写版重叠率 0.0（<b>说明 n-gram 抓不到改写</b>）；无关题目 0.0。</p>
+    <p><strong>规模化时的改进（面试追问）：</strong>(1) 万亿 token 语料无法用 Python set，改用哈希后的 n-gram + Bloom filter（内存小，有少量误报无漏报）或 suffix array（可以查任意长度的精确匹配）；(2) 分布式：按 n-gram 哈希分片，MapReduce 式 join；(3) 语义改写：对测试题和语料片段做 embedding 近邻检索，再用 LLM 判断是否同一道题；(4) 只对测试题的 n-gram 建索引（测试集小得多），然后流式扫描语料，这样内存只与测试集大小有关——这是实践中更常见的方向。</p>
+  </div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your corpus is 10 trillion tokens. How do you run this?</b><details><summary>思路</summary><div class="inner">反过来索引：测试集只有几万题，把测试集所有 13-gram 的哈希放进一个内存中的 set（或 Bloom filter），然后用大量 worker 并行流式扫描语料分片，每个文档计算 n-gram 哈希并查询，命中就记录（文档 id、测试题 id）。复杂度与语料大小线性、内存与测试集大小线性。最后按测试题聚合命中比例。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-code-bt">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Bradley–Terry / Elo 拟合</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>两种拟合 BT 的方法：MM 迭代 \(p_i \leftarrow W_i/\sum_j N_{ij}/(p_i+p_j)\)，或对 \(\sigma(s_i-s_j)\) 做 logistic 回归梯度上升；换算 Elo：\(R=400s/\ln10\)；在线 Elo 依赖顺序。</p><p class="en">Fit Bradley–Terry with the MM iteration or logistic-regression gradient ascent, convert to Elo by 400 over ln 10, and note that online Elo is order-dependent.</p></div>
+  <pre><code class="language-python">import numpy as np
+
+def fit_bradley_terry(n_models, battles, iters=1000, tol=1e-10):
+    """battles: list of (i, j, y) with y=1 if model i beat j, 0 if j beat i, 0.5 tie.
+    Model: P(i beats j) = sigmoid(s_i - s_j) = p_i / (p_i + p_j) with p = exp(s).
+    Fit by the MM (Zermelo / Hunter 2004) iteration: p_i &lt;- W_i / sum_j N_ij/(p_i+p_j)."""
+    W = np.zeros(n_models)                    # (fractional) wins of each model
+    N = np.zeros((n_models, n_models))        # number of games between i and j
+    for i, j, y in battles:
+        W[i] += y; W[j] += 1 - y
+        N[i, j] += 1; N[j, i] += 1
+    p = np.ones(n_models)
+    for _ in range(iters):
+        denom = (N / (p[:, None] + p[None, :])).sum(axis=1)
+        new = W / denom
+        new /= np.exp(np.mean(np.log(new)))   # fix scale: geometric mean = 1
+        if np.max(np.abs(new - p)) &lt; tol:
+            p = new; break
+        p = new
+    return np.log(p)                          # strengths s_i (identifiable up to a constant)
+
+def fit_bt_logistic(n_models, battles, lr=0.5, steps=3000, l2=1e-4):
+    """Same model fitted by gradient ascent on the log-likelihood (what LMArena-style
+    leaderboards do with logistic regression)."""
+    s = np.zeros(n_models)
+    I = np.array([b[0] for b in battles]); J = np.array([b[1] for b in battles])
+    Y = np.array([b[2] for b in battles], dtype=float)
+    for _ in range(steps):
+        p = 1 / (1 + np.exp(-(s[I] - s[J])))
+        g = np.zeros(n_models)
+        np.add.at(g, I, Y - p)                # d logL / d s_i
+        np.add.at(g, J, -(Y - p))
+        s += lr * (g / len(Y) - l2 * s)
+        s -= s.mean()
+    return s
+
+def to_elo(s, base=1000):
+    """Elo scale: P(i&gt;j) = 1/(1+10^{-(R_i-R_j)/400})  =&gt;  R = 400 * s / ln(10)."""
+    return base + 400 * s / np.log(10)
+
+def online_elo(n_models, battles, k=4, base=1000):
+    """Classic sequential Elo update — order-dependent, unlike BT MLE."""
+    R = np.full(n_models, float(base))
+    for i, j, y in battles:
+        e = 1 / (1 + 10 ** ((R[j] - R[i]) / 400))
+        R[i] += k * (y - e); R[j] -= k * (y - e)
+    return R</code></pre>
+  <div class="deep">
+    <p>测试：4 个模型、真实强度（中心化后）[−0.2, 0.3, 0.8, −0.9]、20000 场模拟对战。MM 估计 [−0.183, 0.298, 0.800, −0.915]，梯度法估计几乎相同（差异 &lt;0.002）。换算 Elo ≈ [968, 1052, 1139, 841]。在线 Elo（K=4）正序 [985, 1041, 1143, 831]、逆序 [956, 1070, 1139, 834]——排名相同但数值依赖顺序。对对战记录做 100 次 bootstrap 得到每个模型的 Elo 95% CI，宽度约 ±6–7 分。</p>
+    <p>梯度推导：对数似然对 \(s_i\) 的梯度是 \(\sum_{\text{games } i \text{ in}} (y - \sigma(s_i - s_j))\)（\(i\) 作为第一方时符号为正，作为第二方时为负），这与 logistic 回归的梯度 \(X^\top(y-\hat y)\) 形式完全一样。</p>
+  </div>
+</section>
+
+<!-- ============================================================ §9 -->
+<h2 class="sec" id="s-scenarios"><span class="num">§9 · INTERVIEW SCENARIOS</span>面试场景题</h2>
+<p class="sec-intro">下面是 14 道常见的开放式场景题。建议先自己用英文出声回答 2 分钟，再点开参考答案。参考答案给出的是“结构 + 关键点”，你应该用自己的话说出来。通用框架：<b>先澄清目的 → 指出主要风险 → 给出具体做法（含数字）→ 说明怎么验证</b>。</p>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.1</b> · 难度 ★★</div>
+<p><b>“Model A gets 72% and model B gets 70% on a 1,000-question benchmark. Is A better?”</b></p>
+<details><summary>提示</summary><div class="inner">先算 SE，再指出应该用配对检验，最后说结论取决于什么。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>(1) 非配对视角：每个模型 SE ≈ 1.4 个点，差值 SE ≈ 2.0 个点，2 个点的差距约等于 1 个 SE，不显著。(2) 但它们在同一批题上评估，应该用配对检验（McNemar 或 paired bootstrap）。结果取决于不一致题的数量：例如 60 比 40（100 道不一致题）p ≈ 0.06；35 比 15（50 道不一致题）p ≈ 0.007。(3) 还要考虑：采样随机性（多次运行）、训练种子、prompt 敏感性、是否从多个 benchmark 中挑了这个。(4) 即使显著，也要问 2 个点是否有实际意义，以及是否在其他 benchmark 上方向一致。</p>
+<p class="en">"On its own, a two-point gap on a thousand questions is about one standard error unpaired, so not significant. But since both models answered the same questions, I'd run McNemar's test on the discordant pairs — the answer depends on how many questions they disagree on..."</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.2</b> · 难度 ★★</div>
+<p><b>“How many questions do we need to reliably detect a 2-point improvement?”</b></p>
+<details><summary>提示</summary><div class="inner">\(n\approx 7.85\,\sigma_d^2/\delta^2\)；区分配对和非配对。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>\(\alpha=0.05\)、功效 80%：\(n\approx 7.85\,\sigma_d^2/\delta^2\)。非配对、准确率约 70%：\(\sigma_d^2\approx0.41\)，约 8,000 题每个模型。配对、两模型在 10% 的题上不一致：\(\sigma_d^2\approx0.10\)，约 2,000 题。所以 (1) 一定要配对；(2) 两个模型越相似，需要的题越少；(3) 如果题目达不到，可以用每题多次采样、连续指标（log-prob），或者接受只能检测更大的效应（报告 MDE）。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.3</b> · 难度 ★★★</div>
+<p><b>“A new open model reports SOTA on a math benchmark. How would you check whether it's contaminated?”</b></p>
+<details><summary>提示</summary><div class="inner">黑盒为主：续写测试、Min-K%、扰动、时间断崖、新题对比。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<ol>
+<li>如果有训练数据：n-gram + embedding 重叠检测，报告干净子集分数。</li>
+<li>黑盒（有 logits）：Min-K% Prob 比较 benchmark 题与同分布新题的分数分布；顺序可交换性检验（原始顺序 vs 打乱顺序的似然）。</li>
+<li>黑盒（只能生成）：guided completion——给数据集名和题目前半句，看能否续写原文或直接输出标准答案。</li>
+<li>行为对比：在扰动版本（改数字、改名字，如 GSM-Symbolic 式）上测，在同分布新写的题（如 GSM1k 式）上测，在训练截止日期之后发布的竞赛题上测。看是否有显著掉分，并与已知干净的模型对照（排除新题更难的解释）。</li>
+<li>看错误模式：答案对但推理过程错误或缺失，是记忆的信号。</li>
+</ol>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.4</b> · 难度 ★★</div>
+<p><b>“We want to use GPT-4-class models as a judge to compare our chatbot versions. What could go wrong and how would you set it up?”</b></p>
+<details><summary>提示</summary><div class="inner">三大偏差 + 验证 + 用作优化目标时的风险。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>设置：pairwise 比较（对固定 baseline），两种顺序都评；细化 rubric（二元检查项）；数学/事实题给参考答案；温度 0；结构化输出并统计解析失败。风险与缓解：位置偏差（交换顺序）、冗长偏差（长度控制胜率 + 监控长度）、自我偏好（用不同家族裁判或多裁判）、推理不足（参考答案）、prompt 注入（清洗）。验证：在 200–500 个人工标注样本上测与人类的一致率，与人人一致率比较，按类别分解；定期重新验证。如果这个裁判用于 RL 训练，最终评估要换一个保留的裁判和人工评估，防止 reward hacking。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.5</b> · 难度 ★★★</div>
+<p><b>“Design a benchmark for evaluating long-horizon reasoning / agentic ability.”</b></p>
+<details><summary>提示</summary><div class="inner">construct validity、可控难度、自动验证、抗污染、统计功效。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<ol>
+<li><b>定义能力</b>：例如“在多步任务中维持状态、规划、从错误中恢复”。明确不想测的东西（领域知识、格式遵循），并设计控制。</li>
+<li><b>任务形式</b>：程序化生成的环境（谜题、游戏、模拟工作流），能自动验证结果；难度参数（步数、分支数、干扰信息量）可调，能画“成功率 vs 步数”曲线。</li>
+<li><b>知识解耦</b>：规则在 prompt 或环境中给出，使用新定义的规则，避免记忆。</li>
+<li><b>抗污染</b>：私有种子/参数区间作为 held-out，定期更新规则族；测试分布外难度。</li>
+<li><b>打分</b>：最终成功率 + 部分进度分（降低方差）；记录轨迹以便错误分析（失败在规划、执行还是状态跟踪）。</li>
+<li><b>统计</b>：每个难度级别足够多的实例（按 MDE 计算），多次运行，报告 CI。</li>
+<li><b>效度验证</b>：与真实 agent 任务表现的相关性；人类基线；部分输入 baseline 检查捷径。</li>
+</ol>
+<p>相关阅读：KORGym（<a href="https://arxiv.org/abs/2505.14552" target="_blank" rel="noreferrer">arXiv 2505.14552</a>）是一个基于游戏的动态推理评估平台的例子。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.6</b> · 难度 ★★</div>
+<p><b>“Your new fine-tuning method improves accuracy by 1.5 points over the baseline. What experiments would convince you it's real?”</b></p>
+<details><summary>提示</summary><div class="inner">种子、配对、调参公平性、多 benchmark、机制。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>(1) 多种子（≥3–5），两种方法共享种子形成配对，报告均值 ± CI；(2) 题目级配对检验；(3) baseline 用相同调参预算重新调过，计算和数据量匹配；(4) 在多个预先选定的 benchmark 和一个 held-out 新集上方向一致；(5) prompt 变体下稳定；(6) 消融：去掉关键组件后提升消失；用“同成本无信息”替代版做对照；(7) 机制证据：中间指标的变化与声称的机制一致；(8) 在另一个模型规模/家族上复现。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.7</b> · 难度 ★★</div>
+<p><b>“Our method uses tree search with 64 rollouts and beats the base model by 10 points. Good result?”</b></p>
+<details><summary>提示</summary><div class="inner">compute-matched baseline。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>和单次采样比较不公平。应该和相同计算预算的简单方法比较：best-of-64（用相同的验证器/reward model）、majority@64、相同 token 预算下更长的 CoT。最好画出“准确率 vs 采样数/token 数”的曲线（1, 4, 16, 64, 256），比较曲线；还要报告 pass@64 作为上限——如果树搜索没有接近 pass@64，说明选择机制还有空间。另外要注意验证器本身的质量：如果用的是带噪声的 reward model，增大 N 可能因为 reward hacking 反而变差。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.8</b> · 难度 ★★</div>
+<p><b>“Accuracy on our internal benchmark keeps going up every week, but users don't notice any improvement. What's happening?”</b></p>
+<details><summary>提示</summary><div class="inner">Goodhart / adaptive overfitting / 分布不匹配 / 饱和。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>可能原因：(1) 团队每周用这个 benchmark 做决策，已经对它过拟合（adaptive overfitting），甚至训练数据中混入了类似题；(2) benchmark 分布与真实用户流量不匹配（任务类型、难度、语言、长度）；(3) benchmark 已经饱和，增长来自噪声或修复格式问题；(4) 改进的维度用户不在乎，而其他维度（延迟、风格、拒答）没改善甚至退化。处理：建立一个从真实流量采样、定期刷新的 held-out 集，只用于里程碑评估；测离线指标与线上指标（A/B、用户满意度）的相关性；人工审查新近答对的题。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.9</b> · 难度 ★★</div>
+<p><b>“You change only the few-shot examples and accuracy drops by 6 points. What does this mean and what do you report?”</b></p>
+<details><summary>提示</summary><div class="inner">prompt 敏感性是测量方差的一部分。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>说明结果对 prompt 非常敏感，单一 prompt 的分数包含相当大的“格式方差”，比较模型时这部分方差必须考虑。先检查是否有 bug（例如新示例中答案分布不均、格式不一致、chat template 问题）。报告：在多个 prompt（不同示例选择和顺序）上的均值和范围；对比时所有模型用相同的 prompt 集合；如果排名在不同 prompt 下翻转，就不能声称一个模型更好。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.10</b> · 难度 ★★★</div>
+<p><b>“You're doing RL with an LLM judge as the reward. Judge scores keep rising but you suspect the model isn't actually getting better. How do you check?”</b></p>
+<details><summary>提示</summary><div class="inner">reward hacking 的检测：保留评估、风格统计、人工。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>(1) 用一个<b>不同的</b>保留裁判（不同家族/不同 prompt）和人工评估定期评估 checkpoint，看是否同步上涨；(2) 监控风格统计：平均长度、markdown 数量、讨好语气、拒答率——如果裁判分数的上涨可以被长度解释，就是冗长偏差被利用；(3) 在有可验证答案的任务上测准确率；(4) 人工阅读高分样本找“漏洞模式”；(5) 缓解：长度惩罚或长度控制的 reward、KL 正则、集成多个裁判、rubric 中惩罚冗余、周期性用新的人类数据更新裁判。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.11</b> · 难度 ★★</div>
+<p><b>“A small-scale experiment (125M) shows your architecture change gives a 3% lower loss. Should we train a 70B model with it?”</b></p>
+<details><summary>提示</summary><div class="inner">多规模趋势、超参迁移、FLOPs 匹配。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>不能直接决定。(1) 在 3–4 个规模（如 125M、350M、1.3B、3B）上做，看收益随规模是增大、稳定还是缩小，拟合 scaling 曲线外推；(2) 每个规模都要重新调学习率（或使用 μP），确保 baseline 不是因为超参不合适而输；(3) FLOPs 和墙钟时间匹配（新架构是否更慢）；(4) 检查训练稳定性（大规模更容易出现 loss spike）；(5) 除了 loss，检查下游指标；(6) 考虑工程成本（kernel 支持、并行策略兼容性）。如果收益在规模上保持或增大，再做一个中等规模的完整验证。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.12</b> · 难度 ★★</div>
+<p><b>“The leaderboard shows model X is 20 Elo above model Y on the arena. Your manager asks which one to deploy.”</b></p>
+<details><summary>提示</summary><div class="inner">Elo → 胜率、CI、类别、风格、你的用例。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>20 Elo ≈ 53% 胜率，差异很小。(1) 看 bootstrap CI 是否重叠以及投票数；(2) 看与我们用例相关的类别（coding、长文档、多语言）上的排名，可能相反；(3) 看风格控制后的排名（长度、格式可能贡献了差距）；(4) Arena 用户分布与我们的用户可能不同；(5) 其他因素：成本、延迟、上下文长度、安全性、许可。建议：在我们自己的任务分布上做小规模配对评估（人工 + 裁判），结合成本做决定。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.13</b> · 难度 ★★</div>
+<p><b>“How would you evaluate a model's calibration — does it know when it doesn't know?”</b></p>
+<details><summary>提示</summary><div class="inner">ECE、reliability diagram、选择性预测。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>(1) 获取置信度：答案 token 的概率、多次采样的一致率、或让模型口头报告置信度；(2) Reliability diagram：按置信度分桶，画每个桶的平均置信度 vs 实际准确率；(3) ECE \(=\sum_b \frac{|B_b|}{n}|\text{acc}(B_b)-\text{conf}(B_b)|\)（注意分桶方式影响结果，小样本时 ECE 有偏）；Brier score 也可用；(4) 选择性预测：允许模型拒答，画“覆盖率 vs 准确率”曲线（risk–coverage），看拒答是否集中在会答错的题上；(5) 注意 RLHF 后模型 token 概率的校准通常会变差，口头置信度和采样一致率可能更有用。</p>
+</div></details></div>
+
+<div class="exercise"><div class="ex-head"><b>场景 9.14</b> · 难度 ★★★</div>
+<p><b>“Two papers report different numbers for the same model on the same benchmark (65% vs 71%). How can that happen?”</b></p>
+<details><summary>提示</summary><div class="inner">评估设置的每一个自由度。</div></details>
+<details><summary>参考答案</summary><div class="inner">
+<p>可能的差异来源：shot 数和 few-shot 示例；是否使用 CoT；prompt 模板和 chat template；log-likelihood 打分 vs 生成打分（以及长度归一化方式）；答案抽取规则和等价判断；解码参数（温度、max tokens——截断）；benchmark 版本（修复过错题的版本）和子集；推理框架的数值差异；聚合方式（微平均 vs 宏平均）。另外还有统计噪声（小 benchmark 上几个点完全可能）。结论：跨论文比较数字没有意义，除非设置完全一致；应该自己在统一管线中复现。</p>
+</div></details></div>
+
+<!-- ============================================================ CHEAT SHEET -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚过一遍。</p>
+<table>
+  <tr><th>主题</th><th>必须记住</th></tr>
+  <tr><td>准确率 SE</td><td>\(\sqrt{p(1-p)/n}\)；\(p=0.5\) 时 \(0.5/\sqrt n\)；95% CI 半宽 ≈ \(1/\sqrt n\)（最坏情况）。n=1000 → ±3.1 点；n=100 → ±9.8 点</td></tr>
+  <tr><td>配对差值方差</td><td>\(\text{Var}(a)+\text{Var}(b)-2\text{Cov}(a,b)\)；0/1 时 \(\approx (n_{10}+n_{01})/n - \bar d^2\)</td></tr>
+  <tr><td>McNemar</td><td>只看不一致题；\(n_{10}\sim\text{Bin}(m,\tfrac12)\)；\(\chi^2=(|n_{10}-n_{01}|-1)^2/(n_{10}+n_{01})\)，&gt;3.84 显著</td></tr>
+  <tr><td>样本量</td><td>\(n \approx 7.85\,\sigma_d^2/\delta^2\)（α=0.05 双侧，80% 功效；1.96+0.84=2.80）。70 vs 72：非配对 ~8,000，配对（10% 不一致）~2,000</td></tr>
+  <tr><td>MDE</td><td>\(2.8\,\sigma_d/\sqrt n\)；非配对 p=0.5：n=500 → ~9 点，n=10k → ~2 点</td></tr>
+  <tr><td>Bootstrap</td><td>按独立单位有放回重抽 n 个，B≈10⁴，取 2.5/97.5 分位数；比较两模型用 paired bootstrap</td></tr>
+  <tr><td>小样本</td><td>Wilson 区间；0/20 → [0, 16%]</td></tr>
+  <tr><td>聚类</td><td>相关题目 → 聚类 SE；有效样本量变小</td></tr>
+  <tr><td>多重比较</td><td>20 次检验至少一个假阳性 ≈ 64%；Bonferroni α/m、Holm、BH（FDR）；预注册主要指标</td></tr>
+  <tr><td>pass@k</td><td>\(1-\binom{n-c}{k}/\binom{n}{k}\)；朴素 \(1-(1-c/n)^k\) 低估（Jensen）</td></tr>
+  <tr><td>Bradley–Terry</td><td>\(P(i\succ j)=\sigma(s_i-s_j)\)；Elo \(R=400s/\ln10\approx173.7s\)；100 Elo ≈ 64%，200 ≈ 76%，400 ≈ 91%</td></tr>
+  <tr><td>Cohen's κ</td><td>\((p_o-p_e)/(1-p_e)\)；类别不平衡时原始一致率会误导</td></tr>
+  <tr><td>污染检测</td><td>n-gram（8–13 gram）、embedding、Min-K% Prob、guided completion、可交换性检验、时间断崖、新题/扰动对比、canary</td></tr>
+  <tr><td>污染缓解</td><td>全阶段去污染（含合成数据）、干净子集分数、时间切分、私有集（限制提交）、动态扰动</td></tr>
+  <tr><td>LLM 裁判偏差</td><td>位置（交换顺序）、冗长（长度控制回归）、自我偏好（换家族/多裁判）；验证：与人类一致率 vs 人人一致率（MT-Bench：~85% vs ~81%）</td></tr>
+  <tr><td>实验设计</td><td>可证伪假设 + 负对照；同等调参；compute-matched（训练 FLOPs / 推理样本数）；多规模；多种子；消融（leave-one-out + 同成本替换）</td></tr>
+  <tr><td>审查顺序</td><td>噪声 → 公平性 → 测量有效性 → 多重比较 → 外部有效性 → 机制</td></tr>
+</table>
+
+<h3>高频面试题清单</h3>
+<table>
+  <tr><th>#</th><th>问题</th><th>看这里</th></tr>
+  <tr><td>1</td><td>Derive the standard error of accuracy.</td><td><a href="#c-se">准确率 SE</a></td></tr>
+  <tr><td>2</td><td>A: 72%, B: 70% on 1,000 questions — is A better?</td><td><a href="#c-paired">配对检验</a> · <a href="#s-scenarios">场景 9.1</a></td></tr>
+  <tr><td>3</td><td>How many questions to detect a 2-point gain?</td><td><a href="#c-power">功效与样本量</a></td></tr>
+  <tr><td>4</td><td>How does bootstrap work? What do you resample?</td><td><a href="#c-bootstrap">Bootstrap</a></td></tr>
+  <tr><td>5</td><td>Explain McNemar's test.</td><td><a href="#c-paired">配对检验</a></td></tr>
+  <tr><td>6</td><td>Why paired tests are more powerful.</td><td><a href="#c-paired">配对检验</a></td></tr>
+  <tr><td>7</td><td>How to handle seed variance / multiple comparisons?</td><td><a href="#c-seeds">种子与多重比较</a></td></tr>
+  <tr><td>8</td><td>How do you detect data contamination?</td><td><a href="#c-contam-detect">检测方法</a></td></tr>
+  <tr><td>9</td><td>How do you mitigate contamination?</td><td><a href="#c-contam-mitigate">缓解</a></td></tr>
+  <tr><td>10</td><td>Biases of LLM-as-judge and fixes.</td><td><a href="#c-judge-bias">三大偏差</a></td></tr>
+  <tr><td>11</td><td>Pairwise vs pointwise judging.</td><td><a href="#c-judge-modes">判分方式</a></td></tr>
+  <tr><td>12</td><td>How do you validate an automatic judge?</td><td><a href="#c-judge-validate">验证裁判</a></td></tr>
+  <tr><td>13</td><td>How does Chatbot Arena rank models? Elo vs BT?</td><td><a href="#c-arena">Arena</a></td></tr>
+  <tr><td>14</td><td>What makes a good benchmark?</td><td><a href="#c-validity">Construct validity</a> · <a href="#c-shortcuts">捷径</a></td></tr>
+  <tr><td>15</td><td>What do you do when a benchmark saturates?</td><td><a href="#c-saturation">饱和与动态 benchmark</a></td></tr>
+  <tr><td>16</td><td>Unbiased pass@k estimator.</td><td><a href="#c-formats">格式与打分</a> · <a href="#c-code-passk">代码</a></td></tr>
+  <tr><td>17</td><td>How do you design ablations?</td><td><a href="#c-ablation">消融设计</a></td></tr>
+  <tr><td>18</td><td>How do you make a fair comparison with baselines?</td><td><a href="#c-baselines">强 baseline</a></td></tr>
+  <tr><td>19</td><td>When do small-scale experiments mislead?</td><td><a href="#c-proxies">小规模代理</a></td></tr>
+  <tr><td>20</td><td>Why do two papers report different numbers for the same model?</td><td><a href="#c-formats">格式</a> · <a href="#c-prompt-sens">prompt 敏感性</a> · 场景 9.14</td></tr>
+  <tr><td>21</td><td>Goodhart's law / reward hacking with judges.</td><td><a href="#c-goodhart">Goodhart</a></td></tr>
+  <tr><td>22</td><td>Is this result trustworthy? (critique a claim)</td><td><a href="#c-review-checklist">审查清单</a></td></tr>
+  <tr><td>23</td><td>Write a bootstrap CI / BT fit / contamination checker.</td><td><a href="#s-code">§8 代码</a></td></tr>
+</table>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m13" data-title="模块 13 自测卡片"></div>
+<div class="footer-nav"><a href="m12-generative.html">← 12 生成模型补充</a><a href="m14-ml-coding.html">14 ML Coding 手写题 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m13.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
