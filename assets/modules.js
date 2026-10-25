@@ -63,7 +63,7 @@ window.MODULES = [
     title: '评估与实验方法',
     desc: 'RS 面试很看重的"你怎么设计实验"：benchmark、污染、LLM-as-judge、显著性、消融。',
     topics: 'benchmark 设计 · 数据污染 · judge 偏差 · 置信区间 · 多种子 · 消融设计' },
-  { id: 'm14', num: '14', phase: 'p3', pri: 1, status: 'planned', file: 'modules/m14-ml-coding.html',
+  { id: 'm14', num: '14', phase: 'p3', pri: 1, status: 'ready', file: 'modules/m14-ml-coding.html',
     title: 'ML Coding 手写题',
     desc: '14 道必须能从空白文件写出的题，每题给题面、关键坑、参考实现和测试。',
     topics: 'softmax/CE · LayerNorm/RMSNorm · MHA/GQA · RoPE · mini-GPT · KV cache 生成 · top-p · AdamW · BPE · PPO/DPO/GRPO loss · micrograd' },

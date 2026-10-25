@@ -1,0 +1,1962 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14 · ML Coding 手写题 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m14">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+<div class="eyebrow">Module 14 · Phase 3</div>
+<h1 class="title">ML Coding <em>手写题</em></h1>
+<p class="lede">26 道研究岗 ML coding 面试的高频题：从 stable softmax 到 GRPO loss。每道题都按面试真实流程组织——题面、先想清楚什么、渐进提示、参考实现、测试、坑、边写边讲的英文、以及面试官的追问。目标是：<b>关掉 AI 补全，在空白文件里 20–40 分钟写出来并跑通测试</b>。</p>
+<div class="callout"><b>这一章的目标。</b>学完后你应该能：(1) 不查文档写出 attention / norm / loss 的标准实现，形状和 mask 一次写对；(2) 写一个能训练的 mini-GPT 并用 KV cache 生成；(3) 现场写出 PPO / DPO / GRPO 的 loss 并解释每一项；(4) 写代码时用英文流畅地讲解思路。
+<br><b>和其他模块的关系：</b>这里只讲“怎么写”和“写错在哪”。原理请回到 <a href="m01-pytorch.html">01 NumPy/PyTorch</a>（张量操作手感）、<a href="m04-transformer.html">04 Transformer</a>（attention/RoPE/norm 原理）、<a href="m06-rl-posttraining.html">06 Post-training/RL</a>（PPO/DPO/GRPO 推导）、<a href="m08-inference.html">08 推理系统</a>（KV cache/采样）。
+<br><b>建议顺序：</b>§1 热身（1 天）→ §2 attention（2–3 天，P6/P7/P10 反复练）→ §5 RL losses（1–2 天，研究方向相关，必须熟练）→ §3 生成 → §4 训练 → §6 经典题（按目标公司选做）。</div>
+
+<h2 class="sec" id="s-howto"><span class="num">§0 · HOW TO PRACTICE</span>如何用这一章练习</h2>
+<p class="sec-intro">ML coding 面试考的不是“知道”，而是“在压力下从零写对”。看懂参考答案和自己写出来之间差距巨大——尤其是习惯了 AI 补全之后。下面的流程把这一章变成一本练习册。</p>
+<div class="box why"><span class="lbl">练习协议（每道题都这样做）</span><ol>
+<li><b>空白文件 + 计时。</b>新建一个 <code>.py</code>，只写题目给的函数签名。按右侧表格的目标时间设计时器（第一次可以给 2 倍时间）。</li>
+<li><b>关掉 AI 补全和 Copilot。</b>编辑器只保留语法高亮。允许查 PyTorch 官方文档（多数面试允许），但记录你查了什么——这些就是要背的 API。</li>
+<li><b>先说再写。</b>出声（用英文）讲 30 秒：输入输出形状、算法步骤、数值稳定性考虑、你要怎么测试。这对应页面里每题的 “写之前先想清楚” 和 “Say it”。</li>
+<li><b>卡住时按顺序看提示 1 → 2 → 3</b>，每看一个提示就再给自己 3 分钟。实在不行才看答案，并标记为“失败”。</li>
+<li><b>跑测试。</b>把页面上的测试块粘到你的解答下面运行。测试不过，先自己 debug 10 分钟——debug 能力本身就是面试考点。</li>
+<li><b>复盘写进错题本：</b>错在哪一类？（形状 / mask / 数值稳定 / 对齐 off-by-one / API 记错 / 算法理解）</li>
+<li><b>间隔重做：</b>失败的题 2 天后从空白文件重做，再失败就 4 天后、再 1 周后。成功两次连续“在目标时间内一次跑通”才算掌握。</li>
+</ol></div>
+<div class="box pitfall"><span class="lbl">面试现场的通用守则</span><ul>
+<li>每个张量操作后在注释里写形状：<code># (B, H, T, D)</code>。这是减少 bug 最有效的单一习惯，也让面试官能跟上。</li>
+<li>先写最简单的正确版本，再优化。“先写 O(n²) 再改进”远好于写到一半的 O(n log n)。</li>
+<li>主动提数值稳定性（max trick、logsumexp、logsigmoid、fp32 归约）——这是面试官最想听到的“工程成熟度”信号。</li>
+<li>主动提测试：和参考实现比、数值梯度、不变量（概率和为 1、因果性、旋转保范数）、边界条件（全 mask、空簇、p=0/1）。</li>
+<li>环境：多数公司用 CoderPad/共享文档，可能<b>不能运行代码</b>。所以要练到能“在脑中跑”一个 2×3 的小例子。</li>
+</ul></div>
+<p>页面上所有 numpy / 纯 Python 解答都已在本地完整运行通过；PyTorch 解答的逻辑已用等价的 numpy 实现（相同算法、相同形状）逐一验证，torch 版测试文件也已备好。下面这个小工具在很多题里都有用，建议背下来：</p>
+<pre><code class="language-python">import numpy as np
+
+def numeric_grad(f, x, h=1e-6):
+    """中心差分：f 是返回标量的函数，x 是 numpy 数组（会被原地扰动后恢复）。"""
+    g = np.zeros_like(x, dtype=float)
+    for idx in np.ndindex(x.shape):
+        old = x[idx]
+        x[idx] = old + h; fp = f()
+        x[idx] = old - h; fm = f()
+        x[idx] = old
+        g[idx] = (fp - fm) / (2 * h)
+    return g
+
+def rel_error(a, b, eps=1e-12):
+    return np.max(np.abs(a - b) / np.maximum(eps, np.abs(a) + np.abs(b)))</code></pre><h3 style="margin-top:28px">进度表</h3>
+<p>最后一列留给你自己记录（建议打印或复制到笔记里）：日期 + ✓/✗ + 用时。</p>
+<div class="table-wrap"><table class="plan-table"><thead><tr><th>#</th><th>题目</th><th>目标时间</th><th>优先级</th><th>记录</th></tr></thead><tbody><tr><td>P1</td><td><a href="#c-softmax">Stable softmax / log_softmax</a></td><td>5 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P2</td><td><a href="#c-ce">Cross-entropy + ignore_index</a></td><td>8 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P3</td><td><a href="#c-norm">LayerNorm / RMSNorm (+LN backward)</a></td><td>8 (+12) min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P4</td><td><a href="#c-linear">Linear + MLP / SwiGLU</a></td><td>8 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P5</td><td><a href="#c-dropout">Dropout</a></td><td>4 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P6</td><td><a href="#c-sdpa">SDPA + causal/padding mask</a></td><td>10 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P7</td><td><a href="#c-mha">MHA → GQA</a></td><td>15 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P8</td><td><a href="#c-rope">RoPE</a></td><td>12 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P9</td><td><a href="#c-kvdecode">KV-cached decode step</a></td><td>10 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P10</td><td><a href="#c-minigpt">Mini-GPT + training loop</a></td><td>35 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P11</td><td><a href="#c-sampling">Greedy / temp / top-k / top-p</a></td><td>12 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P12</td><td><a href="#c-beam">Beam search</a></td><td>20 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P13</td><td><a href="#c-generate">generate() with KV cache</a></td><td>12 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P14</td><td><a href="#c-adamw">AdamW</a></td><td>10 min</td><td><span class="pri p2">☆ 应该</span></td><td></td></tr><tr><td>P15</td><td><a href="#c-cosine">Cosine + warmup</a></td><td>5 min</td><td><span class="pri p2">☆ 应该</span></td><td></td></tr><tr><td>P16</td><td><a href="#c-accum">Grad accumulation + clipping</a></td><td>8 min</td><td><span class="pri p2">☆ 应该</span></td><td></td></tr><tr><td>P17</td><td><a href="#c-micrograd">Micrograd + MLP</a></td><td>30 min</td><td><span class="pri p2">☆ 应该</span></td><td></td></tr><tr><td>P18</td><td><a href="#c-logprobs">Token log-probs + masked mean</a></td><td>8 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P19</td><td><a href="#c-ppo">PPO loss</a></td><td>15 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P20</td><td><a href="#c-dpo">DPO loss</a></td><td>8 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P21</td><td><a href="#c-grpo">GRPO + k3 KL</a></td><td>15 min</td><td><span class="pri p1">★ 必须</span></td><td></td></tr><tr><td>P22</td><td><a href="#c-kmeans">K-means</a></td><td>15 min</td><td><span class="pri p2">☆ 应该</span></td><td></td></tr><tr><td>P23</td><td><a href="#c-logreg">Logistic regression</a></td><td>12 min</td><td><span class="pri p2">☆ 应该</span></td><td></td></tr><tr><td>P24</td><td><a href="#c-bpe">BPE train + encode</a></td><td>25 min</td><td><span class="pri p2">☆ 应该</span></td><td></td></tr><tr><td>P25</td><td><a href="#c-conv">Naive conv2d</a></td><td>15 min</td><td><span class="pri p3">○ 加分</span></td><td></td></tr><tr><td>P26</td><td><a href="#c-auc">ROC AUC</a></td><td>10 min</td><td><span class="pri p3">○ 加分</span></td><td></td></tr></tbody></table></div>
+<p>★ 共 17 题、合计约 3.5 小时纯写代码时间，是研究岗的“必须”；☆ 题在一周内补齐；○ 题时间不够可以只读一遍。</p><h2 class="sec" id="s-warmup"><span class="num">§1 · WARM-UP</span>热身：数值稳定的基础算子</h2><p class="sec-intro">这 5 题是所有后续题的积木，每题目标 5–10 分钟。面试官用它们快速判断两件事：你是否知道<b>数值稳定</b>的标准写法，以及你对<b>张量形状和维度</b>是否有肌肉记忆。写不出 stable softmax 基本等于直接出局，所以先把这一节练到“不用想”。</p>
+<section class="concept" id="c-softmax">
+<div class="concept-head"><span class="pri p1">★</span><h3>P1 · Stable softmax / log_softmax</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 5 min</span><p>写出不会溢出的 softmax、logsumexp、log_softmax；面试官看你会不会主动减最大值、会不会用 x − LSE 而不是 log(softmax)。</p><p class="en">Implement numerically stable softmax and log-softmax along an arbitrary dim.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement softmax and log_softmax over a given dimension, from scratch. Make sure it doesn't blow up for large logits.</i></p></div>
+<p><b>中文说明。</b>签名 <code>softmax(x, dim=-1)</code>、<code>log_softmax(x, dim=-1)</code>，x 是任意形状的 float 张量，在 <code>dim</code> 上归一化，输出与输入同形状。不准用 <code>F.softmax</code>/<code>torch.logsumexp</code>。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>数学恒等式：\( \mathrm{softmax}(x)_i = \frac{e^{x_i - c}}{\sum_j e^{x_j - c}} \) 对任意常数 c 成立。取 \( c = \max_j x_j \)，则所有指数参数 \( \le 0 \)，exp 不会上溢；且至少有一项是 \( e^0 = 1 \)，分母 \( \ge 1 \)，不会除以 0。</li><li>\( \log\mathrm{softmax}(x)_i = x_i - \mathrm{LSE}(x) \)，其中 \( \mathrm{LSE}(x) = c + \log\sum_j e^{x_j - c} \)。直接 <code>log(softmax(x))</code> 在小概率处会下溢成 0 再取 log 得到 <code>-inf</code>。</li><li><code>keepdim=True</code> 让减法能正确广播；<code>dim</code> 不一定是最后一维。</li><li>fp32 里 exp 的上限大约是 \( e^{88} \)，fp16 只有 \( e^{11} \) 左右，所以混合精度下这件事尤其重要。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>m = x.max(dim=dim, keepdim=True).values</code>（注意 torch 的 <code>max(dim=)</code> 返回 (values, indices)）。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">先写 <code>logsumexp(x, dim, keepdim)</code>，log_softmax 就是一行 <code>x - logsumexp(x, dim, keepdim=True)</code>。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def softmax(x: torch.Tensor, dim: int = -1) -&gt; torch.Tensor:
+    # 减去每行最大值：数学上不变，数值上 exp 的参数 &lt;= 0，不会溢出
+    m = x.max(dim=dim, keepdim=True).values
+    e = torch.exp(x - m)
+    return e / e.sum(dim=dim, keepdim=True)
+
+def logsumexp(x: torch.Tensor, dim: int = -1, keepdim: bool = False) -&gt; torch.Tensor:
+    m = x.max(dim=dim, keepdim=True).values
+    out = m + torch.log(torch.exp(x - m).sum(dim=dim, keepdim=True))
+    return out if keepdim else out.squeeze(dim)
+
+def log_softmax(x: torch.Tensor, dim: int = -1) -&gt; torch.Tensor:
+    # log softmax = x - logsumexp(x)；不要写成 torch.log(softmax(x))
+    return x - logsumexp(x, dim=dim, keepdim=True)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+x = torch.randn(4, 7) * 5
+assert torch.allclose(softmax(x), F.softmax(x, dim=-1), atol=1e-6)
+assert torch.allclose(softmax(x, dim=0), F.softmax(x, dim=0), atol=1e-6)
+assert torch.allclose(log_softmax(x), F.log_softmax(x, dim=-1), atol=1e-5)
+assert torch.allclose(logsumexp(x, dim=-1), torch.logsumexp(x, dim=-1), atol=1e-5)
+big = torch.tensor([[1000.0, 1001.0, 1002.0]])      # 朴素实现会得到 nan
+assert torch.isfinite(softmax(big)).all() and torch.isfinite(log_softmax(big)).all()
+assert torch.allclose(softmax(big).sum(-1), torch.ones(1))
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>忘记 <code>keepdim=True</code>：(4,7) 减 (4,) 会广播报错或静默地按错误维度广播（方阵时尤其危险）。</li><li>用 <code>torch.max(x)</code> 取全局最大值：数学上也对，但如果不同行尺度差异很大，小尺度的行会全部下溢成 0。必须按 <code>dim</code> 取。</li><li>log_softmax 写成 <code>torch.log(softmax(x))</code>：概率小于约 1e-45 (fp32) 时变成 log 0 = -inf，梯度 nan。</li><li>在 softmax 之后再 mask（把概率置 0）而不是之前把 logit 置 -inf：概率不再归一。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>I'll subtract the max along the reduction dimension before exponentiating. Softmax is shift-invariant, so this doesn't change the result, but it guarantees every exponent is non-positive, so nothing overflows, and the denominator is at least one. For log-softmax I won't take the log of the softmax, because tiny probabilities underflow to zero; instead I compute log-sum-exp with the same max trick and return x minus that. I'm keeping dims so the broadcasting works for any axis.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>What's the gradient of softmax? And of log-softmax?</b><details><summary>思路</summary><div class="inner"><p>Jacobian：\( \partial s_i / \partial x_j = s_i(\delta_{ij} - s_j) \)，即 \( J = \mathrm{diag}(s) - s s^\top \)。向量-Jacobian 积（backward 真正需要的）：\( \bar x = s \odot (\bar s - \langle \bar s, s\rangle) \)，O(n) 而不用构造 n×n 矩阵。log_softmax：\( \partial \ell_i/\partial x_j = \delta_{ij} - s_j \)，所以 \( \bar x = \bar\ell - s \sum_i \bar\ell_i \)。</p></div></details></li>
+<li><b>How does online softmax (as in FlashAttention) work?</b><details><summary>思路</summary><div class="inner"><p>流式扫描时维护当前最大值 m 和缩放后的和 d。来一个新值 x：\( m' = \max(m, x) \)，\( d' = d\, e^{m - m'} + e^{x - m'} \)。这样一次遍历就能得到 softmax 分母，FlashAttention 进一步把分子（对 V 的加权和）也用同样的 rescale 方式在线累积，从而不需要把 T×T 的 attention 矩阵写回显存。</p></div></details></li>
+<li><b>What does temperature do to softmax?</b><details><summary>思路</summary><div class="inner"><p>\( \mathrm{softmax}(x/\tau) \)：τ→0 趋于 one-hot（argmax），τ→∞ 趋于均匀分布。它不改变排序，只改变分布的尖锐程度。</p></div></details></li>
+<li><b>Why is softmax invariant to adding a constant but not to scaling?</b><details><summary>思路</summary><div class="inner"><p>加常数 c：分子分母同乘 \( e^{c} \) 约掉。乘常数 a 相当于温度 1/a，会改变分布形状。这也是 attention 要除以 \( \sqrt{d} \) 的原因：点积的尺度随 d 增长，不缩放会让 softmax 过早饱和。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-ce">
+<div class="concept-head"><span class="pri p1">★</span><h3>P2 · Cross-entropy from logits（含 ignore_index）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 8 min</span><p>从 logits 直接算 CE：LSE − 目标 logit；处理 ignore_index（padding/prompt token），并除以<b>有效 token 数</b>。</p><p class="en">Cross-entropy from raw logits with an ignore_index, averaged over non-ignored targets.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Given logits of shape (N, C) and integer targets of shape (N,), compute the mean cross-entropy loss. Targets equal to ignore_index should not contribute. Then make it work for a language model with (B, T, V) logits.</i></p></div>
+<p><b>中文说明。</b>签名 <code>cross_entropy(logits, targets, ignore_index=-100)</code>。语义要和 <code>F.cross_entropy(..., ignore_index=-100, reduction='mean')</code> 完全一致：分母是有效 target 的个数。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>\( \mathrm{CE} = -\log \mathrm{softmax}(z)_y = \mathrm{LSE}(z) - z_y \)。不要先算 softmax 再取 log。</li><li>取目标 logit：<code>logits.gather(1, targets.unsqueeze(1))</code> 或高级索引 <code>logits[torch.arange(N), targets]</code>。</li><li><code>-100</code> 不是合法下标，gather 会越界报错（CUDA 上是 device-side assert）。先把它替换成 0 再 gather，然后用 mask 把这些位置的 loss 乘 0。</li><li>分母用 <code>valid.sum()</code>，并 clamp 到 ≥1，避免整批都被忽略时 0/0 = nan。</li><li>LM 场景：(B,T,V) → reshape 成 (B·T, V)，labels → (B·T,)。“右移一位”通常在调用前做好（见 P10/P18）。</li></ul></div>
+<p><b>为什么 sigmoid/softmax + CE 的梯度这么干净？</b> 对 logits 求导：$$ \frac{\partial\, \mathrm{CE}}{\partial z_j} = \mathrm{softmax}(z)_j - \mathbb{1}[j = y] $$也就是“预测概率减 one-hot”。这在 P23 logistic regression 和 P17 里都会再次出现。</p>
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>valid = targets != ignore_index</code>；<code>safe_t = targets.masked_fill(~valid, 0)</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner"><code>nll = (lse - tgt_logit) * valid</code>；<code>return nll.sum() / valid.sum().clamp(min=1)</code>。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def cross_entropy(logits: torch.Tensor, targets: torch.Tensor,
+                  ignore_index: int = -100) -&gt; torch.Tensor:
+    """logits: (N, C) float; targets: (N,) long. 返回被保留位置的平均 NLL。"""
+    logits = logits.float()                                   # bf16 下也在 fp32 里算
+    m = logits.max(dim=-1, keepdim=True).values
+    lse = m.squeeze(-1) + torch.log(torch.exp(logits - m).sum(dim=-1))   # (N,)
+    valid = targets != ignore_index                           # (N,) bool
+    safe_t = targets.masked_fill(~valid, 0)                   # -100 不能直接拿去 gather
+    tgt_logit = logits.gather(1, safe_t.unsqueeze(1)).squeeze(1)          # (N,)
+    nll = (lse - tgt_logit) * valid                           # 被忽略的位置贡献 0
+    return nll.sum() / valid.sum().clamp(min=1)               # 除以有效 token 数，不是 N
+
+def lm_loss(logits: torch.Tensor, labels: torch.Tensor, ignore_index: int = -100):
+    """语言模型版：logits (B, T, V)，labels (B, T)。"""
+    B, T, V = logits.shape
+    return cross_entropy(logits.reshape(B * T, V), labels.reshape(B * T), ignore_index)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+logits = torch.randn(10, 5) * 3
+t = torch.randint(0, 5, (10,))
+assert torch.allclose(cross_entropy(logits, t), F.cross_entropy(logits, t), atol=1e-5)
+t2 = t.clone(); t2[::3] = -100
+assert torch.allclose(cross_entropy(logits, t2), F.cross_entropy(logits, t2, ignore_index=-100), atol=1e-5)
+lg = torch.randn(2, 6, 11); lb = torch.randint(0, 11, (2, 6)); lb[0, :2] = -100
+ref = F.cross_entropy(lg.reshape(-1, 11), lb.reshape(-1), ignore_index=-100)
+assert torch.allclose(lm_loss(lg, lb), ref, atol=1e-5)
+assert cross_entropy(logits, torch.full((10,), -100)).item() == 0.0   # 全被忽略：不 nan
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>用 <code>.mean()</code> 代替 <code>sum / valid.sum()</code>：被忽略的位置也进了分母，loss 被系统性低估，而且低估程度取决于 padding 比例。</li><li>直接 gather <code>-100</code>：越界。</li><li>bf16 logits 直接算 LSE：大词表（V≈128k–256k）求和精度不够。工业实现会先 <code>.float()</code>。</li><li>梯度累积/多卡时：每个 micro-batch 用自己的有效 token 数做分母，再平均，不等于全局按 token 平均（见 P16 追问）。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>Cross-entropy from logits is log-sum-exp minus the target logit, so I'll reuse the stable LSE. The ignore index isn't a valid class, so I first replace it with zero to make the gather safe, then multiply those positions by a validity mask. Crucially, I divide by the number of valid tokens, not by N, to match PyTorch's mean reduction; and I clamp the denominator so an all-padding batch doesn't give NaN. For a language model I just flatten batch and time.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Add label smoothing.</b><details><summary>思路</summary><div class="inner"><p>目标分布变成 \( q = (1-\varepsilon)\,\text{onehot}(y) + \varepsilon/C \)。loss = \( (1-\varepsilon)(\mathrm{LSE} - z_y) + \varepsilon(\mathrm{LSE} - \frac{1}{C}\sum_j z_j) \)。注意被忽略的位置同样要 mask 掉。</p></div></details></li>
+<li><b>What's the loss value at initialization for a vocab of 50k, and why do you care?</b><details><summary>思路</summary><div class="inner"><p>均匀预测时 CE = ln V ≈ ln 50257 ≈ 10.82。训练第一步如果明显大于它，说明初始化让 logits 太大（例如 embedding std 过大 + weight tying），是 sanity check 的第一条。</p></div></details></li>
+<li><b>Per-token mean vs per-sequence mean: which does PyTorch do, and why does it matter for RL?</b><details><summary>思路</summary><div class="inner"><p>上面的实现是所有有效 token 的全局平均：长序列贡献更多 token、权重更大。另一种是先对每条序列取平均再对序列平均：每条序列等权，长序列里每个 token 的权重变小。GRPO 原式用后者，DAPO 改成 token-level 平均以避免长回答被低估——详见 P21。</p></div></details></li>
+<li><b>How would you compute CE for a 256k vocab without materializing the full softmax in memory?</b><details><summary>思路</summary><div class="inner"><p>按词表维分块：对每块算局部 max 和局部 sum-exp，用 online softmax 的方式合并成全局 LSE；目标 logit 单独取。反向同理按块重算。这就是各种 “fused/chunked cross-entropy” kernel 的思路，可以省下 B·T·V 的 fp32 logits 显存。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-norm">
+<div class="concept-head"><span class="pri p1">★</span><h3>P3 · LayerNorm & RMSNorm（附 LN backward）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 8 min（backward +12 min）</span><p>LN：减均值、除标准差、仿射；RMSNorm：只除 RMS、只有 γ。面试官看 eps 位置、有偏方差、参数注册，以及能否推导 LN 的反向。</p><p class="en">Implement LayerNorm and RMSNorm as nn.Modules; bonus: derive and code the LayerNorm backward pass.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement LayerNorm and RMSNorm as nn.Modules over the last dimension. Bonus: write the LayerNorm backward pass by hand in numpy and check it with finite differences.</i></p></div>
+<p><b>中文说明。</b><code>LayerNorm(d, eps)</code>：可学习 weight(γ)=1、bias(β)=0。<code>RMSNorm(d, eps)</code>：只有 weight。都在最后一维归一化，输入 (..., d)。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>LN：\( \mu = \frac1d\sum x_i \)，\( \sigma^2 = \frac1d\sum (x_i-\mu)^2 \)（<b>有偏</b>，除以 d，不是 d−1），\( y = \gamma \odot \frac{x-\mu}{\sqrt{\sigma^2+\epsilon}} + \beta \)。</li><li>RMSNorm：\( y = \gamma \odot \frac{x}{\sqrt{\frac1d\sum x_i^2 + \epsilon}} \)。不减均值、没有 β，少一次归约，LLaMA 系列标配。</li><li>ε 在根号<b>里面</b>。</li><li>参数要包成 <code>nn.Parameter</code> 才会被 <code>model.parameters()</code> 收集、被优化器更新、被 <code>.to(device)</code> 移动。</li><li>混合精度：归约（mean of squares）在 fp32 里做，再 cast 回来。</li></ul></div>
+<details class='deep'><summary>推导：LayerNorm backward</summary><div class='inner'><p>记 \( r = (\sigma^2+\epsilon)^{-1/2} \)，\( \hat x_i = (x_i - \mu) r \)，\( g_i = \partial L/\partial \hat x_i = \bar y_i \gamma_i \)。</p><p>需要的偏导：\( \partial \mu/\partial x_j = 1/d \)；\( \partial \sigma^2/\partial x_j = \frac{2}{d}(x_j-\mu) \)（\( \sum_i (x_i-\mu) = 0 \) 让 μ 那一项消失）；\( \partial r/\partial x_j = -\frac12 r^3 \cdot \frac2d (x_j-\mu) = -\frac{r^2}{d}\hat x_j \cdot r \)。</p><p>于是 \( \frac{\partial \hat x_i}{\partial x_j} = r(\delta_{ij} - \tfrac1d) + (x_i-\mu)\frac{\partial r}{\partial x_j} = r\big(\delta_{ij} - \tfrac1d - \tfrac1d \hat x_i \hat x_j\big) \)。</p><p>链式法则：$$ \bar x_j = \sum_i g_i \frac{\partial \hat x_i}{\partial x_j} = r\Big(g_j - \frac1d\sum_i g_i - \hat x_j\, \frac1d \sum_i g_i \hat x_i\Big). $$参数梯度：\( \bar\gamma = \sum_{\text{batch}} \bar y \odot \hat x \)，\( \bar \beta = \sum_{\text{batch}} \bar y \)。</p><p>检查性质：\( \sum_j \bar x_j = r(\sum g - \sum g - \sum_j \hat x_j \cdot \overline{g\hat x}) = 0 \)（因为 \( \sum_j \hat x_j = 0 \)）。直觉：LN 对输入整体平移不变，所以沿全 1 方向的梯度为 0。测试里断言了这一点。</p></div></details>
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>x.var(-1, unbiased=False)</code> 可以直接用；但面试时手写 <code>((x-mu)**2).mean(-1, keepdim=True)</code> 更显得懂。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner"><code>torch.rsqrt</code> = 1/sqrt，一次 kernel。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">Backward：令 \( g = \bar y \odot \gamma \)（对 \( \hat x \) 的梯度），结论是 \( \bar x = \frac{1}{\sigma}\big(g - \overline{g} - \hat x\, \overline{g \hat x}\big) \)，横线表示沿 d 取平均。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class LayerNorm(nn.Module):
+    def __init__(self, d: int, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(d))   # gamma
+        self.bias = nn.Parameter(torch.zeros(d))    # beta
+
+    def forward(self, x):                           # x: (..., d)
+        mu = x.mean(dim=-1, keepdim=True)
+        var = ((x - mu) ** 2).mean(dim=-1, keepdim=True)   # 有偏方差 (除以 d)
+        x_hat = (x - mu) / torch.sqrt(var + self.eps)
+        return x_hat * self.weight + self.bias
+
+class RMSNorm(nn.Module):
+    def __init__(self, d: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(d))   # 没有 bias，不减均值
+
+    def forward(self, x):
+        dtype = x.dtype
+        x = x.float()                               # 归约在 fp32 里做
+        rms_inv = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return (x * rms_inv).to(dtype) * self.weight</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+x = torch.randn(3, 5, 16) * 4 + 2
+ln = LayerNorm(16)
+with torch.no_grad():
+    ln.weight.copy_(torch.randn(16)); ln.bias.copy_(torch.randn(16))
+ref = F.layer_norm(x, (16,), ln.weight, ln.bias, eps=1e-5)
+assert torch.allclose(ln(x), ref, atol=1e-5)
+rms = RMSNorm(16)
+ref_rms = x / torch.sqrt((x * x).mean(-1, keepdim=True) + 1e-6)
+assert torch.allclose(rms(x), ref_rms, atol=1e-5)
+y = LayerNorm(16)(x)
+assert torch.allclose(y.mean(-1), torch.zeros(3, 5), atol=1e-5)
+assert torch.allclose(y.var(-1, unbiased=False), torch.ones(3, 5), atol=1e-3)
+assert len(list(ln.parameters())) == 2 and len(list(rms.parameters())) == 1
+print("ok")</code></pre></div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">import numpy as np
+
+def layernorm_forward(x, gamma, beta, eps=1e-5):
+    """x: (N, D)。返回 y 和 backward 需要的 cache。"""
+    mu = x.mean(axis=-1, keepdims=True)
+    var = x.var(axis=-1, keepdims=True)                 # 有偏方差
+    rstd = 1.0 / np.sqrt(var + eps)
+    x_hat = (x - mu) * rstd
+    return x_hat * gamma + beta, (x_hat, rstd, gamma)
+
+def layernorm_backward(dy, cache):
+    x_hat, rstd, gamma = cache
+    D = x_hat.shape[-1]
+    dgamma = (dy * x_hat).sum(axis=0)
+    dbeta = dy.sum(axis=0)
+    g = dy * gamma                                      # dL/dx_hat
+    # dx = rstd * (g - mean(g) - x_hat * mean(g * x_hat))
+    dx = rstd * (g - g.mean(-1, keepdims=True) - x_hat * (g * x_hat).mean(-1, keepdims=True))
+    return dx, dgamma, dbeta</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">rng = np.random.default_rng(0)
+N, D = 4, 6
+x = rng.normal(size=(N, D)) * 3 + 1
+gamma, beta = rng.normal(size=D), rng.normal(size=D)
+dy = rng.normal(size=(N, D))
+y, cache = layernorm_forward(x, gamma, beta)
+dx, dg, db = layernorm_backward(dy, cache)
+def num_grad(f, a, h=1e-6):
+    g = np.zeros_like(a)
+    for idx in np.ndindex(a.shape):
+        a[idx] += h; fp = f(); a[idx] -= 2 * h; fm = f(); a[idx] += h
+        g[idx] = (fp - fm) / (2 * h)
+    return g
+L = lambda: (layernorm_forward(x, gamma, beta)[0] * dy).sum()     # 标量 L = &lt;y, dy&gt;
+assert np.allclose(dx, num_grad(L, x), atol=1e-6)
+assert np.allclose(dg, num_grad(L, gamma), atol=1e-6)
+assert np.allclose(db, num_grad(L, beta), atol=1e-6)
+assert np.allclose(dx.sum(-1), 0, atol=1e-10)      # 性质：dx 每行和为 0（平移不变）
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>用 <code>x.var(-1)</code>：PyTorch 默认 <b>无偏</b>（除以 d−1），和 LN 定义不一致，结果差一个 \( \sqrt{d/(d-1)} \) 因子。</li><li>ε 加在根号外：\( (x-\mu)/(\sigma+\epsilon) \)，和官方实现数值不同。</li><li>把 LN 和 BatchNorm 搞混：BN 在 batch 维上统计、训练/推理行为不同、需要 running stats；LN 对每个 token 独立，训练推理一致，这正是它适合变长序列和自回归推理的原因。</li><li>γ、β 写成普通 tensor：不会被优化。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>LayerNorm normalizes each token's feature vector independently: subtract the mean, divide by the square root of the biased variance plus epsilon, then apply a learned scale and shift. RMSNorm drops the mean-centering and the bias, so it's one reduction instead of two and it works just as well in practice, which is why LLaMA-style models use it. I'll do the reduction in fp32 for stability. For the backward pass, the key fact is that normalized outputs are invariant to shifting and scaling the input, so the gradient is the upstream gradient with its mean and its projection onto x-hat removed, times the inverse standard deviation.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Pre-norm vs post-norm: what's the difference and why do modern LLMs use pre-norm?</b><details><summary>思路</summary><div class="inner"><p>Post-norm（原始 Transformer）：<code>x = LN(x + f(x))</code>；Pre-norm：<code>x = x + f(LN(x))</code>。Pre-norm 保留了一条不经过任何归一化的残差“高速公路”，梯度可以直接从输出流到底层，深层训练稳定、对 warmup 不那么敏感；代价是深层的表示幅度会逐层累积增长，所以最后要加一个 final LN。</p></div></details></li>
+<li><b>Write the RMSNorm backward.</b><details><summary>思路</summary><div class="inner"><p>令 \( r = (\overline{x^2}+\epsilon)^{-1/2} \)，\( \hat x = x r \)，\( g = \bar y\odot\gamma \)。则 \( \bar x = r\,(g - \hat x\, \overline{g\hat x}) \)——和 LN 相比少了“减均值”那一项。</p></div></details></li>
+<li><b>Why is BatchNorm rarely used in Transformers?</b><details><summary>思路</summary><div class="inner"><p>(1) 序列长度可变、padding 会污染 batch 统计；(2) 自回归推理时 batch=1 且逐 token 生成，没有可用的 batch 统计；(3) 小 micro-batch + 分布式下统计噪声大；(4) 训练/推理行为不一致带来额外 bug 面。</p></div></details></li>
+<li><b>What is QK-norm and why do people add it?</b><details><summary>思路</summary><div class="inner"><p>在算点积前对 q、k 各做一次 LayerNorm/RMSNorm（按 head）。它限制了 attention logits 的尺度，防止大模型训练中 logits 增长导致 softmax 饱和、loss spike。属于“稳定性补丁”。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-linear">
+<div class="concept-head"><span class="pri p1">★</span><h3>P4 · Linear + MLP：从 nn.Parameter 搭 nn.Module</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 8 min</span><p>手写 Linear（权重形状、初始化、广播 bias），再组装 FFN 和 SwiGLU；面试官看你是否理解 Module 的参数注册机制。</p><p class="en">Build Linear, a GELU MLP, and a SwiGLU FFN from nn.Parameter, matching nn.Linear semantics.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Without using nn.Linear, write a Linear layer as an nn.Module, then build the Transformer feed-forward block on top of it. Then show me the SwiGLU variant.</i></p></div>
+<p><b>中文说明。</b><code>Linear(d_in, d_out, bias=True)</code>，输入 (..., d_in) 输出 (..., d_out)。<code>MLP(d)</code>：d → 4d → d，GELU。<code>SwiGLU(d, hidden)</code>：<code>down(silu(gate(x)) * up(x))</code>。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>PyTorch 约定权重存成 <b>(out, in)</b>，前向是 <code>x @ W.T + b</code>。这样 <code>W[i]</code> 就是第 i 个输出神经元的权重行。</li><li>初始化：<code>nn.Linear</code> 默认用 Kaiming-uniform 变体，等价于大致 \( U(-1/\sqrt{d_{in}}, 1/\sqrt{d_{in}}) \)。核心目的：输出方差 ≈ 输入方差，不随 \( d_{in} \) 爆炸。</li><li><code>self.fc1 = Linear(...)</code> 这种属性赋值会被 <code>nn.Module.__setattr__</code> 拦截并注册为子模块；放在普通 Python list 里则<b>不会</b>（要用 <code>nn.ModuleList</code>）。</li><li>SwiGLU 有三个矩阵，为了参数量和 4d 的 FFN 持平，hidden 通常取 \( \frac{8}{3}d \) 再取整到 64/256 的倍数。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>torch.empty(d_out, d_in).uniform_(-bound, bound)</code> 然后包进 <code>nn.Parameter</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">bias 为 None 时也要能工作；<code>self.bias = None</code> 是允许的。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class Linear(nn.Module):
+    def __init__(self, d_in: int, d_out: int, bias: bool = True):
+        super().__init__()
+        # 和 nn.Linear 一样存成 (out, in)，forward 里用 x @ W.T
+        bound = 1.0 / math.sqrt(d_in)          # 让输出方差不随 d_in 增长
+        self.weight = nn.Parameter(torch.empty(d_out, d_in).uniform_(-bound, bound))
+        self.bias = nn.Parameter(torch.empty(d_out).uniform_(-bound, bound)) if bias else None
+
+    def forward(self, x):                      # x: (..., d_in) -&gt; (..., d_out)
+        y = x @ self.weight.T
+        if self.bias is not None:
+            y = y + self.bias                  # 广播到最后一维
+        return y
+
+class MLP(nn.Module):
+    """Transformer FFN: d -&gt; 4d -&gt; d, GELU。"""
+    def __init__(self, d: int, hidden_mult: int = 4, dropout: float = 0.0):
+        super().__init__()
+        self.fc1 = Linear(d, hidden_mult * d)
+        self.fc2 = Linear(hidden_mult * d, d)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.drop(self.fc2(F.gelu(self.fc1(x))))
+
+class SwiGLU(nn.Module):
+    """LLaMA 风格 FFN：down( silu(gate(x)) * up(x) )。"""
+    def __init__(self, d: int, hidden: int):
+        super().__init__()
+        self.gate = Linear(d, hidden, bias=False)
+        self.up = Linear(d, hidden, bias=False)
+        self.down = Linear(hidden, d, bias=False)
+
+    def forward(self, x):
+        return self.down(F.silu(self.gate(x)) * self.up(x))</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+lin = Linear(8, 3)
+x = torch.randn(2, 5, 8)
+assert lin(x).shape == (2, 5, 3)
+assert torch.allclose(lin(x), F.linear(x, lin.weight, lin.bias), atol=1e-6)
+mlp = MLP(8)
+assert sum(p.numel() for p in mlp.parameters()) == 8*32 + 32 + 32*8 + 8
+names = {n for n, _ in mlp.named_parameters()}
+assert names == {"fc1.weight", "fc1.bias", "fc2.weight", "fc2.bias"}   # 子模块被自动注册
+out = mlp(x); out.sum().backward()
+assert all(p.grad is not None for p in mlp.parameters())
+sw = SwiGLU(8, 16); assert sw(x).shape == x.shape
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>权重存成 (in, out) 但从 nn.Linear 拷权重：形状对上了（方阵）但结果是转置的，静默错误。</li><li>子模块放 Python list：参数不进优化器，loss 不降却不报错。</li><li>全零初始化：所有隐藏单元对称，梯度相同，永远学成同一个特征。</li><li>std=1 的正态初始化：每层输出方差乘以 \( d_{in} \)，几层之后爆炸。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>I'll store the weight as out-by-in, like PyTorch, so the forward is x times W transpose plus bias, and it broadcasts over any leading dimensions. I initialize uniformly with bound one over root fan-in so the output variance stays roughly constant across layers. Assigning submodules as attributes registers their parameters automatically, which is why I'd use ModuleList rather than a plain list if I had a stack of layers. The FFN is up-project by four, GELU, down-project; SwiGLU replaces that with a gated product of two projections, and you shrink the hidden size to about eight-thirds d to keep the parameter count the same.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>How many parameters and FLOPs does this MLP have for d=4096?</b><details><summary>思路</summary><div class="inner"><p>参数：\( 2 \cdot 4d^2 = 8d^2 \approx 134\text{M} \)（忽略 bias）。前向 FLOPs ≈ 2 × 参数量 × token 数 = \( 16 d^2 \) 每 token。“前向 2N、前向+反向 6N”这个经验法则来自每个参数一次乘一次加。</p></div></details></li>
+<li><b>Why does SwiGLU work better than ReLU/GELU FFN?</b><details><summary>思路</summary><div class="inner"><p>经验结论（Shazeer 2020, “GLU Variants Improve Transformer”）：门控提供了乘性交互，让每个隐藏单元的输出由两条路径共同决定，表达力更强；在等参数量下困惑度更低。没有特别完备的理论解释，面试时说“empirically better at matched params”即可。</p></div></details></li>
+<li><b>What does nn.Module.register_buffer do, and when would you use it here?</b><details><summary>思路</summary><div class="inner"><p>buffer 是随模块保存/移动设备、但不是可训练参数的张量，比如 RoPE 的 cos/sin 表、causal mask、BN 的 running mean。<code>persistent=False</code> 则不进 state_dict。</p></div></details></li>
+<li><b>Implement Kaiming init for a ReLU network. Why the factor of 2?</b><details><summary>思路</summary><div class="inner"><p>\( W \sim \mathcal N(0, 2/d_{in}) \)。ReLU 把一半输入置零，输出二阶矩减半，乘 2 补回来，使各层激活方差保持不变（He et al. 2015）。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-dropout">
+<div class="concept-head"><span class="pri p1">★</span><h3>P5 · Dropout（inverted）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 4 min</span><p>训练时以概率 p 置零并除以 1−p，推理时恒等；面试官看你是否知道“inverted”缩放和 train/eval 模式。</p><p class="en">Inverted dropout: zero with prob p and rescale by 1/(1−p) during training; identity at eval.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement dropout. What happens at inference time?</i></p></div>
+<p><b>中文说明。</b><code>dropout(x, p, training)</code> 以及包装成 <code>nn.Module</code>，用 <code>self.training</code> 决定行为。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>期望保持：训练时 \( \mathbb E[\tilde x] = (1-p)\cdot \frac{x}{1-p} = x \)，所以推理时不用做任何事。这就是 “inverted” dropout（原始论文是在推理时乘 1−p）。</li><li>掩码用 <code>torch.rand_like(x) &gt; p</code>，保留概率 1−p。</li><li>边界：p=0 直接返回；p=1 返回全零（避免除以 0）。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>keep = (torch.rand_like(x) &gt; p).to(x.dtype)</code>；<code>return x * keep / (1 - p)</code>。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+import torch.nn as nn
+
+def dropout(x: torch.Tensor, p: float, training: bool = True) -&gt; torch.Tensor:
+    if not training or p == 0.0:
+        return x                                   # 推理时恒等，不需要再缩放
+    if p == 1.0:
+        return torch.zeros_like(x)
+    keep = (torch.rand_like(x) &gt; p).to(x.dtype)    # 以概率 1-p 保留
+    return x * keep / (1.0 - p)                    # inverted dropout：训练时放大
+
+class Dropout(nn.Module):
+    def __init__(self, p: float = 0.1):
+        super().__init__()
+        self.p = p
+    def forward(self, x):
+        return dropout(x, self.p, self.training)  # self.training 由 .train()/.eval() 设置</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+x = torch.ones(200_000)
+y = dropout(x, 0.3)
+assert abs((y == 0).float().mean().item() - 0.3) &lt; 0.01      # 约 30% 被置零
+assert abs(y.mean().item() - 1.0) &lt; 0.01                    # 期望保持不变
+assert torch.allclose(torch.unique(y), torch.tensor([0.0, 1 / 0.7]))     # 留下的元素被放大到 1/(1-p)
+d = Dropout(0.5); d.eval()
+assert torch.equal(d(x), x)
+assert torch.equal(dropout(x, 1.0), torch.zeros_like(x))
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>推理时忘了关：<code>model.eval()</code> 之后 <code>self.training=False</code>。忘了调用 eval 是线上 bug 的经典来源（结果有随机性）。</li><li>掩码写成 <code>&lt; p</code> 却除以 1−p：保留率和缩放不匹配。</li><li>以为 <code>torch.no_grad()</code> 会关闭 dropout：不会，它只关闭 autograd 记录。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>During training I sample a Bernoulli keep-mask with keep probability one minus p and divide the survivors by one minus p, so the expected activation is unchanged. That's inverted dropout, and it means inference is just the identity. The module reads self.training, which is toggled by train and eval; note that no_grad doesn't affect dropout.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Why do most modern LLM pretraining runs use dropout = 0?</b><details><summary>思路</summary><div class="inner"><p>预训练数据通常只过 ~1 个 epoch，几乎不存在过拟合；dropout 会带来噪声、降低吞吐（需要生成掩码），收益为负。微调小数据集时有时会重新打开。</p></div></details></li>
+<li><b>Where is dropout applied in a Transformer block?</b><details><summary>思路</summary><div class="inner"><p>GPT-2 风格：attention 概率之后（attn dropout）、attention 输出投影之后、MLP 输出之后（residual dropout），以及 embedding 之后。</p></div></details></li>
+<li><b>How would you make dropout reproducible across data-parallel workers?</b><details><summary>思路</summary><div class="inner"><p>每个 rank 用不同但确定的 seed（如 base_seed + rank），或像 Megatron 一样为张量并行区域维护专门的 RNG 状态，保证同一个张量分片在不同卡上用一致的掩码。</p></div></details></li>
+</ol></div></section>
+<h2 class="sec" id="s-attn"><span class="num">§2 · ATTENTION</span>Attention：最高频的手写题</h2><p class="sec-intro">研究岗 ML coding 的“必考题”。P6–P7 要求 15 分钟内无 bug 写完，P8–P9 考你对位置编码和推理的理解，P10 是综合题（30–40 分钟，写一个能训练的 mini-GPT）。形状写在注释里是最好的习惯：面试官能跟上你，你自己也不容易错。</p>
+<section class="concept" id="c-sdpa">
+<div class="concept-head"><span class="pri p1">★</span><h3>P6 · Scaled dot-product attention（causal + padding mask）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 10 min</span><p>softmax(QKᵀ/√d + mask)V；mask 在 softmax <b>之前</b>填 −inf；能同时处理 causal、key padding 和 Tq&lt;Tk（KV cache）的对角线偏移。</p><p class="en">Implement SDPA with causal and key-padding masks, handling Tq &lt; Tk.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Write scaled dot-product attention that supports a causal mask and a key padding mask. Inputs are batched and multi-head. Make sure it also works when the number of queries is smaller than the number of keys.</i></p></div>
+<p><b>中文说明。</b>签名 <code>sdpa(q, k, v, causal=False, key_padding_mask=None)</code>。q: (B,H,Tq,D)，k/v: (B,H,Tk,D)，<code>key_padding_mask</code>: (B,Tk) bool，True=真实 token。返回 (B,H,Tq,D)。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>$$ \mathrm{Attn}(Q,K,V) = \mathrm{softmax}\Big(\frac{QK^\top}{\sqrt{d}} + M\Big) V,\quad M_{ij}\in\{0, -\infty\} $$</li><li>为什么除以 \( \sqrt d \)：若 q、k 各分量独立、均值 0 方差 1，点积方差为 d。不缩放则 logits 标准差 \( \sqrt d \)，softmax 接近 one-hot，梯度几乎为 0。</li><li>Causal：query i 只能看 key j ≤ i。当 Tq &lt; Tk（前面有 cache），query i 的绝对位置是 \( T_k - T_q + i \)，所以用 <code>tril(diagonal=Tk-Tq)</code>。</li><li>Padding mask 形状 (B,Tk) → view 成 (B,1,1,Tk) 广播到所有 head 和 query。</li><li>左 padding 时，pad 位置的 query 那一整行可能全被 mask → softmax 得 nan。处理：<code>nan_to_num</code> 或在下游忽略这些位置的输出。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>scores = q @ k.transpose(-2, -1) / math.sqrt(D)</code> → (B,H,Tq,Tk)。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">先构造布尔 <code>allowed</code>（True=可以看），最后一次 <code>masked_fill(~allowed, -inf)</code>。用布尔与 <code>&amp;</code> 组合两种 mask。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">测试小技巧：修改最后一个位置的 k/v，前面位置的 causal 输出不应改变。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import math
+import torch
+import torch.nn.functional as F
+
+def sdpa(q, k, v, causal: bool = False, key_padding_mask=None):
+    """
+    q: (B, H, Tq, D)   k, v: (B, H, Tk, D)
+    key_padding_mask: (B, Tk) bool，True = 真实 token，False = padding
+    causal 且 Tq &lt; Tk 时（例如有 KV cache），query i 对应绝对位置 Tk - Tq + i
+    返回: (B, H, Tq, D)
+    """
+    B, H, Tq, D = q.shape
+    Tk = k.shape[-2]
+    scores = (q @ k.transpose(-2, -1)) / math.sqrt(D)          # (B, H, Tq, Tk)
+    allowed = torch.ones(Tq, Tk, dtype=torch.bool, device=q.device)
+    if causal:
+        # 下三角，对角线向右平移 Tk - Tq
+        allowed = torch.tril(allowed, diagonal=Tk - Tq)
+    allowed = allowed.view(1, 1, Tq, Tk)
+    if key_padding_mask is not None:
+        allowed = allowed &amp; key_padding_mask.view(B, 1, 1, Tk)
+    scores = scores.masked_fill(~allowed, float("-inf"))        # 在 softmax 之前 mask
+    attn = torch.softmax(scores, dim=-1)
+    attn = torch.nan_to_num(attn, nan=0.0)   # 整行都被 mask 时 softmax 给 nan -&gt; 置 0
+    return attn @ v</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+B, H, T, D = 2, 3, 6, 8
+q, k, v = (torch.randn(B, H, T, D) for _ in range(3))
+assert torch.allclose(sdpa(q, k, v), F.scaled_dot_product_attention(q, k, v), atol=1e-5)
+assert torch.allclose(sdpa(q, k, v, causal=True),
+                      F.scaled_dot_product_attention(q, k, v, is_causal=True), atol=1e-5)
+pad = torch.ones(B, T, dtype=torch.bool); pad[1, -2:] = False       # 第 2 条序列右侧 2 个 pad
+m = torch.tril(torch.ones(T, T, dtype=torch.bool)).view(1, 1, T, T) &amp; pad.view(B, 1, 1, T)
+ref = F.scaled_dot_product_attention(q, k, v, attn_mask=m)
+assert torch.allclose(sdpa(q, k, v, causal=True, key_padding_mask=pad), ref, atol=1e-5)
+# Tq &lt; Tk：最后 2 个 query 应等于完整 causal attention 的最后 2 行
+full = sdpa(q, k, v, causal=True)
+assert torch.allclose(sdpa(q[:, :, -2:], k, v, causal=True), full[:, :, -2:], atol=1e-5)
+# 因果性：修改未来的 k/v 不影响过去的输出
+k2, v2 = k.clone(), v.clone(); k2[..., -1, :] += 10; v2[..., -1, :] += 10
+assert torch.allclose(sdpa(q, k2, v2, causal=True)[:, :, :-1], full[:, :, :-1], atol=1e-5)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>mask 的语义搞反：PyTorch <code>F.scaled_dot_product_attention</code> 的布尔 mask 是 True=<b>参与</b>，而 <code>nn.MultiheadAttention</code> 的 <code>attn_mask</code>/<code>key_padding_mask</code> 是 True=<b>屏蔽</b>。面试时说清楚你的约定。</li><li>softmax 之后再乘 0/1 mask：每行不再归一。</li><li>用 −1e9 而不是 −inf：fp16 下 −1e9 溢出为 −inf 倒也还行，但 −1e4 之类在 bf16/fp16 里可能不够小；用 −inf 加整行全屏蔽的特殊处理最干净（或用 <code>torch.finfo(dtype).min</code>）。</li><li>Tq&lt;Tk 时直接 <code>tril(ones(Tq,Tk))</code>：新 query 看不到大部分历史，生成结果错误但不报错。</li><li>transpose 写成 <code>k.T</code>：多维张量上 <code>.T</code> 会反转所有维度（且已被弃用）。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>Scores are Q times K-transpose over root d; the scaling keeps the logit variance around one so the softmax doesn't saturate. I'll build a single boolean 'allowed' mask: for causal it's lower-triangular, shifted by Tk minus Tq so it still works with a KV cache where queries are the last positions; for padding I broadcast the per-key mask over heads and queries. I fill disallowed logits with minus infinity before the softmax, and I guard against rows that are entirely masked, which would otherwise produce NaNs. Output shape is B, H, Tq, D.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>What is the time and memory complexity, and how does FlashAttention change it?</b><details><summary>思路</summary><div class="inner"><p>时间 O(T²d)，朴素实现显存 O(T²)（存 attention 矩阵）。FlashAttention 不改变 FLOPs，而是分块 + online softmax，把 T×T 矩阵留在 SRAM 里不写回 HBM，显存降为 O(T)，并因减少 HBM 读写而更快；反向时重算 attention 而不是存储。</p></div></details></li>
+<li><b>How would you implement a sliding-window (local) attention mask?</b><details><summary>思路</summary><div class="inner"><p><code>allowed = (j &lt;= i) &amp; (j &gt; i - W)</code>，即 <code>tril(ones) &amp; ~tril(ones, diagonal=-W)</code>。Mistral 等模型使用，配合环形 KV cache 让显存与序列长度无关。</p></div></details></li>
+<li><b>Left padding vs right padding for batched generation: which and why?</b><details><summary>思路</summary><div class="inner"><p>生成时用<b>左</b> padding：这样所有序列的“最后一个 token”对齐在同一列，每步都在末尾追加。右 padding 会导致有的序列最后一个位置是 pad。同时要根据 attention_mask 计算 position_ids（pad 不占位置）。</p></div></details></li>
+<li><b>What happens numerically if you drop the 1/√d scaling for d=128?</b><details><summary>思路</summary><div class="inner"><p>logits 标准差 ≈ √128 ≈ 11，softmax 几乎 one-hot，attention 的梯度（∝ s(1−s)）接近 0，训练初期学不动；有时还会导致 bf16 下的数值问题。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-mha">
+<div class="concept-head"><span class="pri p1">★</span><h3>P7 · Multi-head attention → GQA / MQA</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 15 min</span><p>投影 → reshape 成 (B,h,T,d) → attention → 合并 heads → 输出投影；再扩展成 GQA（KV heads 更少，用 repeat_interleave 共享）。</p><p class="en">Implement causal MHA as an nn.Module, then generalize it to grouped-query attention.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement causal multi-head self-attention as an nn.Module. Then modify it to support grouped-query attention, where there are fewer key/value heads than query heads.</i></p></div>
+<p><b>中文说明。</b><code>MultiHeadAttention(d_model, n_heads, n_kv_heads=None)</code>，输入 (B,T,C) 输出 (B,T,C)。n_kv_heads = n_heads 是 MHA，=1 是 MQA。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>形状流：(B,T,C) →proj→ (B,T,h·d) →view→ (B,T,h,d) →transpose(1,2)→ (B,h,T,d)。合并时反过来：transpose(1,2) → <b>contiguous()</b> → view(B,T,h·d)。</li><li>GQA：k/v 投影只输出 kvh·d 维。每组 h/kvh 个 query head 共享一个 KV head。用 <code>repeat_interleave(rep, dim=1)</code> 把 (B,kvh,T,d) 扩成 (B,h,T,d)：KV head 0 对应 query head 0..rep−1。</li><li>注意 <code>repeat</code> 和 <code>repeat_interleave</code> 的区别：前者是 [0,1,0,1]，后者是 [0,0,1,1]。约定必须和 q 的 head 分组一致。</li><li>GQA 的意义在推理：KV cache 大小 ∝ kvh，显存/带宽降低 h/kvh 倍，质量接近 MHA（Ainslie et al. 2023）。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>q = self.q_proj(x).view(B, T, self.h, self.d).transpose(1, 2)</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">合并 heads 时直接 <code>.view</code> 会报 “view size is not compatible with input tensor's size and stride”，因为 transpose 之后内存不连续；用 <code>.contiguous().view</code> 或 <code>.reshape</code>。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">测试：把你的权重拷到 <code>nn.MultiheadAttention(bias=False, batch_first=True)</code>，<code>in_proj_weight</code> 是 q/k/v 权重按行拼接。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class MultiHeadAttention(nn.Module):
+    """n_kv_heads == n_heads: 标准 MHA；n_kv_heads == 1: MQA；介于之间: GQA。"""
+    def __init__(self, d_model: int, n_heads: int, n_kv_heads: int = None):
+        super().__init__()
+        n_kv_heads = n_kv_heads or n_heads
+        assert d_model % n_heads == 0 and n_heads % n_kv_heads == 0
+        self.h, self.kvh = n_heads, n_kv_heads
+        self.d = d_model // n_heads                       # head_dim
+        self.q_proj = nn.Linear(d_model, n_heads * self.d, bias=False)
+        self.k_proj = nn.Linear(d_model, n_kv_heads * self.d, bias=False)
+        self.v_proj = nn.Linear(d_model, n_kv_heads * self.d, bias=False)
+        self.o_proj = nn.Linear(n_heads * self.d, d_model, bias=False)
+
+    def forward(self, x, causal: bool = True):
+        B, T, C = x.shape
+        # (B, T, h*d) -&gt; (B, T, h, d) -&gt; (B, h, T, d)
+        q = self.q_proj(x).view(B, T, self.h, self.d).transpose(1, 2)
+        k = self.k_proj(x).view(B, T, self.kvh, self.d).transpose(1, 2)
+        v = self.v_proj(x).view(B, T, self.kvh, self.d).transpose(1, 2)
+        if self.kvh != self.h:                            # GQA: 每个 KV head 被 h/kvh 个 Q head 共享
+            rep = self.h // self.kvh
+            k = k.repeat_interleave(rep, dim=1)           # (B, h, T, d)
+            v = v.repeat_interleave(rep, dim=1)
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.d)          # (B, h, T, T)
+        if causal:
+            mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=x.device))
+            att = att.masked_fill(~mask, float("-inf"))
+        att = att.softmax(dim=-1)
+        y = att @ v                                                  # (B, h, T, d)
+        y = y.transpose(1, 2).contiguous().view(B, T, self.h * self.d)  # 先 transpose 回去再 view
+        return self.o_proj(y)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+B, T, C, H = 2, 7, 32, 4
+x = torch.randn(B, T, C)
+mha = MultiHeadAttention(C, H)
+ref = nn.MultiheadAttention(C, H, bias=False, batch_first=True)
+with torch.no_grad():
+    ref.in_proj_weight.copy_(torch.cat([mha.q_proj.weight, mha.k_proj.weight, mha.v_proj.weight], 0))
+    ref.out_proj.weight.copy_(mha.o_proj.weight)
+causal_mask = torch.triu(torch.ones(T, T, dtype=torch.bool), 1)      # nn.MHA: True = 屏蔽
+y_ref, _ = ref(x, x, x, attn_mask=causal_mask, need_weights=False)
+assert torch.allclose(mha(x), y_ref, atol=1e-5)
+# GQA: 和 "手动把 KV 复制成 MHA" 的结果一致
+gqa = MultiHeadAttention(C, H, n_kv_heads=2)
+assert gqa.k_proj.weight.shape == (2 * 8, C)
+mha2 = MultiHeadAttention(C, H)
+with torch.no_grad():
+    mha2.q_proj.weight.copy_(gqa.q_proj.weight); mha2.o_proj.weight.copy_(gqa.o_proj.weight)
+    d = 8
+    kw = gqa.k_proj.weight.view(2, d, C).repeat_interleave(2, 0).reshape(H * d, C)
+    vw = gqa.v_proj.weight.view(2, d, C).repeat_interleave(2, 0).reshape(H * d, C)
+    mha2.k_proj.weight.copy_(kw); mha2.v_proj.weight.copy_(vw)
+assert torch.allclose(gqa(x), mha2(x), atol=1e-5)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>直接 <code>.view(B, h, T, d)</code> 而不先 view 成 (B,T,h,d) 再 transpose：形状对、语义错——把不同时间步的特征混进同一个 head。这是最常见、最隐蔽的 MHA bug。</li><li>GQA 用 <code>repeat</code> 而 q 按连续块分组：head 对应关系错乱（加载预训练权重时会表现为输出乱码）。</li><li>scale 用 \( \sqrt{C} \) 而不是 \( \sqrt{d_{head}} \)。</li><li>忘记输出投影 o_proj。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>I project to queries, keys and values, then reshape from B, T, h-times-d to B, T, h, d and transpose to B, h, T, d so each head is a separate batch of attention. After attention I transpose back, make it contiguous, and merge heads before the output projection. For grouped-query attention the key and value projections only produce n_kv_heads heads, and I repeat-interleave them along the head dimension so each group of query heads shares one KV head. The point is inference: the KV cache shrinks by the group factor with very little quality loss.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Compute the KV-cache size for a 70B-class model: 80 layers, 64 query heads, 8 KV heads, head_dim 128, 8k context, bf16.</b><details><summary>思路</summary><div class="inner"><p>每 token：2 (K,V) × 80 层 × 8 heads × 128 × 2 bytes = 327,680 B ≈ 320 KB。8192 token ≈ 2.5 GiB/序列。若是 MHA（64 KV heads）则 ×8 ≈ 20 GiB。这就是 GQA 的价值。</p></div></details></li>
+<li><b>How is Multi-head Latent Attention (MLA, DeepSeek-V2) different from GQA?</b><details><summary>思路</summary><div class="inner"><p>MLA 把 K、V 压缩成一个低秩 latent 向量缓存（每 token 只存 latent + 一小段解耦的 RoPE key），推理时把上投影矩阵吸收进 q 和输出投影。它比 GQA 进一步减少 KV cache，同时保持每个 head 有不同的 K/V。见 <a href='https://arxiv.org/abs/2405.04434' target='_blank' rel='noreferrer'>DeepSeek-V2 (arXiv 2405.04434)</a>。</p></div></details></li>
+<li><b>Can you avoid materializing the repeated K/V in GQA?</b><details><summary>思路</summary><div class="inner"><p>可以：把 q reshape 成 (B, kvh, rep, T, d)，k 成 (B, kvh, 1, T, d)，用广播做 matmul；或者使用支持 GQA 的 kernel（FlashAttention 原生支持）。repeat_interleave 会真的复制内存，长上下文时浪费。</p></div></details></li>
+<li><b>Why do we need multiple heads at all?</b><details><summary>思路</summary><div class="inner"><p>单个 softmax 每个 query 只能产生一种“加权平均”模式。多个 head 在不同子空间里并行地关注不同位置/关系（例如一个看前一个 token、一个看句法主语），总计算量与单个大 head 相同。可解释性研究里的 induction head、previous-token head 就是具体例子。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-rope">
+<div class="concept-head"><span class="pri p1">★</span><h3>P8 · RoPE（旋转位置编码）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 12 min</span><p>把 q/k 的每对维度按位置 m 旋转角度 mθᵢ；点积因此只依赖相对位置 m−n。面试官看配对约定（rotate-half vs interleaved）和相对位置性质的证明。</p><p class="en">Implement rotary position embeddings and show q·k depends only on relative position.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement rotary position embeddings and apply them to queries and keys. Then convince me that the attention score only depends on the relative position.</i></p></div>
+<p><b>中文说明。</b><code>rope_cache(T, d, base=10000)</code> 返回 (T, d/2) 的 cos、sin；<code>apply_rope(x, cos, sin)</code>，x: (B,H,T,d)。只作用在 q、k 上，不作用于 v。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>频率 \( \theta_i = \text{base}^{-2i/d},\ i = 0..d/2-1 \)：低维转得快（捕捉局部），高维转得慢（捕捉长程）。</li><li>对每一对 \( (x_{a}, x_{b}) \) 做二维旋转：\( (x_a\cos m\theta - x_b \sin m\theta,\ x_a\sin m\theta + x_b\cos m\theta) \)。</li><li>配对约定有两种：<b>interleaved</b> (0,1),(2,3)... 是原论文/Meta 原始代码；<b>rotate-half</b> (i, i+d/2) 是 HF LLaMA/GPT-NeoX 实现。两者都正确，但和预训练权重必须一致。</li><li>相对位置：复数视角下 \( \tilde q_m = q\, e^{i m\theta} \)，\( \tilde k_n = k\, e^{i n\theta} \)，\( \mathrm{Re}[\tilde q_m \overline{\tilde k_n}] = \mathrm{Re}[q \bar k\, e^{i(m-n)\theta}] \)，只依赖 m−n。</li><li>推理时位置要用<b>绝对</b>位置（有 KV cache 时从 past_len 开始），cache 里存的是已经旋转过的 k。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>inv_freq = 1.0 / base ** (torch.arange(0, d, 2).float() / d)</code>；<code>angles = torch.outer(pos, inv_freq)</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">rotate-half：<code>x1, x2 = x[..., :d//2], x[..., d//2:]</code>，返回 <code>cat([x1*cos - x2*sin, x1*sin + x2*cos], -1)</code>。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">测试相对性：把同一个 q 向量放在所有位置、同一个 k 向量放在所有位置，检查 score(5,2) == score(9,6)。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+
+def rope_cache(T: int, d: int, base: float = 10000.0):
+    """返回 cos, sin: (T, d/2)。第 i 对维度的角频率 theta_i = base^(-2i/d)。"""
+    assert d % 2 == 0
+    inv_freq = 1.0 / (base ** (torch.arange(0, d, 2).float() / d))    # (d/2,)
+    pos = torch.arange(T).float()                                     # (T,)
+    angles = torch.outer(pos, inv_freq)                               # (T, d/2)
+    return angles.cos(), angles.sin()
+
+def apply_rope(x, cos, sin):
+    """
+    x: (B, H, T, d)；cos/sin: (T, d/2)。
+    使用 "rotate-half" 配对 (LLaMA/HF 约定)：维度 i 和 i + d/2 组成一对。
+    """
+    d = x.shape[-1]
+    x1, x2 = x[..., : d // 2], x[..., d // 2 :]
+    # 二维旋转: (x1, x2) -&gt; (x1 cos - x2 sin, x1 sin + x2 cos)
+    return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+B, H, T, d = 1, 2, 12, 16
+cos, sin = rope_cache(T, d)
+q, k = torch.randn(B, H, T, d), torch.randn(B, H, T, d)
+qr, kr = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+assert torch.allclose(qr.norm(dim=-1), q.norm(dim=-1), atol=1e-5)   # 旋转保范数
+assert torch.allclose(qr[:, :, 0], q[:, :, 0])                       # 位置 0 不旋转
+# 相对位置性质：&lt;R_m q, R_n k&gt; 只取决于 m - n
+q1 = q[:, :, :1].expand(B, H, T, d); k1 = k[:, :, :1].expand(B, H, T, d)
+q1r, k1r = apply_rope(q1, cos, sin), apply_rope(k1, cos, sin)
+s_a = (q1r[:, :, 5] * k1r[:, :, 2]).sum(-1)    # m=5, n=2
+s_b = (q1r[:, :, 9] * k1r[:, :, 6]).sum(-1)    # m=9, n=6
+assert torch.allclose(s_a, s_b, atol=1e-4)
+# 复数形式等价性检查
+xc = torch.complex(q[..., : d // 2], q[..., d // 2 :])
+rot = torch.polar(torch.ones_like(cos), torch.atan2(sin, cos))
+out = xc * rot
+assert torch.allclose(torch.cat([out.real, out.imag], -1), qr, atol=1e-5)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>对 v 也做 RoPE：v 不参与位置相关的打分，不应旋转。</li><li>配对约定和权重不一致：加载 HF 权重却用 interleaved，模型输出乱码。</li><li>生成时每步都从位置 0 开始计算：新 token 被当成位置 0，相对位置全错。</li><li>cos/sin 用 bf16 计算：大位置下角度精度不够，长上下文质量下降。表应在 fp32 中计算。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>RoPE rotates each pair of query and key dimensions by an angle proportional to the token's position, with geometrically decreasing frequencies across pairs. If you view a pair as a complex number, the query at position m gets multiplied by e to the i m theta and the key at n by e to the i n theta, so their inner product picks up e to the i m-minus-n theta: the score depends only on relative distance, and norms are preserved. I'm using the rotate-half pairing, which is what Hugging Face LLaMA uses; the interleaved pairing is equivalent up to a permutation, but it has to match the checkpoint. I apply it to q and k only, after the projection and before the dot product.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>How do context-extension methods like position interpolation, NTK-aware scaling and YaRN modify RoPE?</b><details><summary>思路</summary><div class="inner"><p>Position Interpolation：把位置 m 缩放成 m·L/L'，让新长度映射回训练过的角度范围（需要少量微调）。NTK-aware：改变 base（增大），让高频维几乎不变、低频维被插值。YaRN：按频率分段处理（高频不插值、低频插值、中间平滑过渡）并对 attention 温度做修正。核心思想都是“避免模型看到训练中没见过的旋转角度”。</p></div></details></li>
+<li><b>Why does RoPE give a long-range decay of attention?</b><details><summary>思路</summary><div class="inner"><p>RoFormer 论文证明了在一定假设下，随着 |m−n| 增大，不同频率分量的相位逐渐失去对齐，内积上界衰减。直觉：远距离时各维度的旋转角度“随机化”，求和相互抵消。见 <a href='https://arxiv.org/abs/2104.09864' target='_blank' rel='noreferrer'>RoFormer (arXiv 2104.09864)</a>。</p></div></details></li>
+<li><b>Compare RoPE with learned absolute position embeddings and ALiBi.</b><details><summary>思路</summary><div class="inner"><p>学习式绝对位置：简单，但无法外推超过 max_len。ALiBi：不改 q/k，直接给 attention logits 加 −slope·|i−j| 的线性偏置，外推性好。RoPE：乘性、相对位置、与线性 attention 兼容，是当前主流。</p></div></details></li>
+<li><b>Implement the interleaved version.</b><details><summary>思路</summary><div class="inner"><p><code>x1, x2 = x[..., 0::2], x[..., 1::2]</code>；旋转后 <code>torch.stack([x1*cos - x2*sin, x1*sin + x2*cos], dim=-1).flatten(-2)</code>，把结果交错放回。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-kvdecode">
+<div class="concept-head"><span class="pri p1">★</span><h3>P9 · 单步 KV-cached decoding attention</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 10 min</span><p>每步只算新 token 的 q/k/v，把 k/v 写进 cache，用新 q 对全部历史做 attention；不需要 causal mask。逐步输出必须等于完整 causal attention。</p><p class="en">Implement one decoding step of attention with a preallocated KV cache, matching full causal attention.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>During generation we don't want to recompute attention over the whole prefix. Implement a KV cache and a single decoding step of attention. Show that running it token by token matches full causal attention.</i></p></div>
+<p><b>中文说明。</b><code>KVCache(B,H,T_max,d)</code> 带 <code>append(k_new, v_new)</code>；<code>decode_step_attention(q_new, k_new, v_new, cache)</code>，输入 (B,H,1,d)，输出 (B,H,1,d)。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>为什么可以缓存：causal 模型里，过去位置的 k、v 不会因为未来 token 而改变（每层都是如此），所以算一次存下来即可。</li><li>新 query 是当前最后一个位置，它可以看到所有历史 + 自己 → 不需要 mask（Tq=1 时 <code>tril(diagonal=Tk-1)</code> 就是全 1）。</li><li>复杂度：无 cache 时生成 n 个 token 要重复计算 O(n²) 个 token 的前向；有 cache 时每步只算 1 个 token，attention 部分每步 O(L·d)。</li><li>预分配 vs <code>torch.cat</code>：cat 每步都重新分配并拷贝整个 cache，总拷贝量 O(n²)；预分配 + 写入是 O(n)。工业界（vLLM）进一步用分页 PagedAttention。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>self.k[:, :, self.len:self.len+t] = k_new</code>，然后返回 <code>self.k[:, :, :self.len]</code> 的视图。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">测试：先算完整的 causal attention (B,H,T,d)，然后循环 t，逐个喂 <code>q[:,:,t:t+1]</code> 等，拼接结果比较。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import math
+import torch
+
+class KVCache:
+    """预分配 (B, H, T_max, d)，按位置写入；比每步 torch.cat 少分配内存。"""
+    def __init__(self, B, H, T_max, d, dtype=torch.float32):
+        self.k = torch.zeros(B, H, T_max, d, dtype=dtype)
+        self.v = torch.zeros(B, H, T_max, d, dtype=dtype)
+        self.len = 0
+
+    def append(self, k_new, v_new):                      # (B, H, t, d)
+        t = k_new.shape[2]
+        self.k[:, :, self.len:self.len + t] = k_new
+        self.v[:, :, self.len:self.len + t] = v_new
+        self.len += t
+        return self.k[:, :, :self.len], self.v[:, :, :self.len]
+
+def decode_step_attention(q_new, k_new, v_new, cache: KVCache):
+    """
+    q_new, k_new, v_new: (B, H, 1, d) —— 当前这一个新 token 的投影。
+    新 query 可以看见缓存里全部过去 token + 自己，所以不需要 causal mask。
+    """
+    K, V = cache.append(k_new, v_new)                    # (B, H, L, d)
+    d = q_new.shape[-1]
+    scores = (q_new @ K.transpose(-2, -1)) / math.sqrt(d)   # (B, H, 1, L)
+    return scores.softmax(dim=-1) @ V                       # (B, H, 1, d)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+B, H, T, d = 2, 3, 9, 8
+q, k, v = (torch.randn(B, H, T, d) for _ in range(3))
+mask = torch.tril(torch.ones(T, T, dtype=torch.bool))
+full = ((q @ k.transpose(-2, -1)) / math.sqrt(d)).masked_fill(~mask, float("-inf")).softmax(-1) @ v
+cache = KVCache(B, H, 32, d)
+outs = [decode_step_attention(q[:, :, t:t+1], k[:, :, t:t+1], v[:, :, t:t+1], cache) for t in range(T)]
+assert torch.allclose(torch.cat(outs, dim=2), full, atol=1e-5)
+assert cache.len == T
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>缓存了 q：q 用一次就丢，不需要缓存。</li><li>缓存的是 RoPE 之前的 k：每步都要重新旋转全部历史，浪费；而且容易用错位置。</li><li>batch 内序列长度不同（左 padding）时忘记 padding mask：新 token 会 attend 到 pad 位置。</li><li>cache 是 fp32 而模型是 bf16：显存翻倍。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>In a causal model, the keys and values of past tokens never change, so I compute them once and store them. Each decoding step I project only the new token, append its key and value into a preallocated buffer, and attend from the single new query to everything in the cache. Because the new query is the last position, there's nothing to mask. Preallocating avoids the quadratic copying you'd get from concatenating every step. The test is that running this token by token reproduces full causal attention exactly.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Decoding is memory-bandwidth bound. Explain why, and what that implies.</b><details><summary>思路</summary><div class="inner"><p>每步每个序列只有 1 个 token：矩阵乘退化成矩阵-向量乘，算术强度（FLOPs/字节）约为 1–2，远低于 GPU 的“屋顶线”拐点（H100 约数百 FLOPs/byte）。所以瓶颈是从 HBM 读权重和 KV cache。含义：增大 batch（continuous batching）、减少 KV（GQA/MLA/量化）、speculative decoding 都是在提高每次读取的利用率。</p></div></details></li>
+<li><b>What is PagedAttention?</b><details><summary>思路</summary><div class="inner"><p>vLLM 把 KV cache 切成固定大小的 block，用类似操作系统页表的映射管理，避免为每个请求预留 max_len 的连续显存，减少碎片，并支持 prefix 共享（多个请求共用同一段 system prompt 的 KV）。</p></div></details></li>
+<li><b>How does prefill differ from decode?</b><details><summary>思路</summary><div class="inner"><p>Prefill：一次处理整个 prompt，Tq=Tk=prompt 长度，需要 causal mask，是计算密集型（大矩阵乘）。Decode：Tq=1，内存带宽密集型。很多系统把两者分开调度（chunked prefill、prefill/decode 分离部署）。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-minigpt">
+<div class="concept-head"><span class="pri p1">★</span><h3>P10 · Mini-GPT + 训练循环（在玩具字符串上 loss 下降）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 35 min</span><p>从 embedding 到 LM head 写一个可训练的 decoder-only Transformer（pre-norm、weight tying、可选 KV cache），并写完整训练循环让 loss 明显下降。</p><p class="en">Write a small decoder-only Transformer and a training loop on a character-level toy corpus; show the loss drops.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Write a minimal GPT: token and position embeddings, a stack of pre-norm Transformer blocks, and a language-modeling head. Train it on this short string at the character level and show me the loss going down.</i></p></div>
+<p><b>中文说明。</b>可以用 <code>nn.Linear/nn.LayerNorm/nn.Embedding</code>（除非面试官要求从零）。<code>MiniGPT(vocab, d, n_heads, n_layers, max_len)</code>，<code>forward(idx, caches=None) → (logits, new_caches)</code>。训练函数采样随机窗口，目标是输入右移一位。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>Block（pre-norm）：<code>x = x + attn(ln1(x)); x = x + mlp(ln2(x))</code>。最后 <code>ln_f</code> → <code>head</code>。</li><li>数据：随机起点 i，<code>x = data[i:i+T]</code>，<code>y = data[i+1:i+T+1]</code>。</li><li>Sanity check 1：初始 loss ≈ ln(V)。如果远大于它，检查初始化（这里用 GPT-2 的 std=0.02）。</li><li>Sanity check 2：先在一个 batch 上过拟合，loss 应接近 0；不下降说明有 bug（mask、优化器、zero_grad）。</li><li>训练循环四件套：<code>zero_grad → forward/loss → backward → (clip) → step</code>。</li><li>Weight tying：<code>head.weight = tok.weight</code>，省参数且通常更好；要注意这时初始化会同时影响两者。</li><li>预留 KV cache 接口：有 cache 时 position ids 要从 past_len 开始。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner">先写 CausalSelfAttention（复用 P7），一次 <code>nn.Linear(d, 3d)</code> 再 <code>split(C, dim=-1)</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">Mask 用 <code>tril(ones(T, Tk), diagonal=Tk-T)</code>，这样同一份代码同时支持训练和带 cache 的生成（P13 会用）。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">loss：<code>F.cross_entropy(logits.view(-1, V), y.view(-1))</code>。lr 3e-3、AdamW、300 步、batch 16、T=32 在这个玩具数据上足够。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, d, n_heads):
+        super().__init__()
+        self.h, self.hd = n_heads, d // n_heads
+        self.qkv = nn.Linear(d, 3 * d)                 # 一次投影出 q, k, v
+        self.proj = nn.Linear(d, d)
+
+    def forward(self, x, kv_cache=None):
+        """kv_cache: None 或 (k_past, v_past)，各 (B, h, L, hd)。返回 (y, (k, v))。"""
+        B, T, C = x.shape
+        q, k, v = self.qkv(x).split(C, dim=-1)
+        q, k, v = (t.view(B, T, self.h, self.hd).transpose(1, 2) for t in (q, k, v))
+        if kv_cache is not None:
+            k = torch.cat([kv_cache[0], k], dim=2)
+            v = torch.cat([kv_cache[1], v], dim=2)
+        Tk = k.shape[2]
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.hd)        # (B, h, T, Tk)
+        mask = torch.tril(torch.ones(T, Tk, dtype=torch.bool, device=x.device), diagonal=Tk - T)
+        att = att.masked_fill(~mask, float("-inf")).softmax(dim=-1)
+        y = (att @ v).transpose(1, 2).contiguous().view(B, T, C)
+        return self.proj(y), (k, v)
+
+class Block(nn.Module):
+    def __init__(self, d, n_heads):
+        super().__init__()
+        self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
+        self.attn = CausalSelfAttention(d, n_heads)
+        self.mlp = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+
+    def forward(self, x, kv_cache=None):
+        a, new_cache = self.attn(self.ln1(x), kv_cache)   # pre-norm + 残差
+        x = x + a
+        x = x + self.mlp(self.ln2(x))
+        return x, new_cache
+
+class MiniGPT(nn.Module):
+    def __init__(self, vocab, d=64, n_heads=4, n_layers=2, max_len=128):
+        super().__init__()
+        self.max_len = max_len
+        self.tok = nn.Embedding(vocab, d)
+        self.pos = nn.Embedding(max_len, d)              # 可学习绝对位置
+        self.blocks = nn.ModuleList([Block(d, n_heads) for _ in range(n_layers)])
+        self.ln_f = nn.LayerNorm(d)
+        self.head = nn.Linear(d, vocab, bias=False)
+        self.head.weight = self.tok.weight               # weight tying
+        self.apply(self._init_weights)
+
+    @staticmethod
+    def _init_weights(m):                                # GPT-2 风格小初始化：初始 loss ≈ ln(V)
+        if isinstance(m, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(m.weight, mean=0.0, std=0.02)
+        if isinstance(m, nn.Linear) and m.bias is not None:
+            nn.init.zeros_(m.bias)
+
+    def forward(self, idx, caches=None):
+        """idx: (B, T) long。caches: None 或每层一个 (k, v)。返回 logits (B, T, V), new_caches。"""
+        B, T = idx.shape
+        past = 0 if caches is None else caches[0][0].shape[2]
+        assert past + T &lt;= self.max_len
+        pos = torch.arange(past, past + T, device=idx.device)   # 有 cache 时位置要接着往后数
+        x = self.tok(idx) + self.pos(pos)
+        new_caches = []
+        for i, blk in enumerate(self.blocks):
+            x, c = blk(x, None if caches is None else caches[i])
+            new_caches.append(c)
+        return self.head(self.ln_f(x)), new_caches
+
+def train_on_string(text: str, steps=300, T=32, B=16, lr=3e-3, seed=0):
+    torch.manual_seed(seed)
+    chars = sorted(set(text))
+    stoi = {c: i for i, c in enumerate(chars)}
+    data = torch.tensor([stoi[c] for c in text], dtype=torch.long)
+    model = MiniGPT(len(chars), d=64, n_heads=4, n_layers=2, max_len=T)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    losses = []
+    model.train()
+    for step in range(steps):
+        ix = torch.randint(0, len(data) - T - 1, (B,))
+        x = torch.stack([data[i:i + T] for i in ix])            # (B, T)
+        y = torch.stack([data[i + 1:i + T + 1] for i in ix])    # 目标 = 右移一位
+        logits, _ = model(x)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        losses.append(loss.item())
+    return model, losses, stoi</code></pre><p>期望：初始 loss 接近 ln V（这段文本有 28 个不同字符，ln 28 ≈ 3.33），300 步后降到初始值的一半以下（测试断言的就是这个；这段重复文本实际上可以被记得很好）。如果你的实现初始 loss 是 5–20，十有八九是 embedding 用了默认 N(0,1) 初始化又做了 weight tying，logits 尺度过大。</p></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">text = "hello world. the quick brown fox jumps over the lazy dog. " * 40
+model, losses, stoi = train_on_string(text, steps=300)
+V = len(stoi)
+first, last = sum(losses[:10]) / 10, sum(losses[-10:]) / 10
+print(f"loss {first:.3f} -&gt; {last:.3f} (uniform = {math.log(V):.3f})")
+assert abs(first - math.log(V)) &lt; 1.0      # 初始 loss 应接近 ln(V)
+assert last &lt; 0.5 * first                  # 明显下降
+# 因果性：改变后面的 token 不影响前面的 logits
+model.eval()
+x = torch.randint(0, V, (1, 10)); x2 = x.clone(); x2[0, 7] = (x[0, 7] + 1) % V
+with torch.no_grad():
+    assert torch.allclose(model(x)[0][:, :7], model(x2)[0][:, :7], atol=1e-5)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>目标没有右移：模型学会复制输入，loss 迅速降到 0，但完全没学语言建模。</li><li>忘了 causal mask：训练 loss 极低（偷看答案），生成时一塌糊涂。上面测试“改未来 token 不影响过去 logits”专门防这个。</li><li>忘了 <code>zero_grad</code>：梯度跨步累积，loss 震荡/发散。</li><li>Blocks 放在 Python list 里而不是 <code>nn.ModuleList</code>：这些参数不训练。</li><li>位置 embedding 用 <code>arange(T)</code> 而有 cache 时没加 past_len。</li><li>评估时忘了 <code>model.eval()</code> 和 <code>torch.no_grad()</code>。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>The model is token embedding plus learned position embedding, then a stack of pre-norm blocks, each with a residual attention sublayer and a residual MLP sublayer, then a final LayerNorm and an LM head tied to the embedding. I'll write the causal mask with a diagonal offset so the same code supports a KV cache later. For training I sample random windows, the targets are the inputs shifted by one, and the loss is cross-entropy over the flattened batch. Before trusting it I check two things: the initial loss should be close to log of the vocab size, and changing a future token must not change earlier logits. Then the loss should drop well below the uniform baseline within a few hundred steps.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Your loss isn't going down. Walk me through how you'd debug it.</b><details><summary>思路</summary><div class="inner"><p>(1) 初始 loss 是否 ≈ ln V；(2) 能否过拟合单个 batch；(3) 检查 x/y 是否错位、是否 causal；(4) 打印梯度范数，看是否为 0/nan（参数没注册、detach 了、lr 太小）或爆炸（lr 太大、没 warmup）；(5) 关闭各种技巧（dropout、weight decay、混合精度）逐一排查；(6) 用小 lr 扫描。</p></div></details></li>
+<li><b>How many parameters does GPT-2 small have, roughly, and where do they live?</b><details><summary>思路</summary><div class="inner"><p>约 124M：每层 \( 12d^2 \)（attention 4d²，MLP 8d²），d=768、12 层 ≈ 85M；token embedding 50257×768 ≈ 38.6M（与 head 共享）；位置 1024×768 ≈ 0.8M。</p></div></details></li>
+<li><b>How would you scale initialization for deeper networks?</b><details><summary>思路</summary><div class="inner"><p>GPT-2 把每个残差分支最后一层投影（attn 的 c_proj、MLP 的 fc2）的 init std 乘以 \( 1/\sqrt{2L} \)，因为残差流上有 2L 次相加，这样输出方差不随深度增长。</p></div></details></li>
+<li><b>Add mixed-precision training.</b><details><summary>思路</summary><div class="inner"><p><code>with torch.autocast('cuda', dtype=torch.bfloat16): logits, _ = model(x); loss = ...</code>。bf16 不需要 GradScaler；fp16 需要 <code>torch.cuda.amp.GradScaler</code> 做 loss scaling 防止梯度下溢。权重和优化器状态保持 fp32（master weights）。</p></div></details></li>
+</ol></div></section><h2 class="sec" id="s-gen"><span class="num">§3 · GENERATION</span>生成：采样、beam search、带 cache 的 generate</h2><p class="sec-intro">这三题考“模型训练好之后怎么用”。top-p 的边界条件、beam search 的长度归一化、KV cache 生成的位置处理，都是面试官最爱挑的细节。</p>
+<section class="concept" id="c-sampling">
+<div class="concept-head"><span class="pri p1">★</span><h3>P11 · Greedy / temperature / top-k / top-p 采样</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 12 min</span><p>按 temperature → top-k → top-p → softmax → multinomial 的顺序处理 logits；top-p 要“至少保留一个”并正确 scatter 回原顺序。</p><p class="en">Implement next-token sampling with temperature, top-k and nucleus (top-p) filtering on batched logits.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Given the logits for the next token, implement a sampler that supports greedy decoding, temperature, top-k and top-p. It should work on a batch.</i></p></div>
+<p><b>中文说明。</b><code>sample_next(logits, temperature=1.0, top_k=None, top_p=None)</code>，logits: (B,V)，返回 (B,) 的 token id。temperature=0 表示 greedy。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>Temperature：logits / τ，必须在 softmax 之前。τ=0 特判为 argmax（否则除以 0）。</li><li>Top-k：找第 k 大的值 <code>topk(...).values[:, -1:]</code>，小于它的置 −inf。并列时可能保留多于 k 个，可接受。</li><li>Top-p（nucleus）：降序排序 → softmax → 累积和；保留最小的前缀使累计概率 ≥ p。等价规则：去掉“在它<b>之前</b>的累计概率已 ≥ p”的 token，即 <code>(cum - probs) &gt;= p</code>。这样第一个 token 永远保留。</li><li>过滤在排序后的空间里做，然后用 <code>scatter</code> 放回原 vocab 顺序。</li><li>过滤之后重新 softmax，被保留的 token 概率自动重新归一化。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">放回：<code>torch.full_like(logits, -inf).scatter(-1, sorted_idx, sorted_logits)</code>。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">测试用一个已知分布 [0.5, 0.3, 0.15, 0.05]：top_p=0.7 应该只保留前两个，并且 token 0 的频率约为 0.5/0.8。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+
+def sample_next(logits, temperature=1.0, top_k=None, top_p=None, generator=None):
+    """
+    logits: (B, V) —— 最后一个位置的 logits。返回 (B,) long。
+    顺序：temperature -&gt; top-k -&gt; top-p -&gt; softmax -&gt; 采样。temperature == 0 表示 greedy。
+    """
+    if temperature == 0.0:
+        return logits.argmax(dim=-1)
+    logits = logits / temperature
+    if top_k is not None:
+        top_k = min(top_k, logits.size(-1))
+        kth = torch.topk(logits, top_k, dim=-1).values[:, -1:]           # (B, 1) 第 k 大的值
+        logits = logits.masked_fill(logits &lt; kth, float("-inf"))
+    if top_p is not None and top_p &lt; 1.0:
+        sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)
+        probs = sorted_logits.softmax(dim=-1)
+        cum = probs.cumsum(dim=-1)
+        # 去掉 "在它之前的累计概率已经 &gt;= top_p" 的 token；保证至少保留第 1 个
+        remove = (cum - probs) &gt;= top_p
+        sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
+        logits = torch.full_like(logits, float("-inf")).scatter(-1, sorted_idx, sorted_logits)
+    probs = logits.softmax(dim=-1)
+    return torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">g = torch.Generator().manual_seed(0)
+logits = torch.log(torch.tensor([[0.5, 0.3, 0.15, 0.05]]))
+assert sample_next(logits, temperature=0.0).item() == 0
+draws = torch.stack([sample_next(logits, top_k=2, generator=g) for _ in range(4000)])
+assert set(draws.unique().tolist()) == {0, 1}
+assert abs((draws == 0).float().mean().item() - 0.5 / 0.8) &lt; 0.03          # 重新归一化
+# top_p=0.7: 0.5 &lt; 0.7 -&gt; 需要 {0,1}（累计 0.8）；token 2 之前累计 0.8 &gt;= 0.7 被去掉
+draws = torch.stack([sample_next(logits, top_p=0.7, generator=g) for _ in range(4000)])
+assert set(draws.unique().tolist()) == {0, 1}
+draws = torch.stack([sample_next(logits, top_p=0.01, generator=g) for _ in range(200)])
+assert set(draws.unique().tolist()) == {0}                                   # 至少保留 1 个
+# 低温 -&gt; 接近 greedy
+draws = torch.stack([sample_next(logits, temperature=0.05, generator=g) for _ in range(500)])
+assert (draws == 0).float().mean() &gt; 0.99
+# batch 维度正确
+assert sample_next(torch.randn(5, 10), top_k=3, top_p=0.9, generator=g).shape == (5,)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>top-p 用 <code>cum &gt; p</code> 去掉：会把“刚好跨过 p 的那个 token”去掉，导致保留的集合累计概率 &lt; p，而且当第一个 token 概率就 &gt; p 时会去掉所有 token → 全 −inf → nan。</li><li>在排序空间里过滤完忘了 scatter 回去，直接对排序后的 logits 采样：返回的是“排名”而不是 token id。</li><li>temperature 在 softmax 之后应用（概率除以 τ）：等于什么都没做（重新归一化后不变）。</li><li>top-k 和 top-p 的顺序：HF 的默认实现先 top-k 后 top-p；顺序会影响结果，说明你的选择即可。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>I apply temperature first by dividing the logits, with temperature zero special-cased as argmax. For top-k I find the k-th largest logit per row and mask everything below it. For top-p I sort descending, compute cumulative probabilities, and remove a token if the cumulative mass before it already reaches p; that rule always keeps the top token, so we never end up with an all-masked row. Then I scatter the filtered logits back to vocabulary order, softmax, and sample with multinomial. Everything is batched along the first dimension.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>What's min-p sampling and why might it be better than top-p?</b><details><summary>思路</summary><div class="inner"><p>min-p：保留概率 ≥ p_min × p_max 的 token。阈值随模型置信度自适应：模型很确定时只保留极少数，分布平坦时保留更多。相对 top-p，在高温下更不容易采到垃圾 token。</p></div></details></li>
+<li><b>Implement a repetition penalty.</b><details><summary>思路</summary><div class="inner"><p>CTRL 式：对已经出现过的 token，若 logit &gt; 0 则除以 penalty，否则乘以 penalty（都降低其概率）。另一类是 frequency/presence penalty（OpenAI API）：logit −= α·count + β·[count&gt;0]。</p></div></details></li>
+<li><b>Why does greedy decoding often produce repetitive text?</b><details><summary>思路</summary><div class="inner"><p>局部最优的 token 序列容易进入自我强化的循环：重复的上下文让同一续写的概率越来越高（“repetition loop”）。采样引入随机性跳出循环；但对推理/数学任务，低温或 greedy 往往更准。</p></div></details></li>
+<li><b>How do you sample from a categorical distribution without torch.multinomial?</b><details><summary>思路</summary><div class="inner"><p>逆 CDF：u ~ U(0,1)，返回第一个 cumsum ≥ u 的下标（<code>torch.searchsorted(cdf, u)</code>）。或 Gumbel-max：<code>argmax(logits + Gumbel噪声)</code>，其中 Gumbel = −log(−log u)，不需要 softmax。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-beam">
+<div class="concept-head"><span class="pri p1">★</span><h3>P12 · Beam search（长度归一化）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 20 min</span><p>维护 B 个最优前缀，每步扩展、按累计 log-prob 选 top-B；遇到 EOS 移入 finished；最后按 score/len^α 排序。面试官看你对 EOS 和长度偏差的处理。</p><p class="en">Beam search over a step function, moving EOS hypotheses to a finished list and ranking by length-normalized log-prob.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement beam search given a function that returns next-token logits for a prefix. Handle end-of-sequence properly and use length normalization when picking the final answer.</i></p></div>
+<p><b>中文说明。</b><code>beam_search(step_fn, bos, eos, beam_size, max_len, alpha)</code>。<code>step_fn(prefix) → logits (V,)</code>。返回按 \( \frac{\sum \log p}{|y|^\alpha} \) 降序排列的候选。用纯 Python/numpy 写（面试中常见，便于讨论算法本身）。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>累计分数用 log-prob 相加，不要概率相乘（下溢）。</li><li>每个 beam 只需要扩展它自己的 top-B 个 token：全局 top-B 必然落在这 B×B 个候选中（因为某个 beam 的第 B+1 好的扩展至少被该 beam 自己的 B 个扩展压过）。</li><li>以 EOS 结尾的候选移到 finished，不再扩展，也不占活跃 beam 名额。</li><li>长度偏差：每多一个 token 分数只会变小（log p ≤ 0），不归一化时 beam search 偏好短句。除以 \( |y|^\alpha \)（α∈[0.6,1]）缓解。GNMT 用 \( ((5+|y|)/6)^\alpha \)。</li><li>终止条件：活跃 beam 为空，或达到 max_len。α=0 时可以提前停止：如果最好的完成句分数 ≥ 最好的活跃分数，后者只会更差。归一化时这个上界不成立（除以更大的长度可能让分数变大），因此只作启发式。</li><li>测试思路：beam 足够宽时等价于穷举，可以和暴力搜索比对；beam=1 时等价于 greedy。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner">数据结构：<code>beams = [(tokens, logp)]</code>，<code>finished = []</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">每步：收集所有候选 → 按 logp 降序排序 → 依次放入 finished 或 beams，直到 beams 满 B 个。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">最后若 finished 为空，把活跃 beam 当作候选返回。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">import itertools
+import numpy as np
+
+def log_softmax(x):
+    m = x.max()
+    return x - m - np.log(np.exp(x - m).sum())
+
+def beam_search(step_fn, bos, eos, beam_size=4, max_len=20, alpha=1.0):
+    """
+    step_fn(prefix: list[int]) -&gt; logits (V,) 下一个 token 的 logits
+    返回按 length-normalized 分数排序的 [(tokens, score)]，score = sum_logp / len^alpha
+    len 不计 BOS，计入 EOS。
+    """
+    beams = [([bos], 0.0)]                     # (tokens, 累计 log prob)
+    finished = []
+    for _ in range(max_len):
+        candidates = []
+        for tokens, lp in beams:
+            logp = log_softmax(step_fn(tokens))
+            # 每个 beam 只需取前 beam_size 个扩展：全局 top-B 一定在其中
+            for tok in np.argsort(-logp)[:beam_size]:
+                candidates.append((tokens + [int(tok)], lp + float(logp[tok])))
+        candidates.sort(key=lambda c: c[1], reverse=True)
+        beams = []
+        for tokens, lp in candidates:
+            if tokens[-1] == eos:
+                finished.append((tokens, lp))  # 结束的假设移出 beam，不再扩展
+            else:
+                beams.append((tokens, lp))
+            if len(beams) == beam_size:
+                break
+        # 提前停止：最好的已完成假设的 *原始* 分数已经高于所有活跃 beam
+        #（不做长度归一化时成立；做归一化时这只是常用启发式，所以这里只在 alpha==0 时用）
+        if not beams or (alpha == 0 and finished and
+                         max(f[1] for f in finished) &gt;= beams[0][1]):
+            break
+    if not finished:                           # 到 max_len 还没结束的也算候选
+        finished = beams
+    norm = lambda t, lp: lp / (len(t) - 1) ** alpha
+    out = [(t, norm(t, lp)) for t, lp in finished]
+    return sorted(out, key=lambda x: x[1], reverse=True)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">rng = np.random.default_rng(0)
+V, EOS, BOS, L = 5, 0, 4, 4
+table = {}
+def step_fn(prefix):                            # 确定性的玩具 "模型"
+    key = tuple(prefix)
+    if key not in table:
+        table[key] = rng.normal(size=V) * 2
+    return table[key]
+
+def brute_force(alpha, max_len=L):
+    best = None
+    for n in range(1, max_len + 1):
+        for seq in itertools.product(range(V), repeat=n):
+            if BOS in seq: continue
+            if EOS in seq[:-1]: continue
+            if seq[-1] != EOS and n &lt; max_len: continue
+            toks, lp = [BOS], 0.0
+            for t in seq:
+                lp += log_softmax(step_fn(toks))[t]; toks = toks + [t]
+            if seq[-1] != EOS: continue
+            s = lp / n ** alpha
+            if best is None or s &gt; best[1]: best = (toks, s)
+    return best
+
+for alpha in (0.0, 1.0):
+    # beam 足够宽 = 穷举（每步保留所有活跃前缀），结果应该等于暴力搜索
+    res = beam_search(step_fn, BOS, EOS, beam_size=V ** L, max_len=L, alpha=alpha)
+    bf = brute_force(alpha)
+    finished_only = [r for r in res if r[0][-1] == EOS]
+    assert finished_only[0][0] == bf[0] and abs(finished_only[0][1] - bf[1]) &lt; 1e-9, (alpha, res[0], bf)
+small = beam_search(step_fn, BOS, EOS, beam_size=2, max_len=L)
+assert all(s1 &gt;= s2 for (_, s1), (_, s2) in zip(small, small[1:]))
+# alpha=0 且 beam_size=1 时等价于 greedy（EOS 一出现就满足提前停止条件）
+greedy = [BOS]
+for _ in range(L):
+    greedy.append(int(np.argmax(step_fn(greedy))))
+    if greedy[-1] == EOS: break
+assert beam_search(step_fn, BOS, EOS, beam_size=1, max_len=L, alpha=0.0)[0][0] == greedy
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>EOS 之后还继续扩展：完成的句子后面接着生成垃圾，或 EOS 的分数被再次累加。</li><li>把完成的候选留在 beam 里占名额：beam 被短句“霸占”，有效宽度变小。</li><li>最终选择时不做长度归一化，或者归一化时把 BOS 算进长度（只要一致即可，但要说明）。</li><li>批量实现时（张量版）忘了把 EOS beam 的后续 log-prob 设为 0 / 其他 token 设 −inf。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>I keep a list of active hypotheses with their summed log-probabilities. At each step I expand each one by its top-B next tokens, which is enough because the global top-B must be among those, sort all candidates, and fill the new beam; any candidate that ends in EOS goes to a finished list instead of taking a beam slot. Without normalization beam search prefers short outputs because every token adds a negative log-prob, so the final ranking divides by length to the alpha. I can stop early when nothing is active or we hit max length. To test it, a very wide beam should match brute-force search, and beam size one should equal greedy.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Why is beam search rarely used for open-ended LLM chat but common in translation/ASR?</b><details><summary>思路</summary><div class="inner"><p>翻译/ASR 的输出空间窄、有“正确答案”，最大化似然与质量正相关。开放式生成里高似然文本往往乏味、重复（“likelihood trap”），采样的多样性更重要；而且 beam 带来 B 倍的计算和 KV cache。</p></div></details></li>
+<li><b>How would you batch beam search on a GPU?</b><details><summary>思路</summary><div class="inner"><p>把 (batch, beam) 展平成 batch·beam 行；每步得到 (batch, beam, V) 的累计 log-prob，reshape 成 (batch, beam·V) 做 topk；用 <code>idx // V</code> 得到来源 beam、<code>idx % V</code> 得到 token；按来源 beam 重新索引（gather）KV cache。</p></div></details></li>
+<li><b>What's the relationship between beam search and best-of-N / self-consistency in reasoning?</b><details><summary>思路</summary><div class="inner"><p>都在推理时花更多计算换质量。beam 在 token 级别贪心地保留高似然前缀；best-of-N 独立采样 N 条完整答案再用 verifier/reward model 选；self-consistency 对最终答案多数投票。在 LLM 推理里后两者更常用，因为它们利用了外部评分而不是只靠模型自身似然。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-generate">
+<div class="concept-head"><span class="pri p1">★</span><h3>P13 · generate()：KV cache 版本与无 cache 版本逐位一致</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 12 min</span><p>prefill 一次处理 prompt，之后每步只喂 1 个新 token 和 cache；测试 logits 与每步重算整个前缀的结果一致。</p><p class="en">Write generate() with a KV cache (prefill + decode) and verify its logits match the no-cache version.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Using your mini-GPT, write a greedy generate function that uses a KV cache. Prove to me it produces the same logits as the naive version that recomputes the whole sequence each step.</i></p></div>
+<p><b>中文说明。</b>复用 P10 的 <code>MiniGPT.forward(idx, caches)</code>。<code>generate_kv(model, idx, n_new)</code> 返回生成后的序列和每步的 logits (B, n_new, V)。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>两阶段：<b>prefill</b>（整个 prompt 一次前向，得到每层的 (k,v)）→ <b>decode</b>（每步输入 (B,1) 的新 token + caches）。</li><li>位置：decode 时 position id = past_len，P10 的 forward 已经用 cache 长度自动处理。</li><li>Mask：Tq=1 时 <code>tril(ones(1, Tk), diagonal=Tk-1)</code> 全为 True。</li><li>数值：两种路径的 matmul 分块不同，结果有 ~1e-6 级别差异，比较用 <code>allclose</code>，argmax 结果应完全一致。</li><li><code>@torch.no_grad()</code> + <code>model.eval()</code>：推理不建图、关闭 dropout。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner">无 cache 版本：循环里每次 <code>model(idx)</code>，取 <code>logits[:, -1]</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">有 cache 版本：<code>logits, caches = model(idx)</code> 之后循环 <code>logits, caches = model(nxt, caches)</code>。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+# MiniGPT 来自 P10（同一个文件里接着写即可）
+
+@torch.no_grad()
+def generate_no_cache(model, idx, n_new):
+    logits_all = []
+    for _ in range(n_new):
+        logits, _ = model(idx)                       # 每步重算整个前缀：O(T^2) 次 token 计算
+        nxt = logits[:, -1].argmax(-1, keepdim=True)
+        logits_all.append(logits[:, -1])
+        idx = torch.cat([idx, nxt], dim=1)
+    return idx, torch.stack(logits_all, dim=1)
+
+@torch.no_grad()
+def generate_kv(model, idx, n_new):
+    logits, caches = model(idx)                      # prefill: 一次处理整个 prompt
+    logits_all = []
+    for i in range(n_new):
+        last = logits[:, -1]
+        logits_all.append(last)
+        nxt = last.argmax(-1, keepdim=True)          # (B, 1)
+        idx = torch.cat([idx, nxt], dim=1)
+        if i &lt; n_new - 1:                            # 最后一个 token 不需要再前向
+            logits, caches = model(nxt, caches)      # decode: 只喂 1 个新 token
+    return idx, torch.stack(logits_all, dim=1)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+model = MiniGPT(vocab=50, d=32, n_heads=4, n_layers=3, max_len=64).eval()
+prompt = torch.randint(0, 50, (2, 5))
+a_idx, a_log = generate_no_cache(model, prompt, 20)
+b_idx, b_log = generate_kv(model, prompt, 20)
+assert torch.equal(a_idx, b_idx)
+assert torch.allclose(a_log, b_log, atol=1e-4), (a_log - b_log).abs().max()
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>decode 时把整个序列再喂进去还带着 cache：历史被重复，k/v 长度翻倍。</li><li>位置 id 重新从 0 开始：输出与无 cache 版不一致（测试会立刻发现）。</li><li>超过 max_len 时没有处理：学习式位置 embedding 越界报错；RoPE 模型则会退化。</li><li>忘了 <code>eval()</code>：dropout 打开导致两次结果不同，误以为 cache 有 bug。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>Generation has two phases. Prefill runs the whole prompt once and returns each layer's keys and values. Then each decode step feeds only the newly chosen token together with the caches; the model offsets the position ids by the cache length and the mask is trivially all-ones for the single query. I check correctness against the naive loop that recomputes the full prefix each step: the generated tokens must be identical and the logits equal up to floating-point tolerance. This changes the cost per new token from re-running the whole prefix to running a single token.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Explain speculative decoding and why it's lossless.</b><details><summary>思路</summary><div class="inner"><p>小的 draft 模型连续提出 k 个 token，大模型一次前向并行验证这 k 个位置。对每个位置以 \( \min(1, p(x)/q(x)) \) 接受；第一次拒绝时从残差分布 \( \mathrm{norm}(\max(0, p - q)) \) 重新采样。可以证明输出分布与直接从大模型采样完全一致（Leviathan et al. 2023; Chen et al. 2023）。加速来自 decode 是带宽瓶颈，验证 k 个 token 的成本接近 1 个。</p></div></details></li>
+<li><b>How would you add stopping criteria and batched variable-length outputs?</b><details><summary>思路</summary><div class="inner"><p>维护 <code>finished = zeros(B, bool)</code>，每步 <code>finished |= (nxt == eos)</code>，已完成的序列后续填 pad；全部完成就 break。</p></div></details></li>
+<li><b>Your cached and uncached logits differ by 1e-2 in bf16. Is that a bug?</b><details><summary>思路</summary><div class="inner"><p>不一定。bf16 只有 8 位尾数（约 2–3 位十进制有效数字），不同的计算顺序/分块会带来这种量级差异。用 fp32 重跑：如果差异降到 1e-5 级就不是逻辑 bug；如果仍然大，检查位置、mask。</p></div></details></li>
+</ol></div></section>
+<h2 class="sec" id="s-train"><span class="num">§4 · TRAINING</span>训练基础设施：优化器、调度、累积、autograd</h2><p class="sec-intro">这些题不一定每家都考，但它们是“你真的训过模型吗”的试金石。AdamW 的 decoupled weight decay 和 bias correction、梯度累积时的除法、全局范数裁剪，都是一句话就能看出深浅的点。</p>
+<section class="concept" id="c-adamw">
+<div class="concept-head"><span class="pri p2">☆</span><h3>P14 · AdamW step from scratch</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 10 min</span><p>一阶/二阶矩 EMA + bias correction + decoupled weight decay；面试官看你是否知道 AdamW 和 “Adam + L2” 的区别。</p><p class="en">Implement AdamW as a torch.optim.Optimizer with bias correction and decoupled weight decay.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement the AdamW optimizer. Explain what 'decoupled' weight decay means.</i></p></div>
+<p><b>中文说明。</b>继承 <code>torch.optim.Optimizer</code>，实现 <code>step()</code>。超参：lr, betas, eps, weight_decay。结果要和 <code>torch.optim.AdamW</code> 一致。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>$$ m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t,\quad v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2 $$$$ \hat m_t = \frac{m_t}{1-\beta_1^t},\quad \hat v_t = \frac{v_t}{1-\beta_2^t},\quad \theta \leftarrow \theta - \eta\Big(\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon} + \lambda\theta\Big) $$</li><li>Bias correction：m、v 从 0 初始化，早期被拉向 0；除以 \( 1-\beta^t \) 修正。没有它的话第一步 \( m_1 = 0.1 g \)、\( v_1 = 0.001 g^2 \)，更新幅度是 \( 0.1/\sqrt{0.001} \approx 3.16 \) 倍 lr。</li><li>Decoupled：weight decay 直接作用在参数上（\( \theta \leftarrow \theta(1-\eta\lambda) \)），<b>不</b>进入 m、v。Adam+L2 是把 \( \lambda\theta \) 加到梯度里，它会被 \( \sqrt{\hat v} \) 除掉，导致梯度大的参数衰减少——这不是我们想要的正则化。</li><li>PyTorch 的顺序是先 decay 再更新矩，二者都用旧参数/当前梯度，顺序不影响结果。</li><li>状态是 per-parameter 的（<code>self.state[p]</code>），每个参数要 2 份同形状 fp32 → 优化器状态 = 2× 参数量。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>@torch.no_grad()</code> 装饰 step，所有更新用原地操作 <code>mul_</code>、<code>add_</code>、<code>addcmul_</code>、<code>addcdiv_</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">懒初始化：<code>if not state: state['t'] = 0; state['m'] = torch.zeros_like(p); ...</code>。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import math
+import torch
+
+class AdamW(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01):
+        super().__init__(params, dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay))
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            lr, (b1, b2), eps, wd = group["lr"], group["betas"], group["eps"], group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                state = self.state[p]
+                if not state:                                   # 懒初始化
+                    state["t"] = 0
+                    state["m"] = torch.zeros_like(p)
+                    state["v"] = torch.zeros_like(p)
+                state["t"] += 1
+                t, m, v = state["t"], state["m"], state["v"]
+                p.mul_(1 - lr * wd)                             # decoupled weight decay（不进 m/v）
+                m.mul_(b1).add_(g, alpha=1 - b1)                # m = b1 m + (1-b1) g
+                v.mul_(b2).addcmul_(g, g, value=1 - b2)         # v = b2 v + (1-b2) g^2
+                m_hat = m / (1 - b1 ** t)                       # bias correction
+                v_hat = v / (1 - b2 ** t)
+                p.addcdiv_(m_hat, v_hat.sqrt() + eps, value=-lr)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+w1 = torch.randn(5, 3, requires_grad=True)
+w2 = w1.detach().clone().requires_grad_(True)
+o1 = AdamW([w1], lr=1e-2, weight_decay=0.1)
+o2 = torch.optim.AdamW([w2], lr=1e-2, weight_decay=0.1)
+X = torch.randn(32, 5)
+for _ in range(50):
+    for w, o in ((w1, o1), (w2, o2)):
+        o.zero_grad()
+        ((X @ w).sin() ** 2).mean().backward()
+        o.step()
+assert torch.allclose(w1, w2, atol=1e-5), (w1 - w2).abs().max()
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>把 weight decay 加进梯度（那是 Adam + L2，不是 AdamW）。</li><li>eps 放进根号里：<code>sqrt(v_hat + eps)</code>，和标准实现不同（数值上 eps 的作用尺度变了）。</li><li>对 LayerNorm 的 γ/β、bias、embedding 也做 weight decay：常见实践是这些参数不 decay（用两个 param group）。</li><li>step 计数 t 全局共享而不是每个参数一份：一般没问题，但懒初始化的参数（中途加入）会出错。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>Adam keeps exponential moving averages of the gradient and the squared gradient for every parameter. Because they start at zero, I divide by one minus beta to the t to remove the bias toward zero in early steps. The update is the corrected first moment divided by the square root of the corrected second moment plus epsilon, so each coordinate gets roughly lr-sized steps regardless of gradient scale. AdamW's decoupled weight decay shrinks the weights directly by lr times lambda instead of adding lambda theta to the gradient; otherwise the decay would get divided by the adaptive denominator and parameters with large gradients would barely be regularized.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>How much memory does AdamW need for a 7B model in mixed precision?</b><details><summary>思路</summary><div class="inner"><p>经典混合精度：bf16 权重 2B + bf16 梯度 2B + fp32 master 权重 4B + m 4B + v 4B = 16 字节/参数 → 7B × 16 ≈ 112 GB（不含激活）。这就是 ZeRO/FSDP 要把优化器状态切分到多卡的原因。</p></div></details></li>
+<li><b>Why do LLMs often use β2 = 0.95 instead of 0.999?</b><details><summary>思路</summary><div class="inner"><p>β2 越大，v 的“记忆”越长（约 1/(1−β2) 步）。大模型训练中梯度分布会突变，v 跟不上时 \( \hat m/\sqrt{\hat v} \) 可能突然很大，引发 loss spike。0.95 让 v 适应更快，更稳定。</p></div></details></li>
+<li><b>What problem does Adam's ε solve, and when does its value matter?</b><details><summary>思路</summary><div class="inner"><p>防止除以 0。对于 v 极小的参数（很少被更新的 embedding 行），ε 决定最大有效步长；在 bf16/fp16 中 1e-8 可能下溢，有些实现用 1e-6 或更大。</p></div></details></li>
+<li><b>Write SGD with momentum and Nesterov.</b><details><summary>思路</summary><div class="inner"><p>动量：\( b \leftarrow \mu b + g;\ \theta \leftarrow \theta - \eta b \)。Nesterov（PyTorch 形式）：\( b \leftarrow \mu b + g;\ \theta \leftarrow \theta - \eta (g + \mu b) \)。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-cosine">
+<div class="concept-head"><span class="pri p2">☆</span><h3>P15 · Cosine schedule with linear warmup</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 5 min</span><p>前 warmup 步线性升到 max_lr，之后半个余弦降到 min_lr；面试官看边界（第 0 步、warmup 结束、总步数之后）是否正确。</p><p class="en">Learning-rate schedule: linear warmup then cosine decay to a floor.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Write a function that returns the learning rate at a given step for linear warmup followed by cosine decay to a minimum learning rate.</i></p></div>
+<p><b>中文说明。</b><code>lr_at(step, max_lr, warmup, total, min_lr=0)</code>，step 从 0 开始。可以接到 <code>torch.optim.lr_scheduler.LambdaLR</code> 上（返回 lr/max_lr 作为乘子）。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>Warmup：\( \eta_s = \eta_{max} \cdot \frac{s+1}{W} \)（第 0 步就有非零 lr，第 W−1 步到达峰值）。</li><li>Decay：\( p = \frac{s - W}{T - W} \in [0,1] \)，\( \eta_s = \eta_{min} + \frac12(\eta_{max}-\eta_{min})(1+\cos \pi p) \)。</li><li>为什么 warmup：初期 Adam 的 v 估计不准、参数在随机初始化附近梯度方向变化剧烈，大 lr 容易发散。</li><li>为什么衰减：后期降低噪声，收敛到更好的点。WSD（warmup-stable-decay）是近年流行的替代：长平台 + 短的末段衰减，便于续训。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner">三段 if：<code>step &lt; warmup</code>、<code>step &gt;= total</code>、中间段。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">import math
+
+def lr_at(step: int, max_lr: float, warmup: int, total: int, min_lr: float = 0.0) -&gt; float:
+    """线性 warmup 到 max_lr，然后 cosine 衰减到 min_lr；step 从 0 开始。"""
+    if step &lt; warmup:
+        return max_lr * (step + 1) / warmup          # 第 0 步就是 max_lr/warmup，不是 0
+    if step &gt;= total:
+        return min_lr
+    progress = (step - warmup) / max(1, total - warmup)          # 0 -&gt; 1
+    return min_lr + 0.5 * (max_lr - min_lr) * (1 + math.cos(math.pi * progress))</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">mx, wu, tot, mn = 3e-4, 100, 1000, 3e-5
+assert abs(lr_at(0, mx, wu, tot, mn) - mx / wu) &lt; 1e-12
+assert abs(lr_at(wu - 1, mx, wu, tot, mn) - mx) &lt; 1e-12        # warmup 最后一步到峰值
+assert abs(lr_at(wu, mx, wu, tot, mn) - mx) &lt; 1e-12            # cosine 起点 = 峰值
+mid = wu + (tot - wu) // 2
+assert abs(lr_at(mid, mx, wu, tot, mn) - (mx + mn) / 2) &lt; 1e-12   # 中点 = 平均
+assert abs(lr_at(tot, mx, wu, tot, mn) - mn) &lt; 1e-12
+lrs = [lr_at(s, mx, wu, tot, mn) for s in range(tot)]
+assert all(a &lt;= b for a, b in zip(lrs[:wu], lrs[1:wu]))           # warmup 单调增
+assert all(a &gt;= b for a, b in zip(lrs[wu:], lrs[wu + 1:]))        # 衰减单调减
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>第 0 步 lr=0：这一步白跑（AdamW 的状态仍会被更新），一般无害但说明边界没想清楚。</li><li>progress 分母用 total 而不是 total−warmup：衰减结束时还没降到 min_lr。</li><li>和梯度累积一起用时按 micro-step 而不是 optimizer step 推进调度器。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>For the first warmup steps the learning rate ramps linearly up to the peak, which avoids instability while Adam's second-moment estimates are still noisy. After that I compute progress from zero to one over the remaining steps and follow half a cosine from the peak down to the minimum. Past the total I clamp at the minimum. The scheduler should advance once per optimizer step, not per micro-batch.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>What's the WSD schedule and why is it popular for LLM pretraining?</b><details><summary>思路</summary><div class="inner"><p>Warmup-Stable-Decay：warmup 后长期恒定 lr，最后 10–20% 步数快速衰减。好处：不需要预先确定总步数；可以从平台期任意 checkpoint 分叉出衰减分支，便于做 scaling law 和续训。</p></div></details></li>
+<li><b>How should the learning rate change if you double the batch size?</b><details><summary>思路</summary><div class="inner"><p>SGD 常用线性缩放（lr × 2）；Adam 更接近平方根缩放（lr × √2）。超过 “critical batch size” 后增大 batch 的收益递减。实践中都需要实测。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-accum">
+<div class="concept-head"><span class="pri p2">☆</span><h3>P16 · 梯度累积 + 全局范数裁剪</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 8 min</span><p>k 个 micro-batch 各自 backward(loss/k) 累加梯度，然后<b>全局</b> L2 范数裁剪，再 step；结果应与大 batch 一步完全相同。</p><p class="en">Gradient accumulation over micro-batches plus global-norm clipping, matching one large-batch step.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Our GPU can only fit a micro-batch of 8 but we want an effective batch of 32. Implement gradient accumulation with gradient-norm clipping, and show it matches a single large-batch step.</i></p></div>
+<p><b>中文说明。</b><code>train_step_accum(model, opt, micro_batches, max_norm)</code>；自己实现 <code>clip_grad_norm_</code>（全局范数，返回裁剪前的范数）。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>PyTorch 的 <code>.backward()</code> 默认把梯度<b>累加</b>到 <code>.grad</code>，所以只需在一个大步的开始 zero_grad 一次。</li><li>每个 micro-batch 的 loss 是 mean，所以要除以 k：\( \nabla \frac1k\sum_i L_i = \frac1k\sum_i \nabla L_i \) 等于大 batch 的 mean loss 的梯度（micro-batch 等大时）。</li><li>全局范数：\( \|g\| = \sqrt{\sum_p \|g_p\|^2} \)，若大于 max_norm 则所有梯度乘以 \( \text{max\_norm}/\|g\| \)。保持方向，只缩放长度。</li><li>顺序：累积完 → 裁剪 → step → (scheduler.step)。在每个 micro-batch 上裁剪是错的。</li><li>DDP 中可以用 <code>model.no_sync()</code> 跳过前 k−1 个 micro-batch 的 all-reduce。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>total = torch.sqrt(sum((g**2).sum() for g in grads))</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner"><code>scale = max_norm / (total + 1e-6)</code>；仅在 scale &lt; 1 时缩放。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def clip_grad_norm_(params, max_norm: float, eps: float = 1e-6):
+    """全局 L2 范数裁剪（所有参数拼成一个向量算范数）。返回裁剪前的范数。"""
+    grads = [p.grad for p in params if p.grad is not None]
+    total = torch.sqrt(sum((g.detach().float() ** 2).sum() for g in grads))
+    scale = max_norm / (total + eps)
+    if scale &lt; 1:
+        for g in grads:
+            g.mul_(scale)
+    return total
+
+def train_step_accum(model, opt, micro_batches, max_norm=1.0):
+    """
+    micro_batches: list of (x, y)。等价于在它们拼起来的大 batch 上做一步
+    （前提：每个 micro-batch 大小相同，loss 为 mean）。
+    """
+    k = len(micro_batches)
+    opt.zero_grad(set_to_none=True)
+    total_loss = 0.0
+    for x, y in micro_batches:
+        loss = F.mse_loss(model(x), y)
+        (loss / k).backward()             # 除以 k：梯度累加后等于大 batch 的平均梯度
+        total_loss += loss.item() / k
+    norm = clip_grad_norm_([p for p in model.parameters()], max_norm)   # 累加完、step 前裁剪
+    opt.step()
+    return total_loss, norm</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+X, Y = torch.randn(32, 4), torch.randn(32, 2)
+m1 = nn.Linear(4, 2); m2 = nn.Linear(4, 2); m2.load_state_dict(m1.state_dict())
+o1 = torch.optim.SGD(m1.parameters(), lr=0.1); o2 = torch.optim.SGD(m2.parameters(), lr=0.1)
+l1, n1 = train_step_accum(m1, o1, [(X[i:i+8], Y[i:i+8]) for i in range(0, 32, 8)], max_norm=0.5)
+o2.zero_grad(); F.mse_loss(m2(X), Y).backward()
+n2 = torch.nn.utils.clip_grad_norm_(m2.parameters(), 0.5); o2.step()
+assert abs(n1.item() - n2.item()) &lt; 1e-5
+for p1, p2 in zip(m1.parameters(), m2.parameters()):
+    assert torch.allclose(p1, p2, atol=1e-6)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>不除以 k：等效 lr 放大 k 倍（对 Adam 影响较小，因为尺度不变；对 SGD 和裁剪阈值影响很大）。</li><li>每个 micro-batch 之后都 zero_grad 或 step。</li><li>逐参数裁剪（每个张量单独裁）：改变了梯度方向。</li><li>LM 中 micro-batch 有效 token 数不同：每个 micro-batch 的 mean 再平均 ≠ 全局 token 平均。正确做法：loss 用 sum，最后除以全局有效 token 总数。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>Backward accumulates into dot-grad, so I zero gradients once, run backward on each micro-batch loss divided by the number of micro-batches, and only then clip and step. Dividing by k makes the accumulated gradient equal to the gradient of the large-batch mean loss. Clipping uses the global L2 norm over all parameters and rescales every gradient by the same factor, so the direction is preserved. One subtlety for language models: if micro-batches have different numbers of valid tokens, averaging per-micro-batch means isn't the same as a token-level mean, so I'd sum the losses and divide by the global token count.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Is gradient accumulation exactly equivalent to a larger batch?</b><details><summary>思路</summary><div class="inner"><p>对于没有 batch 统计量的模型（LN、无 BN）且 loss 归一化正确时，梯度在数学上相同（浮点求和顺序不同带来微小差异）。有 BatchNorm 时不等价（统计量只基于 micro-batch）。</p></div></details></li>
+<li><b>Why clip gradients at all? What does the gradient-norm curve tell you?</b><details><summary>思路</summary><div class="inner"><p>防止个别 batch 的异常大梯度（loss spike）破坏参数。监控梯度范数：持续上升或尖峰往往预示不稳定；突然变 0 说明梯度断了。</p></div></details></li>
+<li><b>How does clipping interact with mixed precision and a GradScaler?</b><details><summary>思路</summary><div class="inner"><p>fp16 + GradScaler 时梯度被乘以 scale，必须先 <code>scaler.unscale_(opt)</code> 再裁剪，否则阈值的含义错了。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-micrograd">
+<div class="concept-head"><span class="pri p2">☆</span><h3>P17 · Micrograd：标量自动微分 + 小 MLP</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 30 min</span><p>每个 Value 记录 data、grad、父节点和局部 backward 闭包；拓扑排序后逆序调用。考察你是否真的理解反向传播（链式法则 + 梯度累加）。</p><p class="en">Scalar reverse-mode autodiff with a Value class, topological sort, and a tiny MLP trained with it.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement a tiny reverse-mode autodiff engine on scalars, supporting add, mul, pow, tanh, relu, exp and log. Then train a small MLP with it.</i></p></div>
+<p><b>中文说明。</b><code>Value(data)</code> 支持运算符重载；<code>out.backward()</code> 计算所有祖先节点的 <code>.grad</code>。参考 Karpathy 的 micrograd，但要能自己从零写出。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>每个运算产生新节点 out，并给它挂一个闭包 <code>_backward</code>：用 out.grad 和局部导数更新输入的 grad。</li><li><b>必须用 +=</b>：一个节点可能被多次使用（例如 a*a、残差连接），多元链式法则要求把各条路径的梯度相加。</li><li>拓扑排序（DFS 后序）保证处理某节点时，所有依赖它的下游节点都已经把梯度传给它。</li><li>局部导数：add → 1, 1；mul → b, a；pow k → k x^{k−1}；tanh → 1−t²；relu → [x&gt;0]；exp → e^x；log → 1/x。</li><li>训练循环：前向 → <b>清零所有 grad</b> → backward → SGD 更新。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>__radd__</code>、<code>__rmul__</code> 让 <code>2 * v</code>、<code>sum(...)</code>（从 0 开始加）能工作。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">减法、除法、取负都可以用已有运算组合：<code>a - b = a + (-1)*b</code>，<code>a / b = a * b**-1</code>。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">测试：和中心差分数值梯度比较，误差 &lt; 1e-5。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">import math, random
+
+class Value:
+    def __init__(self, data, children=(), op=""):
+        self.data = float(data)
+        self.grad = 0.0
+        self._backward = lambda: None
+        self._prev = set(children)
+        self._op = op
+
+    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other), "+")
+        def _backward():
+            self.grad += out.grad                  # += 而不是 =：同一节点可能被用多次
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other), "*")
+        def _backward():
+            self.grad += other.data * out.grad
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+
+    def __pow__(self, k):                          # k 是常数
+        out = Value(self.data ** k, (self,), f"**{k}")
+        def _backward():
+            self.grad += k * self.data ** (k - 1) * out.grad
+        out._backward = _backward
+        return out
+
+    def tanh(self):
+        t = math.tanh(self.data)
+        out = Value(t, (self,), "tanh")
+        def _backward():
+            self.grad += (1 - t * t) * out.grad
+        out._backward = _backward
+        return out
+
+    def relu(self):
+        out = Value(max(0.0, self.data), (self,), "relu")
+        def _backward():
+            self.grad += (out.data &gt; 0) * out.grad
+        out._backward = _backward
+        return out
+
+    def exp(self):
+        e = math.exp(self.data)
+        out = Value(e, (self,), "exp")
+        def _backward():
+            self.grad += e * out.grad
+        out._backward = _backward
+        return out
+
+    def log(self):
+        out = Value(math.log(self.data), (self,), "log")
+        def _backward():
+            self.grad += out.grad / self.data
+        out._backward = _backward
+        return out
+
+    def backward(self):
+        topo, seen = [], set()
+        def build(v):                              # 拓扑排序：子节点都排在自己之前
+            if v not in seen:
+                seen.add(v)
+                for c in v._prev:
+                    build(c)
+                topo.append(v)
+        build(self)
+        self.grad = 1.0
+        for v in reversed(topo):                   # 从输出往输入反向传播
+            v._backward()
+
+    # 便利运算符
+    def __neg__(self): return self * -1
+    def __sub__(self, other): return self + (-other)
+    def __truediv__(self, other): return self * (other ** -1 if isinstance(other, Value) else 1.0 / other)
+    def __radd__(self, other): return self + other
+    def __rmul__(self, other): return self * other
+    def __rsub__(self, other): return Value(other) - self
+    def __repr__(self): return f"Value(data={self.data:.4f}, grad={self.grad:.4f})"
+
+class Neuron:
+    def __init__(self, n_in, act=True):
+        self.w = [Value(random.uniform(-1, 1) / math.sqrt(n_in)) for _ in range(n_in)]
+        self.b = Value(0.0)
+        self.act = act
+    def __call__(self, x):
+        s = sum((wi * xi for wi, xi in zip(self.w, x)), self.b)
+        return s.tanh() if self.act else s
+    def parameters(self): return self.w + [self.b]
+
+class MLP:
+    def __init__(self, n_in, sizes):
+        dims = [n_in] + sizes
+        self.layers = [[Neuron(dims[i], act=(i &lt; len(sizes) - 1)) for _ in range(dims[i + 1])]
+                       for i in range(len(sizes))]
+    def __call__(self, x):
+        for layer in self.layers:
+            x = [n(x) for n in layer]
+        return x[0] if len(x) == 1 else x
+    def parameters(self): return [p for layer in self.layers for n in layer for p in n.parameters()]</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python"># 1) 和数值梯度对比
+def f(a, b, c):
+    return ((a * b + c).tanh() * a + (b ** 2) / c + (a - c).relu() + (b * 0.5).exp().log() * c)
+vals = [0.7, -1.3, 2.1]
+xs = [Value(v) for v in vals]
+out = f(*xs); out.backward()
+h = 1e-6
+for i in range(3):
+    up = vals.copy(); up[i] += h; dn = vals.copy(); dn[i] -= h
+    num = (f(*map(Value, up)).data - f(*map(Value, dn)).data) / (2 * h)
+    assert abs(num - xs[i].grad) &lt; 1e-5, (i, num, xs[i].grad)
+# 2) 同一节点被复用：d(a*a)/da = 2a
+a = Value(3.0); (a * a + a).backward(); assert a.grad == 7.0
+# 3) 训练小 MLP 拟合 4 个点
+random.seed(0)
+X = [[2.0, 3.0, -1.0], [3.0, -1.0, 0.5], [0.5, 1.0, 1.0], [1.0, 1.0, -1.0]]
+Y = [1.0, -1.0, -1.0, 1.0]
+net = MLP(3, [8, 8, 1])
+for step in range(200):
+    loss = sum(((net(x) - y) ** 2 for x, y in zip(X, Y)), Value(0.0))
+    for p in net.parameters(): p.grad = 0.0           # 别忘了清零
+    loss.backward()
+    for p in net.parameters(): p.data -= 0.05 * p.grad
+assert loss.data &lt; 0.01, loss.data
+print("ok", round(loss.data, 5))</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>在 _backward 里用 <code>=</code> 而不是 <code>+=</code>：节点被复用时梯度被覆盖，<code>a*a</code> 的梯度得到 a 而不是 2a。</li><li>不做拓扑排序，按 DFS 前序或任意顺序调用：某节点在收到全部梯度之前就向上传播。</li><li>闭包里引用了循环变量或会被修改的值（Python 晚绑定）。</li><li>训练时忘了清零 grad。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>Each Value stores its data, its gradient, its parent nodes, and a closure that knows the local derivative of the operation that created it. Backward first builds a topological order with a post-order DFS, sets the output gradient to one, and then calls each node's closure in reverse order, so a node only propagates once all its consumers have contributed. The closures accumulate with plus-equals, because a value used in several places gets the sum of the gradients along every path; that's the multivariable chain rule. I'll check it against finite differences and then train a tiny MLP with plain SGD.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>How does PyTorch's autograd differ from this?</b><details><summary>思路</summary><div class="inner"><p>同样是动态构图的反向模式，但节点是张量运算（向量-Jacobian 积），C++ 实现，支持 in-place 检查（version counter）、hook、高阶导数（create_graph=True）、checkpointing。grad 也是累加的，所以需要 zero_grad。</p></div></details></li>
+<li><b>Forward mode vs reverse mode: when is each better?</b><details><summary>思路</summary><div class="inner"><p>f: ℝⁿ→ℝᵐ。前向模式一次得到 Jacobian 的一列（对一个输入方向的导数），代价 ∝ n；反向模式一次得到一行（一个输出对所有输入），代价 ∝ m。神经网络 loss 是标量（m=1），参数 n 巨大 → 反向模式。</p></div></details></li>
+<li><b>What is gradient checkpointing and what does it trade?</b><details><summary>思路</summary><div class="inner"><p>前向时只保存部分激活（例如每个 Transformer block 的输入），反向时重新计算 block 内部的激活。显存从 O(L) 降到 O(√L) 级别或更低，代价约多一次前向（~33% 额外计算）。</p></div></details></li>
+</ol></div></section>
+<h2 class="sec" id="s-rl"><span class="num">§5 · RL LOSSES</span>Post-training 损失：log-prob、PPO、DPO、GRPO</h2><p class="sec-intro">对 LLM reasoning / post-training 方向的研究岗，这一节是“必须现场写对”的。核心是：(1) logits 与 token 的错位对齐；(2) mask 只覆盖 response token；(3) 每个损失里哪些量是常数（no_grad）；(4) 平均方式（token-level 还是 sequence-level）。理论背景见 <a href='m06-rl-posttraining.html'>模块 06</a>。</p>
+<section class="concept" id="c-logprobs">
+<div class="concept-head"><span class="pri p1">★</span><h3>P18 · Per-token log-probs + masked mean</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 8 min</span><p>位置 t 的 logits 预测 token t+1：logits[:, :-1] 对齐 ids[:, 1:]，log_softmax + gather；mask 只保留 response 且非 padding 的 token。</p><p class="en">Compute per-token log-probs of the actual tokens with the off-by-one shift, a response mask, and a masked mean.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Given model logits for a batch of prompt+response sequences, compute the log-probability of each response token under the model, and a masked mean that ignores prompt and padding tokens.</i></p></div>
+<p><b>中文说明。</b><code>token_logprobs(logits, input_ids) → (B, T-1)</code>；<code>response_mask(prompt_lens, attention_mask) → (B, T-1)</code>；<code>masked_mean(x, mask, dim=None)</code>。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>对齐：<code>logits[:, t]</code> 是看到 <code>ids[:, :t+1]</code> 之后对下一个 token 的预测，所以 <code>logp[:, t] = log_softmax(logits[:, t])[ids[:, t+1]]</code>。输出长度 T−1。</li><li>mask 也要右移一位：response mask 对应“被预测的 token”（位置 1..T−1）是否属于 response。</li><li>大词表时 <code>log_softmax</code> 会产生 (B,T,V) 的 fp32 张量，非常占显存；可以只算 <code>logits.gather - logsumexp(logits)</code>，或分块。</li><li>masked mean 分母 clamp 到 ≥1。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>logp.gather(-1, targets.unsqueeze(-1)).squeeze(-1)</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner"><code>pos = torch.arange(1, T)</code>；<code>is_resp = pos &gt;= prompt_lens[:, None]</code>；再与 <code>attention_mask[:, 1:]</code> 相与。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def token_logprobs(logits, input_ids):
+    """
+    logits: (B, T, V) —— 模型对 input_ids 的输出；位置 t 的 logits 预测 token t+1。
+    返回 (B, T-1)：logp[b, t] = log p(input_ids[b, t+1] | input_ids[b, :t+1])
+    """
+    logits = logits[:, :-1].float()                 # 最后一个位置没有 "下一个 token"
+    targets = input_ids[:, 1:]                      # 对齐：右移一位
+    logp = F.log_softmax(logits, dim=-1)            # (B, T-1, V)
+    return logp.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+
+def masked_mean(x, mask, dim=None):
+    """mask: 与 x 同形状，1 = 计入。"""
+    mask = mask.to(x.dtype)
+    if dim is None:
+        return (x * mask).sum() / mask.sum().clamp(min=1)
+    return (x * mask).sum(dim) / mask.sum(dim).clamp(min=1)
+
+def response_mask(prompt_lens, attention_mask):
+    """
+    prompt_lens: (B,) 每条 prompt 的长度；attention_mask: (B, T)，1 = 真实 token（右侧 padding）。
+    返回与 token_logprobs 对齐的 (B, T-1) mask：只有 response token 为 1。
+    """
+    B, T = attention_mask.shape
+    pos = torch.arange(1, T).unsqueeze(0)           # 被预测 token 的位置 1..T-1
+    is_resp = pos &gt;= prompt_lens.unsqueeze(1)
+    return is_resp &amp; attention_mask[:, 1:].bool()</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+B, T, V = 2, 7, 13
+logits = torch.randn(B, T, V); ids = torch.randint(0, V, (B, T))
+lp = token_logprobs(logits, ids)
+ref = -F.cross_entropy(logits[:, :-1].reshape(-1, V), ids[:, 1:].reshape(-1), reduction="none").view(B, T - 1)
+assert torch.allclose(lp, ref, atol=1e-5)
+attn = torch.ones(B, T, dtype=torch.long); attn[1, -2:] = 0
+m = response_mask(torch.tensor([3, 2]), attn)
+expected = torch.tensor([[0, 0, 1, 1, 1, 1], [0, 1, 1, 1, 0, 0]], dtype=torch.bool)
+assert torch.equal(m, expected)
+assert torch.allclose(masked_mean(lp, m), lp[m].mean(), atol=1e-6)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>不做错位：用 logits[:, t] 去取 ids[:, t] 的概率，等于“预测自己”——RL 训练会悄无声息地学坏。</li><li>mask 没有跟着右移：response 的第一个 token 被漏掉，或 prompt 的最后一个 token 被算进去。</li><li>logprobs 在 bf16 下计算再相减求 ratio：exp(Δ) 误差被放大，PPO 的 ratio 不再从 1 开始。用 fp32。</li><li>左 padding 时 prompt_lens 的含义变了（要加上 pad 数）——更稳妥的是直接从数据管道传一个 response mask。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>Logits at position t predict the token at t plus one, so I drop the last logit and the first token to align them, take log-softmax in fp32, and gather the log-prob of the actual next token. The resulting tensor has length T minus one, and the response mask must be shifted the same way: it marks predicted tokens that belong to the response and aren't padding. The masked mean divides by the number of valid tokens, clamped to avoid division by zero. Getting this off-by-one wrong is the single most common bug in RLHF code.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>How do you compute token entropy efficiently from logits?</b><details><summary>思路</summary><div class="inner"><p>\( H = \mathrm{LSE}(z) - \sum_j \mathrm{softmax}(z)_j z_j \)。等价于 \( -\sum p\log p \) 但只需要一次 softmax 和一次 LSE。</p></div></details></li>
+<li><b>Why do the 'old' log-probs from vLLM often not match the trainer's log-probs exactly?</b><details><summary>思路</summary><div class="inner"><p>推理引擎和训练框架的 kernel、精度（bf16/fp8）、batch 组成不同，数值上有差异，导致 ratio 在第一步就不是精确 1。这会给 off-policy 修正带来偏差，因此很多系统会在 trainer 里重新计算 old logprobs，或做 importance-sampling 截断修正。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-ppo">
+<div class="concept-head"><span class="pri p1">★</span><h3>P19 · PPO：clipped surrogate + value loss + entropy</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 15 min</span><p>ratio = exp(logp_new − logp_old)；loss = −mean(min(r·A, clip(r)·A)) + c_v·value_loss − c_e·entropy；只在 response token 上 mask 平均。面试官看符号、min 的含义、哪些量 detach。</p><p class="en">PPO token-level loss: clipped policy surrogate, (optionally clipped) value loss, entropy bonus, with masks and diagnostics.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement the PPO loss for language-model fine-tuning at the token level: the clipped policy objective, the value loss, and an entropy bonus. Also return clip fraction and approximate KL for logging.</i></p></div>
+<p><b>中文说明。</b>输入都是 (B,T)：logp_new（带梯度）、logp_old、advantages、returns（rollout 时算好，常数）、values（带梯度）、mask。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>$$ L^{\text{CLIP}} = -\mathbb E_t\big[\min(r_t A_t,\ \mathrm{clip}(r_t, 1-\epsilon, 1+\epsilon) A_t)\big],\quad r_t = \frac{\pi_\theta(a_t|s_t)}{\pi_{\text{old}}(a_t|s_t)} $$</li><li>min 取的是悲观下界：A&gt;0 时 ratio 超过 1+ε 后不再有激励（梯度为 0）；A&lt;0 时 ratio 低于 1−ε 后不再有激励。但 A&lt;0 且 ratio&gt;1+ε（策略往坏方向走太远）时<b>不</b>裁剪，梯度保留，把它拉回来。</li><li>ratio 在 log 空间算：<code>exp(logp_new - logp_old)</code>。</li><li>advantages、returns、logp_old 来自 rollout，必须是常数。value loss 用 0.5·(V−R)²，可选 value clipping。</li><li>熵是奖励项，所以总 loss 里是减去 ent_coef·H。很多 LLM 的 PPO 实现把 ent_coef 设为 0。</li><li>LLM 场景里 KL(π‖π_ref) 惩罚通常被放进 reward（逐 token），而不是 loss；GRPO 则放进 loss（见 P21）。</li><li>诊断：clipfrac（被裁剪的 token 比例，常见 0.1–0.3）、approx_kl（k3 估计）。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>pg1 = ratio * A; pg2 = torch.clamp(ratio, 1-eps, 1+eps) * A; policy_loss = -masked_mean(torch.min(pg1, pg2))</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">测试 1：ratio=1 时 loss 对 logp 的梯度应为 −A/N。测试 2：A&gt;0 且 ratio=1.65 的 token 梯度为 0。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+
+def ppo_loss(logp_new, logp_old, advantages, values, returns, mask,
+             entropy=None, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, values_old=None, vf_clip=None):
+    """
+    全部 (B, T) 的 token 级张量；mask: 1 = response token。
+    logp_old / advantages / returns 来自 rollout，必须是常数（不带梯度）。
+    """
+    m = mask.float()
+    mmean = lambda x: (x * m).sum() / m.sum().clamp(min=1)
+    ratio = torch.exp(logp_new - logp_old)                       # pi_new / pi_old，在 log 空间相减
+    pg1 = ratio * advantages
+    pg2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantages
+    policy_loss = -mmean(torch.min(pg1, pg2))                    # 最大化 =&gt; 取负号
+    if vf_clip is not None and values_old is not None:           # 可选：value clipping
+        v_clip = values_old + torch.clamp(values - values_old, -vf_clip, vf_clip)
+        vf = torch.max((values - returns) ** 2, (v_clip - returns) ** 2)
+    else:
+        vf = (values - returns) ** 2
+    value_loss = 0.5 * mmean(vf)
+    ent = mmean(entropy) if entropy is not None else torch.zeros(())
+    total = policy_loss + vf_coef * value_loss - ent_coef * ent   # 熵是奖励项，所以减去
+    with torch.no_grad():
+        clipfrac = mmean(((ratio - 1).abs() &gt; clip_eps).float())
+        approx_kl = mmean((ratio - 1) - torch.log(ratio))        # k3 估计 KL(old || new)
+    return total, dict(policy=policy_loss.item(), value=value_loss.item(),
+                       entropy=ent.item(), clipfrac=clipfrac.item(), approx_kl=approx_kl.item())
+
+def entropy_from_logits(logits):                                  # (B, T, V) -&gt; (B, T)
+    logp = torch.log_softmax(logits.float(), dim=-1)
+    return -(logp.exp() * logp).sum(-1)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+B, T = 4, 6
+lo = torch.randn(B, T) - 2
+mask = torch.ones(B, T); mask[0, -2:] = 0
+adv = torch.randn(B, T); ret = torch.randn(B, T)
+# 1) ratio == 1（刚 rollout 完）时 policy loss = -mean(A)，梯度 = -A * dlogp
+ln = lo.clone().requires_grad_(True)
+v = torch.zeros(B, T, requires_grad=True)
+total, info = ppo_loss(ln, lo, adv, v, ret, mask, ent_coef=0.0)
+assert abs(info["policy"] + (adv * mask).sum().item() / mask.sum().item()) &lt; 1e-6
+total.backward()
+assert torch.allclose(ln.grad, -adv * mask / mask.sum(), atol=1e-6)
+# 2) 被 clip 的 token 没有梯度：A&gt;0 且 ratio&gt;1+eps
+ln2 = (lo + 0.5).clone().requires_grad_(True)                    # ratio = e^0.5 ≈ 1.65
+pos_adv = torch.ones(B, T)
+total2, info2 = ppo_loss(ln2, lo, pos_adv, torch.zeros(B, T), torch.zeros(B, T), mask, ent_coef=0.0)
+total2.backward()
+assert torch.allclose(ln2.grad, torch.zeros(B, T)) and abs(info2["clipfrac"] - 1.0) &lt; 1e-6
+# 3) A&lt;0 且 ratio&gt;1+eps：不 clip（min 取未裁剪项），梯度非零 —— PPO 的悲观下界
+ln3 = (lo + 0.5).clone().requires_grad_(True)
+ppo_loss(ln3, lo, -pos_adv, torch.zeros(B, T), torch.zeros(B, T), mask, ent_coef=0.0)[0].backward()
+assert (ln3.grad[mask.bool()] &gt; 0).all()
+e = entropy_from_logits(torch.zeros(1, 1, 8)); assert torch.allclose(e, torch.log(torch.tensor(8.0)))
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>写成 <code>max</code> 或忘了负号：在最大化/最小化之间搞反。</li><li>advantages 带梯度（来自 value head 没 detach）：policy loss 会去“训练” value head。</li><li>用 <code>logp_new / logp_old</code> 当 ratio（log 概率之比没有意义）。</li><li>advantage 没有归一化（batch 内减均值除标准差）：尺度随 reward 变化，训练不稳定。注意归一化也要只在有效 token 上统计。</li><li>在同一批 rollout 上跑多个 epoch 时，logp_old 被错误地更新成新策略的 log-prob：ratio 永远为 1，clipping 失效。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>The ratio is exp of new minus old log-probs, computed per token. The policy loss is the negative masked mean of the minimum of ratio times advantage and clipped ratio times advantage. The minimum makes it a pessimistic bound: once a good action's probability has gone up by more than epsilon there's no further incentive, but if a bad action's probability went up, the unclipped term keeps the gradient so we pull it back. Advantages, returns and the old log-probs come from the rollout and are treated as constants. I add half the squared value error and subtract an entropy bonus, and I log the clip fraction and an approximate KL to monitor how far each update moves the policy.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>How are advantages computed? Write GAE.</b><details><summary>思路</summary><div class="inner"><p>\( \delta_t = r_t + \gamma V_{t+1} - V_t \)，\( A_t = \delta_t + \gamma\lambda A_{t+1} \)，从后往前递推；returns = A + V。LLM 中常用 γ=1，reward 只在最后一个 token（加上每个 token 的 −β·KL）。<pre><code class='language-python'>adv = torch.zeros_like(rewards); last = 0.0
+for t in reversed(range(T)):
+    next_v = values[:, t + 1] if t + 1 &lt; T else 0.0
+    delta = rewards[:, t] + gamma * next_v - values[:, t]
+    last = delta + gamma * lam * last
+    adv[:, t] = last
+returns = adv + values</code></pre>（右 padding 时还需要用 mask 截断 bootstrap。）</p></div></details></li>
+<li><b>Why does PPO for LLMs need four models, and how do GRPO/DPO reduce that?</b><details><summary>思路</summary><div class="inner"><p>Policy、reference（KL）、reward model、value/critic。GRPO 用组内相对 reward 代替 critic；DPO 完全不需要 reward model 和在线采样（只需 policy + reference）。</p></div></details></li>
+<li><b>What does a high clip fraction tell you?</b><details><summary>思路</summary><div class="inner"><p>每次更新策略变化太大（lr 太高、epoch 太多、batch 太小），信任域约束频繁触发，样本效率下降、可能不稳定。对策：降 lr、减少 PPO epoch、增大 batch、加 KL 早停。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-dpo">
+<div class="concept-head"><span class="pri p1">★</span><h3>P20 · DPO loss</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 8 min</span><p>L = −log σ(β[(log π_c − log π_ref,c) − (log π_r − log π_ref,r)])；输入是整条 response 的 log-prob 之和；用 logsigmoid 保证数值稳定。</p><p class="en">Direct Preference Optimization loss from summed response log-probs of policy and frozen reference.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement the DPO loss. Inputs are the policy's and the reference model's log-probabilities of the chosen and rejected responses.</i></p></div>
+<p><b>中文说明。</b><code>dpo_loss(pi_chosen, pi_rejected, ref_chosen, ref_rejected, beta)</code>，四个 (B,) 张量。另写 <code>sequence_logprob</code>：把 P18 的 token log-prob 在 response mask 上求和。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>$$ \mathcal L_{\text{DPO}} = -\mathbb E\Big[\log\sigma\Big(\beta\log\frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \beta\log\frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\Big)\Big] $$</li><li>来源：KL 约束的 RL 最优解 \( \pi^* \propto \pi_{\text{ref}} e^{r/\beta} \) 反解出 \( r = \beta\log\frac{\pi^*}{\pi_{\text{ref}}} + \beta\log Z(x) \)，代入 Bradley–Terry 偏好模型后 Z(x) 抵消。</li><li>序列 log-prob 是 response token 的<b>求和</b>（不是平均）——这是原论文的定义；平均版本属于变体（如 SimPO 的长度归一化）。</li><li>参考模型在 <code>torch.no_grad()</code> 下前向，通常可以预先计算并缓存。</li><li>梯度：\( \nabla \mathcal L = -\beta\, \sigma(-z)\,[\nabla\log\pi(y_w) - \nabla\log\pi(y_l)] \)。σ(−z) 是“模型排错程度”的权重：已经排对的样本贡献小。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>logits = beta * ((pi_c - ref_c) - (pi_r - ref_r)); loss = -F.logsigmoid(logits).mean()</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">测试：π=π_ref 时 loss = log 2。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def dpo_loss(pi_chosen, pi_rejected, ref_chosen, ref_rejected, beta=0.1):
+    """
+    四个输入都是 (B,)：整条 response 的 log prob 之和（只对 response token 求和）。
+    ref_* 来自冻结的参考模型（no_grad）。
+    L = -log sigmoid( beta * [(pi_c - ref_c) - (pi_r - ref_r)] )
+    """
+    chosen_reward = beta * (pi_chosen - ref_chosen)        # 隐式 reward
+    rejected_reward = beta * (pi_rejected - ref_rejected)
+    logits = chosen_reward - rejected_reward
+    loss = -F.logsigmoid(logits).mean()                    # 用 logsigmoid，不要 log(sigmoid(.))
+    acc = (logits &gt; 0).float().mean()
+    return loss, chosen_reward.detach(), rejected_reward.detach(), acc
+
+def sequence_logprob(logits, input_ids, resp_mask):
+    """logits (B,T,V), input_ids (B,T), resp_mask (B,T-1) -&gt; (B,) response 部分 log prob 之和。"""
+    logp = torch.log_softmax(logits[:, :-1].float(), -1).gather(-1, input_ids[:, 1:, None]).squeeze(-1)
+    return (logp * resp_mask).sum(-1)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+pc, pr, rc, rr = torch.randn(4, 8)
+loss, cr, rj, acc = dpo_loss(pc, pr, rc, rr, beta=0.1)
+z = 0.1 * ((pc - rc) - (pr - rr))
+assert torch.allclose(loss, torch.log1p(torch.exp(-z)).mean(), atol=1e-6)
+# 策略 == 参考模型时，loss = log 2
+l0 = dpo_loss(rc, rr, rc, rr)[0]; assert abs(l0.item() - torch.log(torch.tensor(2.0)).item()) &lt; 1e-6
+# 梯度方向：提高 chosen、降低 rejected
+pc_ = pc.clone().requires_grad_(True); pr_ = pr.clone().requires_grad_(True)
+dpo_loss(pc_, pr_, rc, rr)[0].backward()
+assert (pc_.grad &lt; 0).all() and (pr_.grad &gt; 0).all()
+# 极端 logits 下数值稳定
+assert torch.isfinite(dpo_loss(torch.tensor([-1e4]), torch.tensor([1e4]), torch.zeros(1), torch.zeros(1))[0])
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li><code>torch.log(torch.sigmoid(x))</code>：x 很负时 sigmoid 下溢为 0 → −inf。用 <code>F.logsigmoid</code>。</li><li>用 token 平均 log-prob 而说这是标准 DPO。</li><li>把 prompt token 的 log-prob 也算进去（它们在 chosen/rejected 中相同，理论上抵消，但截断/padding 不同时会引入噪声）。</li><li>忘了参考模型要冻结；或者参考模型用了 dropout（没 eval）。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>DPO starts from the closed-form optimum of KL-regularized RL, where the reward can be written as beta times the log-ratio between the policy and the reference, plus a prompt-only term. Plugging that into the Bradley–Terry preference model cancels the partition function, so the loss is just negative log-sigmoid of beta times the difference of log-ratios between the chosen and the rejected response. The log-probs are sums over response tokens, the reference is frozen, and I use logsigmoid for stability. The gradient weights each pair by how wrong the implicit reward currently ranks it.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>What failure modes of DPO have been reported?</b><details><summary>思路</summary><div class="inner"><p>(1) chosen 和 rejected 的 log-prob 同时下降（只要差值变大 loss 就降），可能导致模型输出分布漂移；(2) 偏向更长回答；(3) 对离线数据分布敏感（off-policy）。变体：IPO（换成平方损失防止过拟合）、SimPO（长度归一化、无参考模型）、在线/迭代 DPO。</p></div></details></li>
+<li><b>How do you derive π* ∝ π_ref exp(r/β)?</b><details><summary>思路</summary><div class="inner"><p>目标 \( \max_\pi \mathbb E_{y\sim\pi}[r] - \beta\,\mathrm{KL}(\pi\|\pi_{\text{ref}}) = -\beta\, \mathrm{KL}\big(\pi \,\|\, \tfrac{1}{Z}\pi_{\text{ref}} e^{r/\beta}\big) + \beta\log Z \)。KL 在两分布相等时取最小值 0，所以 \( \pi^* = \pi_{\text{ref}}e^{r/\beta}/Z \)。原论文：<a href='https://arxiv.org/abs/2305.18290' target='_blank' rel='noreferrer'>arXiv 2305.18290</a>。</p></div></details></li>
+<li><b>What metrics would you log during DPO training?</b><details><summary>思路</summary><div class="inner"><p>loss、reward accuracy（隐式 reward 排对的比例）、chosen/rejected 隐式 reward 的均值及差值（margin）、chosen/rejected 的 log-prob 绝对值（监控同时下降）、在留出集和生成质量上的评测。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-grpo">
+<div class="concept-head"><span class="pri p1">★</span><h3>P21 · GRPO：组内 advantage + clipped loss + k3 KL</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 15 min</span><p>同一 prompt 采样 G 个回答，advantage = (r − mean)/std（组内）；PPO 式 clip 目标 + β·k3 KL(π‖π_ref) 放进 loss；没有 value 网络。</p><p class="en">GRPO: group-normalized advantages, PPO-style clipped surrogate, and a per-token k3 KL penalty to the reference.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement GRPO as in DeepSeekMath: compute group-relative advantages from scalar rewards, then the clipped policy loss with a KL penalty to the reference model using the k3 estimator.</i></p></div>
+<p><b>中文说明。</b><code>grpo_advantages(rewards, group_size)</code>：rewards (N·G,)，同组相邻。<code>grpo_loss(logp_new, logp_old, logp_ref, advantages, mask, clip_eps, beta)</code>，logp_* (B,T)，advantages (B,)。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>Advantage：\( \hat A_i = \frac{r_i - \mathrm{mean}(r_{1..G})}{\mathrm{std}(r_{1..G})} \)，对该回答的所有 token 相同（outcome supervision）。</li><li>k3 估计：\( \mathrm{KL}(\pi_\theta\|\pi_{\text{ref}}) \approx \frac{\pi_{\text{ref}}}{\pi_\theta} - \log\frac{\pi_{\text{ref}}}{\pi_\theta} - 1 \)。在 \( x\sim\pi_\theta \) 下无偏，且因为 \( e^u - u - 1 \ge 0 \) 每个样本非负，方差比 k1 = log(π/π_ref) 小。（Schulman 的博客 “Approximating KL Divergence”。）</li><li>原式聚合：先在每条回答内对 token 取平均，再对组内/批内回答取平均。</li><li>全对或全错的组：std=0、advantage=0，没有学习信号（这也是 DAPO 做 dynamic sampling 过滤这些组的原因）。</li><li><a href='https://arxiv.org/abs/2503.20783' target='_blank' rel='noreferrer'>Dr. GRPO (arXiv 2503.20783)</a> 指出：除以 std 和按长度平均会引入偏差（例如错误回答越长、每个 token 被惩罚越少，鼓励冗长），建议去掉这两项。实现里留一个 <code>scale_std</code> 开关。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>r = rewards.view(-1, G); adv = (r - r.mean(1, keepdim=True)) / (r.std(1, keepdim=True) + eps)</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner"><code>log_r = logp_ref - logp_new; kl = torch.exp(log_r) - log_r - 1</code>。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner"><code>per_seq = (per_tok * m).sum(1) / m.sum(1)</code> 然后 <code>.mean()</code>。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">PyTorch：逻辑已用等价 numpy 实现验证；torch 版测试文件随附</p><pre><code class="language-python">import torch
+
+def grpo_advantages(rewards, group_size, eps=1e-6, scale_std=True):
+    """rewards: (N*G,)，同一 prompt 的 G 个样本相邻。返回 (N*G,) 的组内标准化 advantage。"""
+    r = rewards.view(-1, group_size)                           # (N, G)
+    adv = r - r.mean(dim=1, keepdim=True)
+    if scale_std:                                              # Dr. GRPO 建议去掉这一步
+        adv = adv / (r.std(dim=1, keepdim=True) + eps)
+    return adv.view(-1)
+
+def grpo_loss(logp_new, logp_old, logp_ref, advantages, mask, clip_eps=0.2, beta=0.04):
+    """
+    logp_*: (B, T) token log prob；advantages: (B,) 序列级，广播到每个 token。
+    KL 用 k3 估计（无偏且非负）: KL ≈ exp(ref - new) - (ref - new) - 1
+    按 DeepSeekMath 原式：先对每条序列的 token 取平均，再对序列取平均。
+    """
+    A = advantages.unsqueeze(1)                                # (B, 1)
+    ratio = torch.exp(logp_new - logp_old)
+    surr = torch.min(ratio * A, torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * A)
+    log_r = logp_ref - logp_new
+    kl = torch.exp(log_r) - log_r - 1                          # k3, 每个 token &gt;= 0
+    per_tok = -(surr - beta * kl)                              # (B, T)
+    m = mask.float()
+    per_seq = (per_tok * m).sum(1) / m.sum(1).clamp(min=1)     # 序列内平均
+    return per_seq.mean(), ((kl * m).sum() / m.sum()).detach()</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">torch.manual_seed(0)
+r = torch.tensor([1., 0., 0., 1., 1., 1., 1., 1.])            # 两组, G=4
+adv = grpo_advantages(r, 4)
+assert torch.allclose(adv[:4].mean(), torch.tensor(0.), atol=1e-6)
+assert torch.allclose(adv[4:], torch.zeros(4))                 # 全对的组 advantage = 0，没有学习信号
+# 组 1: mean=0.5, 无偏 std=0.577 -&gt; adv = ±0.5/0.577 = ±0.866
+assert torch.allclose(adv[:4], torch.tensor([0.866, -0.866, -0.866, 0.866]), atol=1e-3)
+B, T = 8, 5
+lp = torch.randn(B, T) - 1
+mask = torch.ones(B, T); mask[0, 3:] = 0
+# new == old == ref：KL = 0，loss = -mean(A)
+loss, kl = grpo_loss(lp, lp, lp, adv, mask)
+assert abs(kl.item()) &lt; 1e-7 and abs(loss.item() + adv.mean().item()) &lt; 1e-6
+# k3 非负且期望等于真实 KL：用一个离散分布验证
+p = torch.softmax(torch.randn(6), 0); q = torch.softmax(torch.randn(6), 0)   # p=pi_new, q=ref
+true_kl = (p * (p.log() - q.log())).sum()
+k3 = (p * ((q / p) - (q.log() - p.log()) - 1)).sum()           # E_{x~p}[k3]
+assert torch.allclose(true_kl, k3, atol=1e-6)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>组的排列错了：view(-1, G) 要求同一 prompt 的 G 个样本相邻；如果数据是按 [样本 0 的所有 prompt, 样本 1 的...] 排列，应 <code>view(G, -1).T</code>。</li><li>k3 的方向写反：<code>logp_new - logp_ref</code> 放进 exp 得到的是另一个方向 KL 的估计。</li><li>KL 放进 reward 又放进 loss：重复惩罚。</li><li><code>torch.std</code> 默认无偏（除以 G−1），NumPy 默认有偏：两种都有人用，要知道自己用的哪种。</li><li>logp_ref 带梯度：参考模型要 no_grad。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>For each prompt we sample a group of G responses and score them. The advantage of each response is its reward minus the group mean, divided by the group standard deviation, and it's broadcast to every token, so there's no value network. The policy term is the same clipped surrogate as PPO. The KL to the reference is in the loss rather than the reward, using the k3 estimator: ref over new minus log of that minus one, which is unbiased and non-negative per token. Following the original formulation I average over tokens within each response, then over responses; I'd mention that Dr. GRPO argues the std normalization and per-response length averaging introduce biases, so I keep those as switches.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>What did DAPO change relative to GRPO?</b><details><summary>思路</summary><div class="inner"><p>DAPO（<a href='https://arxiv.org/abs/2503.14476' target='_blank' rel='noreferrer'>arXiv 2503.14476</a>）：(1) Clip-Higher：上下 clip 范围解耦，放宽上界以防熵塌缩；(2) Dynamic Sampling：丢弃全对/全错的组；(3) token-level 的 policy gradient loss（所有 token 一起平均，长回答不被稀释）；(4) 对超长回答的 reward shaping；并去掉 KL 项。</p></div></details></li>
+<li><b>Why might you drop the KL term entirely for RLVR on math?</b><details><summary>思路</summary><div class="inner"><p>可验证奖励（答案对/错）很难被 hack，而推理训练需要策略大幅偏离初始分布（例如学会长 CoT），KL 会限制这一点。很多 R1-Zero 复现工作因此设 β=0；代价是需要别的手段维持稳定（如 clip、熵监控）。</p></div></details></li>
+<li><b>Compare k1, k2, k3 KL estimators.</b><details><summary>思路</summary><div class="inner"><p>记 \( u = \log\frac{\pi_{\text{ref}}}{\pi_\theta}(x) \)，\( x\sim\pi_\theta \)。k1 = −u：无偏，但可能为负、方差大。k2 = u²/2：有偏但低方差，非负。k3 = eᵘ − u − 1：无偏、非负、低方差。（作为 loss 时还要注意它们的<b>梯度</b>是否对应真实 KL 的梯度，这是近期一些工作讨论的点。）</p></div></details></li>
+</ol></div></section>
+<h2 class="sec" id="s-classic"><span class="num">§6 · CLASSIC ML</span>经典 ML 手写题（numpy）</h2><p class="sec-intro">偏传统 ML/应用组的面试仍会出这些题；研究岗里它们更多作为热身。全部用 numpy 写，已在本地完整测试（与 sklearn/scipy 对比）。</p>
+<section class="concept" id="c-kmeans">
+<div class="concept-head"><span class="pri p2">☆</span><h3>P22 · K-means（numpy，含 k-means++）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 15 min</span><p>交替执行分配（最近中心）与更新（簇均值）；用 ‖x‖²−2x·c+‖c‖² 向量化距离；处理空簇；多次初始化取最小 inertia。</p><p class="en">Vectorized k-means with k-means++ init, empty-cluster handling, and restarts.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement k-means clustering in numpy. Vectorize the distance computation and tell me about initialization.</i></p></div>
+<p><b>中文说明。</b><code>kmeans(X, k, n_iters, seed) → (centroids, labels, inertia)</code>，X: (N,D)。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>Lloyd 算法：E 步分配、M 步取均值。每一步都不增加 inertia \( \sum_i \|x_i - c_{z_i}\|^2 \)，所以必然收敛（到局部最优）。</li><li>距离矩阵：\( \|x-c\|^2 = \|x\|^2 - 2x^\top c + \|c\|^2 \)，得到 (N,k) 而不必构造 (N,k,D)。</li><li>k-means++：第一个中心随机；之后以 \( D(x)^2 \) 成比例的概率抽样。理论上期望 O(log k) 近似。</li><li>空簇：保留旧中心，或重新初始化为离当前中心最远的点。</li><li>局部最优：多次随机初始化取最好（sklearn 的 <code>n_init</code>）。测试里能看到 seed=0 时就卡在差的局部最优。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>d2 = (X**2).sum(1, keepdims=True) - 2 * X @ C.T + (C**2).sum(1)</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner">收敛判据：中心移动量平方和 &lt; tol。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">import numpy as np
+
+def kmeans(X, k, n_iters=100, seed=0, tol=1e-8):
+    """X: (N, D)。返回 centroids (k, D), labels (N,), inertia。k-means++ 初始化。"""
+    rng = np.random.default_rng(seed)
+    N = X.shape[0]
+    # k-means++：第一个随机，之后按 "到最近中心的距离平方" 成比例抽样
+    C = [X[rng.integers(N)]]
+    for _ in range(1, k):
+        d2 = ((X[:, None, :] - np.array(C)[None]) ** 2).sum(-1).min(1)
+        C.append(X[rng.choice(N, p=d2 / d2.sum())])
+    C = np.array(C, dtype=float)
+    for _ in range(n_iters):
+        # 距离矩阵 (N, k)：||x||^2 - 2 x.c + ||c||^2，避免 (N, k, D) 的大中间张量
+        d2 = (X ** 2).sum(1, keepdims=True) - 2 * X @ C.T + (C ** 2).sum(1)
+        labels = d2.argmin(1)                                  # E-step: 分配
+        newC = C.copy()
+        for j in range(k):                                     # M-step: 重新算均值
+            pts = X[labels == j]
+            if len(pts):                                       # 空簇：保留旧中心
+                newC[j] = pts.mean(0)
+        shift = ((newC - C) ** 2).sum()
+        C = newC
+        if shift &lt; tol:
+            break
+    d2 = (X ** 2).sum(1, keepdims=True) - 2 * X @ C.T + (C ** 2).sum(1)
+    labels = d2.argmin(1)
+    inertia = np.maximum(d2[np.arange(N), labels], 0).sum()
+    return C, labels, inertia
+
+def kmeans_best_of(X, k, n_init=5, **kw):
+    """k-means 只保证局部最优：多次随机初始化，取 inertia 最小的一次。"""
+    return min((kmeans(X, k, seed=s, **kw) for s in range(n_init)), key=lambda r: r[2])</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">rng = np.random.default_rng(1)
+centers = np.array([[0, 0], [6, 6], [0, 8]], float)
+X = np.concatenate([c + rng.normal(size=(100, 2)) for c in centers])
+C, labels, inertia = kmeans_best_of(X, 3, n_init=5)
+# 单次运行可能卡在差的局部最优（这份数据上 seed=0 就是：两个中心挤在同一簇）
+C0, _, i0 = kmeans(X, 3, seed=0)
+assert i0 &gt;= inertia - 1e-9
+# 每个真实中心附近都找到一个 centroid
+assert all(np.min(np.linalg.norm(C - c, axis=1)) &lt; 0.5 for c in centers)
+# 和 sklearn 的 inertia 对比（同一个局部最优附近）
+from sklearn.cluster import KMeans
+sk = KMeans(3, n_init=10, random_state=0).fit(X)
+assert abs(inertia - sk.inertia_) / sk.inertia_ &lt; 1e-6, (inertia, sk.inertia_)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>(N,k,D) 广播在大数据上爆内存。</li><li>展开式的距离可能因浮点误差出现微小负数，用于开根号前要 clip 到 0。</li><li>空簇的均值是 nan（0/0），会传染到后续迭代。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>K-means alternates two steps that each can only decrease the within-cluster sum of squares: assign each point to its nearest centroid, then move each centroid to the mean of its points. I compute all squared distances at once with the expansion norm-x-squared minus two x dot c plus norm-c-squared, which is a single matrix multiply. I initialize with k-means++, sampling new centers proportional to squared distance, handle empty clusters by keeping the old center, and run several restarts because it only converges to a local optimum.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>How is k-means related to Gaussian mixture models and EM?</b><details><summary>思路</summary><div class="inner"><p>k-means 是协方差为 σ²I、σ→0 时 GMM 的 EM 的极限：软分配（responsibilities）变成硬分配。</p></div></details></li>
+<li><b>How do you choose k?</b><details><summary>思路</summary><div class="inner"><p>肘部法（inertia vs k）、silhouette score、gap statistic、基于下游任务；或 BIC（用 GMM）。</p></div></details></li>
+<li><b>Where does k-means show up in modern LLM work?</b><details><summary>思路</summary><div class="inner"><p>向量量化（VQ-VAE 的 codebook 更新）、检索中的 IVF 索引（先聚类再在簇内搜索）、数据去重/多样性采样、product quantization 压缩 embedding。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-logreg">
+<div class="concept-head"><span class="pri p2">☆</span><h3>P23 · Logistic regression（numpy，梯度下降）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 12 min</span><p>z = Xw + b，p = σ(z)，梯度 = Xᵀ(p − y)/N；用稳定的 sigmoid 和 logaddexp 计算 BCE；可加 L2。</p><p class="en">Binary logistic regression trained by gradient descent with stable sigmoid/BCE and L2.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement binary logistic regression with gradient descent in numpy. Derive the gradient.</i></p></div>
+<p><b>中文说明。</b><code>train_logreg(X, y, lr, n_iters, l2) → (w, b, losses)</code>，y ∈ {0,1}。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>BCE with logits：\( \ell = \log(1+e^{z}) - yz \)（等价于 \( -y\log\sigma(z) - (1-y)\log(1-\sigma(z)) \)）。</li><li>梯度：\( \partial\ell/\partial z = \sigma(z) - y \)，所以 \( \nabla_w = X^\top(p-y)/N \)，\( \nabla_b = \mathrm{mean}(p-y) \)。</li><li>稳定的 sigmoid：z≥0 用 \( 1/(1+e^{-z}) \)，z&lt;0 用 \( e^z/(1+e^z) \)。softplus 用 <code>np.logaddexp(0, z)</code>。</li><li>凸问题：小步长下 loss 单调下降，能与 sklearn 的解对上（注意 sklearn 的 C 与 λ 的换算：C = 1/(Nλ)）。</li><li>线性可分数据且无正则时，‖w‖ → ∞，不收敛到有限解。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner">先推导 \( \sigma'(z) = \sigma(z)(1-\sigma(z)) \)，再链式法则，(1−σ) 和 σ 会和 BCE 的分母约掉。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">import numpy as np
+
+def sigmoid(z):
+    # 数值稳定：对负数用 e^z / (1 + e^z)，避免 exp(-z) 溢出
+    out = np.empty_like(z, dtype=float)
+    pos = z &gt;= 0
+    out[pos] = 1.0 / (1.0 + np.exp(-z[pos]))
+    ez = np.exp(z[~pos])
+    out[~pos] = ez / (1.0 + ez)
+    return out
+
+def bce_with_logits(z, y):
+    # log(1 + e^z) - y z，用 logaddexp(0, z) 稳定计算 softplus
+    return np.mean(np.logaddexp(0.0, z) - y * z)
+
+def train_logreg(X, y, lr=0.1, n_iters=2000, l2=0.0):
+    """X: (N, D), y: (N,) in {0,1}。全 batch 梯度下降。返回 w (D,), b, 损失曲线。"""
+    N, D = X.shape
+    w, b = np.zeros(D), 0.0
+    losses = []
+    for _ in range(n_iters):
+        z = X @ w + b
+        p = sigmoid(z)
+        # dL/dz = (p - y) / N —— sigmoid + BCE 的漂亮结果
+        g = (p - y) / N
+        dw = X.T @ g + l2 * w
+        db = g.sum()
+        w -= lr * dw
+        b -= lr * db
+        losses.append(bce_with_logits(z, y) + 0.5 * l2 * (w @ w))
+    return w, b, losses</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">rng = np.random.default_rng(0)
+N, D = 500, 3
+X = rng.normal(size=(N, D))
+w_true, b_true = np.array([2.0, -1.0, 0.5]), 0.3
+y = (rng.random(N) &lt; sigmoid(X @ w_true + b_true)).astype(float)
+w, b, losses = train_logreg(X, y, lr=0.5, n_iters=3000, l2=1e-3)
+assert all(a &gt;= b_ - 1e-12 for a, b_ in zip(losses, losses[1:]))   # 凸问题 + 小步长：单调降
+# 和 sklearn 对比（C = 1/(N*l2) 对应同一目标函数）
+from sklearn.linear_model import LogisticRegression
+sk = LogisticRegression(C=1 / (N * 1e-3), tol=1e-10, max_iter=10000).fit(X, y)
+assert np.allclose(w, sk.coef_[0], atol=1e-3) and abs(b - sk.intercept_[0]) &lt; 1e-3, (w, sk.coef_)
+# 梯度检查
+z = X @ w + b
+num = np.array([(bce_with_logits(X @ (w + 1e-6 * e) + b, y) - bce_with_logits(X @ (w - 1e-6 * e) + b, y)) / 2e-6 for e in np.eye(D)])
+assert np.allclose(num, X.T @ ((sigmoid(z) - y) / N), atol=1e-7)
+assert np.isfinite(sigmoid(np.array([-1000.0, 1000.0]))).all()
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li><code>1/(1+np.exp(-z))</code> 在 z=−1000 时 overflow 警告（结果是 0，但 log(0) 之后出问题）。</li><li>忘了除以 N：步长随数据量变化。</li><li>对 bias 也做 L2（通常不做）。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>The model is a sigmoid of a linear score. With binary cross-entropy, the derivative with respect to the logit simplifies to prediction minus label, so the weight gradient is X-transpose times the residual over N. I compute the loss as softplus of z minus y z using logaddexp, and a sigmoid that branches on the sign so nothing overflows. The problem is convex, so with a small step size the loss decreases monotonically, and with L2 it matches sklearn's solution.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Extend to multi-class (softmax regression).</b><details><summary>思路</summary><div class="inner"><p>W: (D,C)，logits = XW + b，loss 为 P2 的 CE，梯度 \( X^\top(P - Y_{\text{onehot}})/N \)。</p></div></details></li>
+<li><b>Why not use MSE loss with a sigmoid?</b><details><summary>思路</summary><div class="inner"><p>MSE+sigmoid 非凸，且梯度含 σ'(z)，预测饱和（错得很离谱）时梯度接近 0，学得慢。CE 的梯度 p−y 没有这个问题。</p></div></details></li>
+<li><b>Newton's method / IRLS for logistic regression?</b><details><summary>思路</summary><div class="inner"><p>Hessian \( H = X^\top S X/N \)，S = diag(p(1−p))。更新 \( w \leftarrow w - H^{-1}\nabla \)，二次收敛，适合 D 小的情况。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-bpe">
+<div class="concept-head"><span class="pri p2">☆</span><h3>P24 · BPE：训练 + 编码</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 25 min</span><p>从字符开始，反复合并语料中频次最高的相邻符号对，记录合并顺序；编码时按合并 rank 依次应用。面试官看你是否区分“训练”和“编码”两个过程。</p><p class="en">Train byte-pair-encoding merges from a corpus and encode new words by applying merges in rank order.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement BPE tokenizer training: start from characters and repeatedly merge the most frequent adjacent pair. Then implement encoding of new text with the learned merges.</i></p></div>
+<p><b>中文说明。</b><code>train_bpe(text, num_merges) → merges</code>（有序列表）；<code>encode_word(word, merges) → list[str]</code>。按空白切词、词尾加 <code>&lt;/w&gt;</code>（Sennrich et al. 2016 的经典设置）。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>训练表示：<code>Counter</code>：词（符号元组）→ 频次。统计 pair 时乘以词频，避免对重复词重复计算。</li><li>合并一个 pair 时从左到右、不重叠扫描（"aaa" 合并 (a,a) 得到 [aa, a]）。</li><li>确定性：频次并列时需要一个确定的 tie-break（这里按字典序）。</li><li>编码：不是“贪心最长匹配”，而是重复找当前序列里 <b>rank 最小</b>（最早学到）的 pair 合并，直到没有可合并的 pair。这样编码训练语料中的词会得到与训练时相同的切分。</li><li>GPT-2 的 byte-level BPE：初始词表是 256 个字节而不是字符，任何字符串都能编码（无 UNK）；并用正则预切分（避免跨空格/标点合并）。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>get_pair_counts</code>：<code>for a, b in zip(symbols, symbols[1:])</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner"><code>best = min(counts, key=lambda p: (-counts[p], p))</code>。</div></details>
+<details class="deep"><summary>提示 3</summary><div class="inner">编码：<code>rank = {pair: i for i, pair in enumerate(merges)}</code>，循环 <code>min(rank.get(p, inf) for p in pairs)</code>。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">from collections import Counter
+
+def get_pair_counts(words):
+    """words: dict[tuple[str,...], int] —— 每个词（符号序列）及其频次。"""
+    counts = Counter()
+    for symbols, freq in words.items():
+        for a, b in zip(symbols, symbols[1:]):
+            counts[(a, b)] += freq
+    return counts
+
+def merge_word(symbols, pair, new):
+    out, i = [], 0
+    while i &lt; len(symbols):
+        if i &lt; len(symbols) - 1 and (symbols[i], symbols[i + 1]) == pair:
+            out.append(new); i += 2             # 从左到右、不重叠地合并
+        else:
+            out.append(symbols[i]); i += 1
+    return tuple(out)
+
+def train_bpe(text, num_merges):
+    """字符级起步的 BPE。按空白切词，词尾加 '&lt;/w&gt;' 标记。返回 merges 列表（有序）。"""
+    words = Counter(tuple(w) + ("&lt;/w&gt;",) for w in text.split())
+    merges = []
+    for _ in range(num_merges):
+        counts = get_pair_counts(words)
+        if not counts:
+            break
+        # 频次最高的 pair；并列时按字典序取最小，保证确定性
+        best = min(counts, key=lambda p: (-counts[p], p))
+        new = best[0] + best[1]
+        merges.append(best)
+        words = Counter({merge_word(s, best, new): f for s, f in words.items()})
+    return merges
+
+def encode_word(word, merges):
+    """按训练时的顺序（rank）重复应用：每次合并当前序列里 rank 最小的 pair。"""
+    rank = {p: i for i, p in enumerate(merges)}
+    symbols = tuple(word) + ("&lt;/w&gt;",)
+    while len(symbols) &gt; 1:
+        pairs = [(rank.get(p, float("inf")), p) for p in zip(symbols, symbols[1:])]
+        r, best = min(pairs)
+        if r == float("inf"):
+            break                                  # 没有可合并的 pair 了
+        symbols = merge_word(symbols, best, best[0] + best[1])
+    return list(symbols)
+
+def encode(text, merges):
+    return [tok for w in text.split() for tok in encode_word(w, merges)]</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">corpus = "low low low low low lower lower newest newest newest newest newest newest widest widest widest"
+merges = train_bpe(corpus, 10)
+# 经典例子 (Sennrich et al. 2016)：前几步合并
+assert merges[0] == ("e", "s") and merges[1] == ("es", "t") and merges[2] == ("est", "&lt;/w&gt;")
+assert merges[3] == ("l", "o") and merges[4] == ("lo", "w")
+assert encode_word("lowest", merges) == ["low", "est&lt;/w&gt;"]
+assert encode_word("newest", merges) == ["newest&lt;/w&gt;"]
+# 无损：拼回去等于原文
+for w in ["lowest", "widest", "unknown", "x"]:
+    assert "".join(encode_word(w, merges)).replace("&lt;/w&gt;", "") == w
+# encode 训练语料：每个训练词都应该用训练时合并出的同一种切分
+seg = encode("low lower", merges)
+assert "".join(seg).replace("&lt;/w&gt;", " ").split() == ["low", "lower"]
+print("ok", merges)</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>编码写成“在词表里贪心最长匹配”（WordPiece 风格）：和 BPE 的合并顺序语义不同，切分结果可能不一样。正确做法是按 merge rank 应用。（补充：“每次取当前最小 rank”与“按合并表顺序整体扫一遍”等价，因为合并产生的新符号只能参与 rank 更大的 pair，所以被应用的 rank 单调递增；本地用随机词验证过。）</li><li>朴素实现每次合并都重新统计全部 pair：O(merges × corpus)。工业实现增量更新 pair 计数 + 优先队列。</li><li>忘记词尾标记或预切分，导致跨词合并（"the quick" 中 "e q"）。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>Training starts from characters, with words weighted by frequency. Each iteration counts adjacent symbol pairs across the corpus, merges the most frequent pair everywhere, and appends it to an ordered merge list, so the merge list is the tokenizer. Encoding a new word starts from characters again and repeatedly applies the lowest-rank merge present, which reproduces the training-time segmentation and degrades gracefully to characters for unseen words. In practice GPT-style tokenizers do this over bytes rather than characters, so there's no unknown token, and they pre-split with a regex so merges don't cross word or punctuation boundaries.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>How would you make training fast on a large corpus?</b><details><summary>思路</summary><div class="inner"><p>维护 pair → 计数 以及 pair → 出现位置的索引；合并时只更新受影响的相邻 pair；用堆取最大值。复杂度从 O(M·N) 降到接近 O(N log N)。HF tokenizers（Rust）就是这么做的。</p></div></details></li>
+<li><b>BPE vs WordPiece vs Unigram LM (SentencePiece)?</b><details><summary>思路</summary><div class="inner"><p>BPE：按频次合并。WordPiece：按“合并后似然提升”选择（count(ab)/(count(a)count(b))）。Unigram：从大词表出发，按 EM 估计的 token 概率逐步剪枝，编码用 Viterbi 找最大概率切分，可以采样多种切分（subword regularization）。</p></div></details></li>
+<li><b>Why do tokenizers cause arithmetic and spelling problems for LLMs?</b><details><summary>思路</summary><div class="inner"><p>数字被切成不规则的块（"12345" 可能是 "123"+"45"），位值不对齐；单词被整体编码，模型看不到字母。一些模型因此把数字按单个 digit 切分。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-conv">
+<div class="concept-head"><span class="pri p3">○</span><h3>P25 · Naive conv2d（+ im2col）</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 15 min</span><p>输出尺寸 (H+2p−k)/s+1；对每个输出位置取 patch 与卷积核做张量收缩；im2col 把它变成一次矩阵乘。</p><p class="en">2D convolution (cross-correlation) with stride and padding, naive and im2col.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Implement a 2D convolution forward pass with stride and padding in numpy. Then make it a single matrix multiply.</i></p></div>
+<p><b>中文说明。</b>x: (N,C_in,H,W)，w: (C_out,C_in,kH,kW)，b: (C_out,)。语义同 PyTorch（cross-correlation，不翻转卷积核）。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>\( H_{out} = \lfloor (H + 2p - k_H)/s \rfloor + 1 \)。</li><li>两层循环遍历输出位置，每个位置：<code>patch (N,C,kH,kW)</code> 与 <code>w (F,C,kH,kW)</code> 在 (C,kH,kW) 上收缩 → (N,F)。</li><li>im2col：把所有 patch 展平成列 (N, C·kH·kW, Ho·Wo)，卷积 = <code>w.reshape(F,-1) @ cols</code>。内存换速度。</li><li>参数量 \( F\cdot C\cdot k_H k_W + F \)；FLOPs ≈ \( 2 N F C k_H k_W H_o W_o \)。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner"><code>np.pad(x, ((0,0),(0,0),(p,p),(p,p)))</code>。</div></details>
+<details class="deep"><summary>提示 2</summary><div class="inner"><code>np.tensordot(patch, w, axes=([1,2,3],[1,2,3]))</code> → (N,F)。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">import numpy as np
+
+def conv2d(x, w, b=None, stride=1, padding=0):
+    """
+    x: (N, C_in, H, W)   w: (C_out, C_in, kH, kW)   b: (C_out,)
+    实际是 cross-correlation（不翻转卷积核），和 PyTorch 一致。
+    H_out = (H + 2p - kH) // s + 1
+    """
+    N, C, H, W = x.shape
+    F, C2, kH, kW = w.shape
+    assert C == C2
+    xp = np.pad(x, ((0, 0), (0, 0), (padding, padding), (padding, padding)))
+    Ho = (H + 2 * padding - kH) // stride + 1
+    Wo = (W + 2 * padding - kW) // stride + 1
+    out = np.zeros((N, F, Ho, Wo))
+    for i in range(Ho):
+        for j in range(Wo):
+            hs, ws = i * stride, j * stride
+            patch = xp[:, :, hs:hs + kH, ws:ws + kW]            # (N, C, kH, kW)
+            # 对 (C, kH, kW) 求和：(N, 1, C, kH, kW) * (1, F, C, kH, kW)
+            out[:, :, i, j] = np.tensordot(patch, w, axes=([1, 2, 3], [1, 2, 3]))
+    if b is not None:
+        out += b[None, :, None, None]
+    return out
+
+def conv2d_im2col(x, w, b=None, stride=1, padding=0):
+    """同样的结果，用 im2col 变成一次矩阵乘（GPU 上卷积的经典实现思路）。"""
+    N, C, H, W = x.shape
+    F, _, kH, kW = w.shape
+    xp = np.pad(x, ((0, 0), (0, 0), (padding, padding), (padding, padding)))
+    Ho = (H + 2 * padding - kH) // stride + 1
+    Wo = (W + 2 * padding - kW) // stride + 1
+    cols = np.empty((N, C * kH * kW, Ho * Wo))
+    for i in range(Ho):
+        for j in range(Wo):
+            hs, ws = i * stride, j * stride
+            cols[:, :, i * Wo + j] = xp[:, :, hs:hs + kH, ws:ws + kW].reshape(N, -1)
+    out = w.reshape(F, -1) @ cols                               # (F, CkHkW) @ (N, CkHkW, HoWo)
+    out = out.reshape(N, F, Ho, Wo)
+    return out + (b[None, :, None, None] if b is not None else 0)</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">from scipy.signal import correlate
+rng = np.random.default_rng(0)
+x = rng.normal(size=(2, 3, 7, 6)); w = rng.normal(size=(4, 3, 3, 2)); b = rng.normal(size=4)
+y = conv2d(x, w, b, stride=1, padding=1)
+assert y.shape == (2, 4, 7, 7)
+# 参考：scipy 的 valid cross-correlation，在 padding 后的输入上逐通道求和
+xp = np.pad(x, ((0, 0), (0, 0), (1, 1), (1, 1)))
+ref = np.stack([np.stack([sum(correlate(xp[n, c], w[f, c], mode="valid") for c in range(3)) + b[f]
+                          for f in range(4)]) for n in range(2)])
+assert np.allclose(y, ref)
+y2 = conv2d(x, w, b, stride=2, padding=1)
+assert y2.shape == (2, 4, 4, 4) and np.allclose(y2, ref[:, :, ::2, ::2])
+assert np.allclose(conv2d_im2col(x, w, b, 2, 1), y2)
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>把卷积核翻转（数学卷积）：和 PyTorch 结果不一致。</li><li>输出尺寸公式忘记 +1 或忘记 floor。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>The output size is H plus two p minus k, integer-divided by the stride, plus one. For each output location I slice the padded input patch and contract it with the kernel over input channels and kernel height and width, giving batch by out-channels. Like PyTorch, this is cross-correlation, no kernel flip. To make it one matrix multiply, im2col unrolls every patch into a column and the convolution becomes the reshaped kernel times that matrix.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>Write the backward pass for the weights.</b><details><summary>思路</summary><div class="inner"><p>\( \bar w_{f,c,i,j} = \sum_{n,h,w} \bar y_{n,f,h,w}\, x^{pad}_{n,c,hs+i,ws+j} \)；用 im2col 就是 <code>dW = dY.reshape(N,F,-1) @ cols.transpose(0,2,1)</code> 再对 N 求和。</p></div></details></li>
+<li><b>What's the receptive field after L layers of 3×3 stride-1 convolutions?</b><details><summary>思路</summary><div class="inner"><p>2L+1。stride 和 dilation 会让感受野更快增长。</p></div></details></li>
+</ol></div></section>
+<section class="concept" id="c-auc">
+<div class="concept-head"><span class="pri p3">○</span><h3>P26 · ROC AUC</h3></div>
+<div class="box tldr"><span class="lbl">一句话 · 目标 10 min</span><p>AUC = 随机正样本得分高于随机负样本的概率（并列算 0.5）；用秩和（Mann–Whitney U）O(N log N) 计算，并列取平均秩。</p><p class="en">Compute ROC AUC via the rank-sum (Mann–Whitney U) formula with tie handling.</p></div>
+<div class="deep">
+<div class="box"><span class="lbl">题面 · Interviewer says</span><p><i>Compute ROC AUC from labels and scores without sklearn. Handle ties.</i></p></div>
+<p><b>中文说明。</b><code>roc_auc(y_true, scores)</code>。先给出 O(PN) 的两两比较版本，再优化到排序版本。</p>
+<div class="box why"><span class="lbl">写之前先想清楚</span><ul><li>概率解释：\( \mathrm{AUC} = P(s^+ &gt; s^-) + \tfrac12 P(s^+ = s^-) \)。</li><li>秩公式：把所有分数升序排序得到秩 R（从 1 开始，并列取平均），\( U = \sum_{i\in +} R_i - \frac{n_+(n_++1)}{2} \)，\( \mathrm{AUC} = U/(n_+ n_-) \)。</li><li>边界：只有一类时 AUC 未定义。</li></ul></div>
+
+</div>
+<details class="deep"><summary>提示 1</summary><div class="inner">暴力版：<code>diff = pos[:, None] - neg[None, :]</code>；<code>((diff &gt; 0) + 0.5 * (diff == 0)).mean()</code>。</div></details>
+<details class="deep"><summary>参考答案（先自己写完再看）</summary><div class="inner"><p style="font:11px var(--mono);color:var(--muted)">numpy / 纯 Python：已在本地完整运行通过</p><pre><code class="language-python">import numpy as np
+
+def roc_auc(y_true, scores):
+    """
+    AUC = P(score_pos &gt; score_neg) + 0.5 * P(相等)。
+    用秩 (Mann–Whitney U)：O(N log N)。并列的分数取平均秩。
+    """
+    y = np.asarray(y_true).astype(bool)
+    s = np.asarray(scores, dtype=float)
+    n_pos, n_neg = y.sum(), (~y).sum()
+    assert n_pos &gt; 0 and n_neg &gt; 0, "AUC 需要正负样本都有"
+    order = np.argsort(s, kind="mergesort")
+    ranks = np.empty(len(s))
+    sorted_s = s[order]
+    i = 0
+    while i &lt; len(s):                       # 给并列的一段赋平均秩（秩从 1 开始）
+        j = i
+        while j + 1 &lt; len(s) and sorted_s[j + 1] == sorted_s[i]:
+            j += 1
+        ranks[order[i:j + 1]] = (i + j) / 2 + 1
+        i = j + 1
+    u = ranks[y].sum() - n_pos * (n_pos + 1) / 2
+    return u / (n_pos * n_neg)
+
+def roc_auc_bruteforce(y_true, scores):     # O(P * N)，面试时先写这个也行
+    y = np.asarray(y_true).astype(bool); s = np.asarray(scores, float)
+    pos, neg = s[y], s[~y]
+    diff = pos[:, None] - neg[None, :]
+    return ((diff &gt; 0) + 0.5 * (diff == 0)).mean()</code></pre></div></details>
+<details class="deep"><summary>测试（写完后粘到解答下面运行）</summary><div class="inner"><pre><code class="language-python">from sklearn.metrics import roc_auc_score
+rng = np.random.default_rng(0)
+for _ in range(20):
+    n = rng.integers(5, 200)
+    y = rng.integers(0, 2, n); y[0], y[1] = 0, 1
+    s = rng.integers(0, 10, n).astype(float)          # 故意制造大量并列
+    assert abs(roc_auc(y, s) - roc_auc_score(y, s)) &lt; 1e-12
+    assert abs(roc_auc_bruteforce(y, s) - roc_auc_score(y, s)) &lt; 1e-12
+assert roc_auc([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9]) == 1.0
+assert roc_auc([0, 1], [0.5, 0.5]) == 0.5
+print("ok")</code></pre></div></details>
+<div class="box pitfall deep"><span class="lbl">常见误区</span><ul><li>并列时不取平均秩：结果依赖排序算法的稳定性。</li><li>用阈值扫描画 ROC 再用梯形积分时，同分点要一起处理，否则曲线有锯齿误差。</li></ul></div>
+<div class="box say"><span class="lbl">Say it in English · 边写边讲</span><p>AUC is the probability that a random positive scores higher than a random negative, counting ties as half. The quadratic version compares all pairs. The efficient version sorts once, assigns average ranks to ties, and uses the Mann–Whitney identity: the sum of positive ranks minus n-plus times n-plus-plus-one over two, divided by the number of positive-negative pairs.</p></div>
+<div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+<li><b>When is AUC misleading?</b><details><summary>思路</summary><div class="inner"><p>正样本极少时 ROC AUC 可能很高但 precision 很低（大量负样本让 FPR 很小）；此时看 PR-AUC / average precision。AUC 也不反映校准（calibration）。</p></div></details></li>
+</ol></div></section><h2 class="sec" id="s-bugs"><span class="num">§7 · BUG HUNT</span>找 bug 练习</h2><p class="sec-intro">面试的另一种形式：给你一段“几乎正确”的代码，让你找出问题。每段都对应前面某道题的经典错误。先自己找，再看答案。</p><div class="exercise deep"><div class="ex-head"><b>练习 7.1</b> · 难度 ★</div><p>MHA 的 head 拆分：</p><pre><code class="language-python">q = self.q_proj(x)                    # (B, T, C)
+q = q.view(B, self.h, T, self.d)      # (B, h, T, d) ?
+</code></pre><details><summary>提示</summary><div class="inner"><p>view 只是重新解释内存。原张量在内存里是按 (B, T, C) 排列的。</p></div></details><details><summary>参考答案</summary><div class="inner"><p><code>view(B, h, T, d)</code> 会把同一个时间步的 C 个特征和相邻时间步混在一起切成 head，形状对但语义错。正确：<code>q.view(B, T, h, d).transpose(1, 2)</code>。</p></div></details></div><div class="exercise deep"><div class="ex-head"><b>练习 7.2</b> · 难度 ★</div><p>Top-p：</p><pre><code class="language-python">probs = sorted_logits.softmax(-1)
+cum = probs.cumsum(-1)
+remove = cum &gt; top_p
+sorted_logits[remove] = float("-inf")
+</code></pre><details><summary>提示</summary><div class="inner"><p>考虑分布 [0.9, 0.05, 0.05]，top_p = 0.5。</p></div></details><details><summary>参考答案</summary><div class="inner"><p>第一个 token 的 cum = 0.9 &gt; 0.5，被移除；所有 token 都被移除 → softmax 得 nan。而且一般情况下会把“刚好跨过阈值”的那个 token 也去掉，使保留质量 &lt; p。正确：<code>remove = (cum - probs) &gt;= top_p</code>（或把 remove 右移一位并强制保留第一个）。</p></div></details></div><div class="exercise deep"><div class="ex-head"><b>练习 7.3</b> · 难度 ★</div><p>RLHF 里计算 response 的 log-prob：</p><pre><code class="language-python">logp = F.log_softmax(logits, -1)                         # (B, T, V)
+tok_logp = logp.gather(-1, input_ids.unsqueeze(-1)).squeeze(-1)   # (B, T)
+seq_logp = (tok_logp * response_mask).sum(-1)
+</code></pre><details><summary>提示</summary><div class="inner"><p>logits[:, t] 预测的是哪个位置的 token？</p></div></details><details><summary>参考答案</summary><div class="inner"><p>没有错位。<code>logits[:, t]</code> 预测 <code>input_ids[:, t+1]</code>。应为 <code>logits[:, :-1]</code> 对 <code>input_ids[:, 1:]</code>，mask 也取 <code>response_mask[:, 1:]</code>（若 mask 是按 input_ids 位置定义的）。</p></div></details></div><div class="exercise deep"><div class="ex-head"><b>练习 7.4</b> · 难度 ★★</div><p>梯度累积：</p><pre><code class="language-python">for i, (x, y) in enumerate(loader):
+    loss = loss_fn(model(x), y)
+    loss.backward()
+    if (i + 1) % k == 0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        sched.step()
+opt.zero_grad()
+</code></pre><details><summary>提示</summary><div class="inner"><p>有两个问题。</p></div></details><details><summary>参考答案</summary><div class="inner"><p>(1) loss 没有除以 k，累积梯度是平均梯度的 k 倍（裁剪阈值含义也变了）；(2) <code>zero_grad</code> 在循环外，梯度从不清零，一直累积。应在 <code>opt.step()</code> 之后 <code>opt.zero_grad()</code>。</p></div></details></div><div class="exercise deep"><div class="ex-head"><b>练习 7.5</b> · 难度 ★★</div><p>PPO：</p><pre><code class="language-python">values = value_head(hidden)                      # (B, T)
+adv = returns - values
+ratio = torch.exp(logp_new - logp_old)
+loss = -torch.min(ratio * adv, ratio.clamp(1 - eps, 1 + eps) * adv).mean()
+</code></pre><details><summary>提示</summary><div class="inner"><p>advantage 应该是什么性质的量？还有 mean 在哪些 token 上？</p></div></details><details><summary>参考答案</summary><div class="inner"><p>(1) <code>adv</code> 带着 value head 的梯度，policy loss 会反向传播进 value head；应在 rollout 阶段用 GAE 算好并 <code>.detach()</code>（通常还会做归一化）。(2) <code>.mean()</code> 包含 prompt 和 padding token，应使用 response mask 的 masked mean。</p></div></details></div><div class="exercise deep"><div class="ex-head"><b>练习 7.6</b> · 难度 ★★</div><p>KV cache 生成：</p><pre><code class="language-python">logits, caches = model(prompt)
+for _ in range(n):
+    nxt = logits[:, -1].argmax(-1, keepdim=True)
+    out = torch.cat([out, nxt], 1)
+    logits, caches = model(out, caches)
+</code></pre><details><summary>提示</summary><div class="inner"><p>每次调用 model 时输入的是什么？</p></div></details><details><summary>参考答案</summary><div class="inner"><p>每步把<b>整个</b>序列 <code>out</code> 连同 cache 一起喂进去，历史 token 被重复计算并重复写入 cache。应只喂 <code>nxt</code>（形状 (B,1)）。</p></div></details></div><div class="exercise deep"><div class="ex-head"><b>练习 7.7</b> · 难度 ★★</div><p>Micrograd 的乘法：</p><pre><code class="language-python">def __mul__(self, other):
+    out = Value(self.data * other.data, (self, other))
+    def _backward():
+        self.grad = other.data * out.grad
+        other.grad = self.data * out.grad
+    out._backward = _backward
+    return out
+</code></pre><details><summary>提示</summary><div class="inner"><p>算一下 <code>a * a</code> 的梯度。</p></div></details><details><summary>参考答案</summary><div class="inner"><p>用 <code>=</code> 覆盖而不是 <code>+=</code> 累加。<code>a*a</code> 时 self 和 other 是同一个对象，第二行覆盖第一行，得到 a 而不是 2a；任何被多处使用的节点梯度都会错。</p></div></details></div><div class="exercise deep"><div class="ex-head"><b>练习 7.8</b> · 难度 ★</div><p>LayerNorm：</p><pre><code class="language-python">mu = x.mean(-1, keepdim=True)
+var = x.var(-1, keepdim=True)
+y = (x - mu) / (var.sqrt() + eps) * self.weight + self.bias
+</code></pre><details><summary>提示</summary><div class="inner"><p>两处与标准定义不符。</p></div></details><details><summary>参考答案</summary><div class="inner"><p>(1) <code>x.var</code> 默认无偏（除以 d−1），应 <code>unbiased=False</code>（新版 <code>correction=0</code>）；(2) eps 应在根号内：<code>torch.sqrt(var + eps)</code>。</p></div></details></div><h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2><p class="sec-intro">面试前一晚过一遍。左列是你需要能脱口而出的东西。</p><div class="table-wrap"><table><thead><tr><th>主题</th><th>必须记住</th></tr></thead><tbody>
+<tr><td>Stable softmax</td><td><code>e = exp(x - x.max(dim, keepdim=True).values)</code>；log_softmax = x − LSE；LSE = m + log Σ exp(x − m)</td></tr>
+<tr><td>CE</td><td>LSE(z) − z_y；∂/∂z = softmax − onehot；ignore_index：先 masked_fill 成 0 再 gather，分母 = 有效 token 数；初始 loss ≈ ln V</td></tr>
+<tr><td>LayerNorm</td><td>有偏方差，eps 在根号内；RMSNorm 无均值无 β；LN backward：\( \bar x = r(g - \bar g - \hat x\,\overline{g\hat x}) \)</td></tr>
+<tr><td>Linear</td><td>W 形状 (out, in)，<code>x @ W.T + b</code>；init bound 1/√fan_in；子模块用属性/ModuleList</td></tr>
+<tr><td>Dropout</td><td>训练：mask/(1−p)；推理：恒等；no_grad 不关闭 dropout，eval() 才关</td></tr>
+<tr><td>SDPA</td><td>softmax(QKᵀ/√d + M)V；mask 在 softmax 前填 −inf；causal + cache：<code>tril(ones(Tq,Tk), diagonal=Tk-Tq)</code>；padding mask view 成 (B,1,1,Tk)</td></tr>
+<tr><td>MHA</td><td>view(B,T,h,d).transpose(1,2)；合并：transpose(1,2).contiguous().view(B,T,C)；GQA：repeat_interleave(h//kvh, dim=1)</td></tr>
+<tr><td>KV cache 大小</td><td>2 × L × kvh × d_head × bytes × T（每序列）</td></tr>
+<tr><td>RoPE</td><td>θᵢ = base^(−2i/d)；rotate-half：cat(x1 cos − x2 sin, x1 sin + x2 cos)；只作用于 q、k；位置从 past_len 起</td></tr>
+<tr><td>Mini-GPT</td><td>pre-norm：x += attn(ln1(x)); x += mlp(ln2(x))；ln_f；weight tying；y = x 右移一位；init std 0.02</td></tr>
+<tr><td>训练循环</td><td>zero_grad → forward → loss → backward → clip → step → sched.step</td></tr>
+<tr><td>Top-p</td><td>sort desc → softmax → cumsum → remove = (cum − probs) ≥ p → scatter 回去</td></tr>
+<tr><td>Beam</td><td>log-prob 求和；EOS 移入 finished；score / len^α</td></tr>
+<tr><td>AdamW</td><td>m, v EMA；除以 1 − βᵗ；θ −= lr·m̂/(√v̂ + ε)；decay：θ *= (1 − lr·λ)，不进 m/v；16 B/参数</td></tr>
+<tr><td>Cosine</td><td>warmup：max·(s+1)/W；之后 min + ½(max−min)(1+cos πp)</td></tr>
+<tr><td>累积/裁剪</td><td>(loss/k).backward()；全局范数 √Σ‖g‖²；累积完再裁剪</td></tr>
+<tr><td>Autograd</td><td>拓扑排序逆序；grad 用 +=</td></tr>
+<tr><td>Token logp</td><td>logits[:, :-1] ↔ ids[:, 1:]；mask 同样右移；fp32</td></tr>
+<tr><td>PPO</td><td>r = exp(Δlogp)；−mean(min(rA, clip(r)A)) + c_v·½(V−R)² − c_e·H；A/R/logp_old 为常数</td></tr>
+<tr><td>DPO</td><td>−logσ(β[(π_c − ref_c) − (π_r − ref_r)])，序列 log-prob 求和；π = ref 时 loss = ln 2</td></tr>
+<tr><td>GRPO</td><td>A = (r − mean_g)/std_g；k3 = \( e^{u} - u - 1 \)，u = logp_ref − logp_new；序列内平均再平均；全对/全错组 A = 0</td></tr>
+<tr><td>经典</td><td>k-means：‖x‖² − 2x·c + ‖c‖²；logreg：∇w = Xᵀ(p − y)/N；conv：(H+2p−k)//s + 1；AUC：(ΣR⁺ − n⁺(n⁺+1)/2)/(n⁺n⁻)</td></tr>
+</tbody></table></div>
+
+<h3>高频面试题清单</h3>
+<ol>
+<li>“Implement multi-head attention from scratch.” → <a href="#c-mha">P7</a>（先 <a href="#c-sdpa">P6</a>）</li>
+<li>“Write a numerically stable softmax / cross-entropy.” → <a href="#c-softmax">P1</a>、<a href="#c-ce">P2</a></li>
+<li>“Implement LayerNorm / RMSNorm (and its backward).” → <a href="#c-norm">P3</a></li>
+<li>“Write a small GPT and train it.” → <a href="#c-minigpt">P10</a></li>
+<li>“Implement top-k / top-p sampling.” → <a href="#c-sampling">P11</a></li>
+<li>“Add a KV cache to generation.” → <a href="#c-kvdecode">P9</a>、<a href="#c-generate">P13</a></li>
+<li>“Implement RoPE.” → <a href="#c-rope">P8</a></li>
+<li>“Write the PPO / DPO / GRPO loss.” → <a href="#c-ppo">P19</a>、<a href="#c-dpo">P20</a>、<a href="#c-grpo">P21</a>（先 <a href="#c-logprobs">P18</a>）</li>
+<li>“Implement Adam / AdamW.” → <a href="#c-adamw">P14</a></li>
+<li>“Implement backprop for a tiny autodiff engine.” → <a href="#c-micrograd">P17</a></li>
+<li>“Implement beam search.” → <a href="#c-beam">P12</a></li>
+<li>“Train a BPE tokenizer.” → <a href="#c-bpe">P24</a></li>
+<li>“K-means / logistic regression in numpy.” → <a href="#c-kmeans">P22</a>、<a href="#c-logreg">P23</a></li>
+</ol>
+<p>相关阅读（可选）：循环/潜在推理方向的 <a href="https://arxiv.org/abs/2510.25741" target="_blank" rel="noreferrer">Looped LMs / Ouro (arXiv 2510.25741)</a>，可以作为 P10 mini-GPT 的扩展练习——把同一组 block 循环多次。</p>
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m14" data-title="模块 14 自测卡片"></div>
+<div class="footer-nav"><a href="m13-eval.html">← 13 评估与实验方法</a><a href="m15-algorithms.html">15 算法题（按题型） →</a></div>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m14.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
