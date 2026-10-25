@@ -23,7 +23,7 @@ window.MODULES = [
     title: '深度学习基础',
     desc: '反向传播、激活函数、初始化、归一化、残差、数值稳定性。',
     topics: '手推 MLP 梯度 · SwiGLU · Kaiming · BN/LN/RMSNorm · 残差 · softmax 稳定性 · CE 梯度 p−y' },
-  { id: 'm04', num: '04', phase: 'p2', pri: 1, status: 'planned', file: 'modules/m04-transformer.html',
+  { id: 'm04', num: '04', phase: 'p2', pri: 1, status: 'ready', file: 'modules/m04-transformer.html',
     title: 'Transformer 架构',
     desc: '最高频模块。Attention、位置编码、整体结构、参数与 FLOPs 估算、MoE、FlashAttention、tokenizer。',
     topics: '√d 缩放 · MHA/MQA/GQA/MLA · RoPE · Pre/Post-Norm · 6ND · MoE · FlashAttention · BPE' },

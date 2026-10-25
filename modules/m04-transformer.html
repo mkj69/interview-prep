@@ -1,0 +1,1395 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · Transformer 架构 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m04">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 04 · Phase 2 · LLM 核心知识</div>
+<h1 class="title">Transformer <em>架构</em></h1>
+<p class="lede">RS 面试里被问得最多的一章。面试官默认你能在白板上写出 attention、讲清楚每个设计为什么存在、算出一个模型有多少参数和需要多少 FLOPs，并且知道 2023–2025 年主流开源模型（LLaMA、Mistral、DeepSeek、Gemma）在原始 Transformer 上做了哪些改动。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完后你应该能做到：
+<ol>
+<li>手写 causal multi-head attention（含 GQA、RoPE、mask），并解释每一个 reshape / transpose 的形状；</li>
+<li>从零推导：为什么除以 \(\sqrt{d_k}\)、RoPE 为什么只依赖相对位置、online softmax 的递推、参数量 \(\approx 12Ld^2\)、训练 FLOPs \(\approx 6ND\)；</li>
+<li>讲清楚现代 LLM 的"标准配方"：Pre-Norm + RMSNorm + SwiGLU + RoPE + GQA + 无 bias + （可选）MoE，并说出每个选择的理由与代价；</li>
+<li>回答 KV cache、FlashAttention、MoE 负载均衡、tokenizer 等高频追问。</li>
+</ol>
+<b>建议顺序。</b>§1 → §3 → §4 → §5 是骨架，必须先吃透（约 2 天）；§2、§7、§8 是现代 LLM 的关键改动（约 2 天）；§9–§10 是细节题；§11 代码要自己从空白文件写 2–3 遍；§12 练习和最后的高频题清单留到面试前一周反复刷。<br>
+<b>和其他模块的关系。</b>需要 <a href="m03-dl-basics.html">03 深度学习基础</a> 的 softmax/LayerNorm/残差；KV cache 的系统层面细节在 <a href="m08-inference.html">08 推理与解码系统</a>；并行训练（TP/EP）在 <a href="m09-distributed.html">09 分布式训练</a>；scaling law 和训练稳定性在 <a href="m05-pretraining.html">05 预训练</a>；手写题的限时练习在 <a href="m14-ml-coding.html">14 ML Coding</a>。</div>
+
+<div class="box why"><span class="lbl">记号约定（全章统一）</span>
+\(B\) batch，\(T\) 序列长度，\(d\)（或 \(d_{\text{model}}\)）隐藏维度，\(H\) query 头数，\(H_{kv}\) KV 头数，\(d_h=d/H\) 每头维度，\(L\) 层数，\(V\) 词表大小，\(d_{ff}\) FFN 中间维度，\(N\) 参数量，\(D\) 训练 token 数。张量形状写作 <code>(B, H, T, dh)</code>。</div>
+
+<!-- ============================================================ §1 -->
+<h2 class="sec" id="s-attn"><span class="num">§1 · ATTENTION</span>注意力机制</h2>
+<p class="sec-intro">所有东西的起点。面试官最喜欢从"写一下 attention 公式"开始，然后一路追问：为什么缩放？为什么 softmax？mask 怎么加？多头为什么有用？复杂度多少？这一节把每一个追问都提前回答掉。</p>
+
+<section class="concept" id="c-sdpa">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Scaled dot-product attention：公式与 Q/K/V 直觉</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每个位置用自己的 query 去和所有位置的 key 做点积打分，softmax 归一化成权重，再对 value 加权求和：\(\mathrm{Attn}(Q,K,V)=\mathrm{softmax}\!\big(QK^\top/\sqrt{d_k}\big)V\)。</p><p class="en">Each token issues a query, scores it against every key, normalizes the scores with a softmax, and returns the weighted average of the values.</p></div>
+  <div class="deep">
+    <p><b>公式。</b>给定输入 \(X\in\mathbb{R}^{T\times d}\)，三个线性投影得到</p>
+    $$Q = XW_Q,\quad K = XW_K,\quad V = XW_V,\qquad W_Q,W_K\in\mathbb{R}^{d\times d_k},\ W_V\in\mathbb{R}^{d\times d_v}$$
+    $$\mathrm{Attn}(Q,K,V)=\underbrace{\mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)}_{A\,\in\,\mathbb{R}^{T\times T},\ \text{每行和为 }1}V\ \in \mathbb{R}^{T\times d_v}$$
+    <p>第 \(i\) 行输出是 \(o_i=\sum_j A_{ij}v_j\)，其中 \(A_{ij}=\dfrac{\exp(q_i\cdot k_j/\sqrt{d_k})}{\sum_{j'}\exp(q_i\cdot k_{j'}/\sqrt{d_k})}\)。</p>
+    <p><b>Q/K/V 直觉（数据库类比）。</b></p>
+    <ul>
+      <li><b>Query</b> = "我在找什么"（当前 token 想获取的信息类型）；</li>
+      <li><b>Key</b> = "我能提供什么的索引/标签"（用于被匹配）；</li>
+      <li><b>Value</b> = "被选中后真正传递的内容"。</li>
+    </ul>
+    <p>这是一个<b>软的、可微的</b>查表：不是取出 argmax 那一条，而是按相似度加权平均所有条目。key 和 value 分开投影的意义是：<b>"用什么来匹配"和"匹配上之后传什么"可以不同</b>。例如代词 "it" 的 query 去匹配名词的 key（语法角色），拿到的 value 却是该名词的语义内容。</p>
+    <div class="box why"><span class="lbl">直觉</span>Attention 是 token 之间<b>唯一</b>交换信息的地方（FFN 是逐位置独立的）。所以"模型怎样把信息从位置 j 搬到位置 i"这个问题，答案总是某个 attention head。可解释性里叫 QK circuit（决定从哪里读）和 OV circuit（决定读到什么、写回什么），见 <a href="m11-interp.html">11 可解释性</a>。</div>
+    <p><b>为什么用 softmax？</b>（1）输出非负且和为 1，是"凸组合"，输出始终落在 value 的凸包里，数值规模稳定；（2）可微、对大分数有"近似 argmax"的选择效果；（3）指数让模型可以通过放大 logit 来做尖锐选择。代价是需要对整行归一化，这正是 FlashAttention 要用 online softmax 解决的问题（§8）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>softmax 的维度写错：必须在 <b>key 维（最后一维）</b>上归一化，即每个 query 的权重和为 1。写成 <code>dim=-2</code> 是经典 find-the-bug 题。</li>
+      <li>以为 Q、K、V 是三个不同的输入：在 self-attention 里它们来自同一个 \(X\)；cross-attention 里 Q 来自 decoder，K/V 来自 encoder 输出。</li>
+      <li>以为 attention 本身"知道"顺序：它对 key 的排列是置换等变的，位置信息必须另外注入（§3）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Attention is a soft, differentiable lookup. Each token projects its hidden state into a query, a key and a value. The query of token i is dotted with the keys of all tokens, scaled by one over root d_k, and a softmax over the key dimension turns those scores into weights that sum to one. The output is the weighted average of the value vectors. Separating keys from values lets the model decide what to match on independently from what information to move. Attention is the only place where tokens exchange information; the MLP acts on each position independently.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why not use a plain dot product without separate projections, i.e. softmax(XXᵀ)X?</b><details><summary>思路</summary><div class="inner">那样分数矩阵对称（\(i\) 关注 \(j\) 与 \(j\) 关注 \(i\) 程度相同），而且每个 token 往往最关注自己（\(x_i\cdot x_i=\|x_i\|^2\) 通常最大）。独立的 \(W_Q, W_K\) 让相似度可以是非对称的、可学习的双线性形式 \(x_i^\top W_QW_K^\top x_j\)；\(W_V\) 让被搬运的内容与匹配特征解耦。</div></details></li>
+    <li><b>Is attention permutation-invariant or equivariant?</b><details><summary>思路</summary><div class="inner">没有位置编码、没有 mask 时，self-attention 对输入序列的置换是<b>等变</b>的（permutation-equivariant）：打乱输入，输出以同样方式被打乱。对单个 query 而言，对 key/value 的集合是<b>不变</b>的。所以需要位置编码。注意：加了 causal mask 后，decoder 本身已经能隐式地推断位置（见 NoPE，§3）。</div></details></li>
+    <li><b>What is the difference between self-attention and cross-attention?</b><details><summary>思路</summary><div class="inner">Self-attention：Q、K、V 都来自同一序列。Cross-attention：Q 来自一个序列（如 decoder 状态），K/V 来自另一个（如 encoder 输出或图像特征）。原始 Transformer 的 decoder 每层有 masked self-attn + cross-attn + FFN 三个子层；decoder-only 模型没有 cross-attention。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-scale">
+  <div class="concept-head"><span class="pri p1">★</span><h3>为什么除以 √d<sub>k</sub>：完整推导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>若 \(q,k\) 各分量独立、均值 0、方差 1，则 \(q\cdot k\) 的方差是 \(d_k\)；除以 \(\sqrt{d_k}\) 把方差拉回 1，避免 softmax 饱和成 one-hot、梯度消失。</p><p class="en">Without scaling, dot-product logits have variance d_k, which saturates the softmax and kills gradients; dividing by root d_k keeps the variance at one.</p></div>
+  <div class="deep">
+    <p><b>推导。</b>设 \(q,k\in\mathbb{R}^{d_k}\)，各分量 \(q_i,k_i\) 相互独立，\(\mathbb{E}[q_i]=\mathbb{E}[k_i]=0\)，\(\mathrm{Var}[q_i]=\mathrm{Var}[k_i]=1\)。</p>
+    <ol>
+      <li>单项均值：\(\mathbb{E}[q_ik_i]=\mathbb{E}[q_i]\mathbb{E}[k_i]=0\)（独立）。</li>
+      <li>单项方差：\(\mathrm{Var}[q_ik_i]=\mathbb{E}[q_i^2k_i^2]-(\mathbb{E}[q_ik_i])^2=\mathbb{E}[q_i^2]\,\mathbb{E}[k_i^2]-0=1\cdot 1=1\)。</li>
+      <li>不同项 \(q_ik_i\) 与 \(q_jk_j\)（\(i\ne j\)）独立，方差可加：\(\mathrm{Var}[q\cdot k]=\sum_{i=1}^{d_k}\mathrm{Var}[q_ik_i]=d_k\)。</li>
+      <li>所以 \(\mathrm{Var}\big[q\cdot k/\sqrt{d_k}\big]=d_k/d_k=1\)。</li>
+    </ol>
+    <p><b>为什么方差大会坏事？</b>softmax 对输入的缩放非常敏感。若 logits 标准差是 \(\sqrt{d_k}\)（\(d_k=128\) 时约 11），最大的 logit 往往比其他大很多，softmax 输出接近 one-hot。softmax 的 Jacobian 是 \(\partial p_i/\partial z_j=p_i(\delta_{ij}-p_j)\)，当 \(p\) 接近 one-hot 时所有元素都接近 0（\(p_i(1-p_i)\approx0\)），梯度几乎消失，训练变慢甚至停滞。</p>
+    <p><b>温度视角。</b>\(\sqrt{d_k}\) 就是 softmax 的温度 \(\tau\)。缩放让初始化时的注意力分布接近"适度平滑"，之后模型可以通过学习增大 \(\|q\|,\|k\|\) 自己把它变尖锐。</p>
+    <div class="box why"><span class="lbl">直觉</span>点积是 \(d_k\) 个随机项的和，随机游走的幅度按 \(\sqrt{d_k}\) 增长。除以 \(\sqrt{d_k}\) 是标准的"把和变成平均值的标准化"（类似 CLT 的 \(1/\sqrt{n}\)）。</div>
+    <p><b>实践补充。</b>(1) 假设"方差为 1"只在初始化附近大致成立，训练中 \(q,k\) 的范数会增长，导致 attention logit 爆炸、loss spike，这是 QK-norm 和 logit soft-capping 出现的原因（§10）。(2) μP 里 attention 用 \(1/d_k\) 而不是 \(1/\sqrt{d_k}\)，理由是训练后 \(q,k\) 会相关，点积按 \(d_k\) 而非 \(\sqrt{d_k}\) 增长（见 <a href="m05-pretraining.html">05 预训练</a> μP 部分）。(3) 我们用 numpy 实测：\(d=16,256,4096\) 时 \(\mathrm{Var}[q\cdot k]/d\) 都在 1 附近（脚本见 §11）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>说"除以 \(\sqrt{d}\) 是为了让数值不溢出"——不准确。fp32 下几十的 logit 不会溢出（稳定 softmax 会减去最大值）。核心原因是<b>softmax 饱和导致梯度消失</b>。另外注意是除以 \(\sqrt{d_k}\)（每头维度），不是 \(\sqrt{d_{\text{model}}}\)。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If the components of q and k are independent with zero mean and unit variance, each product q_i k_i has variance one, and the dot product sums d_k of them, so its variance is d_k. With d_k around 128, the logits would have a standard deviation of about eleven, and the softmax would saturate to nearly one-hot. The softmax Jacobian, p_i times delta_ij minus p_j, then goes to zero, so gradients vanish. Dividing by root d_k brings the variance back to one, which is equivalent to choosing a sensible softmax temperature at initialization.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why not just normalize q and k, or use a learned temperature?</b><details><summary>思路</summary><div class="inner">这确实是可行方案：QK-norm（对 q、k 做 LayerNorm/RMSNorm 后再点积，常配可学习尺度）被很多模型采用来防止 logit 增长（如 OLMo 2、Gemma 3）。\(\sqrt{d_k}\) 只修正初始化时的尺度；QK-norm 在整个训练过程中约束尺度。</div></details></li>
+    <li><b>Additive attention (Bahdanau) vs dot-product attention?</b><details><summary>思路</summary><div class="inner">Additive：\(v^\top\tanh(W_1q+W_2k)\)，小 \(d_k\) 时效果相近，但无法用一个大矩阵乘法批量完成，硬件效率差。Dot-product 能写成 \(QK^\top\) 一次 GEMM，所以胜出；原论文也提到大 \(d_k\) 时不缩放的点积会变差，这正是引入缩放的动机。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-mask">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Causal mask 与 padding mask</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在 softmax <b>之前</b>把不允许看的位置的 logit 设为 \(-\infty\)，这样 \(e^{-\infty}=0\)，被屏蔽位置的权重严格为 0，且剩余权重自动重新归一化。</p><p class="en">Masking adds minus infinity to forbidden logits before the softmax, so they get exactly zero weight and the rest renormalize.</p></div>
+  <div class="deep">
+    <p><b>Causal（因果）mask。</b>自回归 LM 训练时一次喂入整个序列（teacher forcing），位置 \(i\) 只能看到 \(j\le i\)。mask 矩阵是下三角：</p>
+    $$S_{ij}=\begin{cases}q_i\cdot k_j/\sqrt{d_k} & j\le i\\ -\infty & j>i\end{cases},\qquad A=\mathrm{softmax}_{\text{row}}(S)$$
+    <p><b>为什么是 \(-\infty\) 而不是 0？</b></p>
+    <ul>
+      <li>如果在 softmax <b>之前</b>把 logit 置 0：\(e^0=1\)，被屏蔽位置仍然得到正权重，未来信息泄漏。</li>
+      <li>如果在 softmax <b>之后</b>把权重置 0：行和不再为 1，必须手动重新归一化（可以做，但多一步，而且数值上不如直接 \(-\infty\) 干净）。</li>
+      <li>\(-\infty\) 的效果恰好等价于"只在允许的位置上做 softmax"。实践中常用 <code>float('-inf')</code> 或该 dtype 的最小值（如 <code>torch.finfo(dtype).min</code>），后者避免整行都被 mask 时出现 \(-\infty-(-\infty)=\text{NaN}\)。</li>
+    </ul>
+    <p><b>Padding mask。</b>batch 里不同长度的序列右填充 pad token，pad 位置作为 <b>key</b> 必须被屏蔽（形状 <code>(B, 1, 1, Tk)</code> 广播到所有头和所有 query）。pad 位置作为 query 的输出无所谓，只要在 loss 里忽略（<code>ignore_index</code>）。</p>
+    <p><b>KV cache 解码时的 mask 对齐。</b>解码时 query 只有最新的 1 个（或 \(T_q\) 个），key 有 \(T_k\) 个。第 \(i\) 个 query 的绝对位置是 \(T_k-T_q+i\)，所以 mask 是"右下角对齐"的下三角：<code>tril(ones(Tq, Tk), diagonal=Tk-Tq)</code>。单 token 解码时就是全 1（新 token 可以看所有历史）。</p>
+    <p><b>训练并行的关键。</b>causal mask 让一次前向同时计算 \(T\) 个位置的 next-token loss，每个位置都只用到自己的前缀，相当于 \(T\) 个训练样本共享计算。这是 Transformer 训练比 RNN 快的根本原因之一。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>mask 方向写反（用 <code>triu</code> 保留上三角）——模型能看未来，训练 loss 会降得异常低，生成时却一塌糊涂。快速检查：改动最后一个 token，前面位置的输出不应改变。</li>
+      <li>mask 形状 <code>(B, Tk)</code> 直接加到 <code>(B, H, Tq, Tk)</code> 上，广播对齐错位（会对齐到 <code>(Tq, Tk)</code> 而不是 <code>(B, ..., Tk)</code>）。要 reshape 成 <code>(B, 1, 1, Tk)</code>。</li>
+      <li>fp16 下用 <code>-1e9</code> 会溢出成 \(-\infty\)（fp16 最大约 65504），通常也没事，但用 <code>-1e4</code> 这种"不够小"的值在 logit 很大时会泄漏。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For causal language modeling, position i may only attend to positions up to i. I implement that by setting the logits above the diagonal to minus infinity before the softmax. Exponentiating minus infinity gives exactly zero, so the forbidden positions get zero weight and the allowed ones renormalize automatically. Setting the logits to zero would be wrong, because e to the zero is one, so future tokens would still leak in. Padding works the same way: pad keys are masked to minus infinity, and pad positions are ignored in the loss.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What happens if an entire row is masked?</b><details><summary>思路</summary><div class="inner">softmax 分母为 0，\(-\infty - \max = -\infty-(-\infty)\) 得到 NaN，会传播到整个 batch 的梯度。左填充 + causal mask 时 pad query 行可能全被屏蔽。解决：用 <code>finfo.min</code> 代替 \(-\infty\)；或保证每行至少看见自己；或事后把这些行置 0。</div></details></li>
+    <li><b>How do you train on packed sequences without cross-document attention?</b><details><summary>思路</summary><div class="inner">把多个文档拼进一个长序列（packing）提升利用率，用 block-diagonal causal mask（每个文档内部 causal、文档间屏蔽）。FlashAttention 的 varlen 接口（<code>cu_seqlens</code>）直接支持，无需物化 mask。位置编码也应在文档边界重置。细节见 <a href="m05-pretraining.html">05 预训练</a>。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-complexity">
+  <div class="concept-head"><span class="pri p1">★</span><h3>复杂度：O(T²d) 时间、O(T²) 显存</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>\(QK^\top\) 和 \(AV\) 各需要 \(2T^2d\) FLOPs（前向），注意力矩阵占 \(O(BHT^2)\) 显存；投影和 FFN 是 \(O(Td^2)\)。短序列时 FFN 主导，长序列（\(T\gtrsim d\) 量级）时 attention 主导。</p><p class="en">Attention costs O(T squared d) compute and naively O(T squared) memory per head; projections and MLPs cost O(T d squared), so attention dominates only at long context.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>操作</th><th>形状</th><th>前向 FLOPs（乘加算 2）</th></tr>
+      <tr><td>Q,K,V,O 投影</td><td>\((T,d)\times(d,d)\) ×4</td><td>\(8Td^2\)（MHA）</td></tr>
+      <tr><td>\(QK^\top\)</td><td>每头 \((T,d_h)\times(d_h,T)\)，共 \(H\) 头</td><td>\(2T^2d\)</td></tr>
+      <tr><td>softmax</td><td>\((H,T,T)\)</td><td>\(O(HT^2)\)，非矩阵乘，但访存重</td></tr>
+      <tr><td>\(AV\)</td><td>每头 \((T,T)\times(T,d_h)\)</td><td>\(2T^2d\)</td></tr>
+      <tr><td>FFN（4×）</td><td>\((T,d)\times(d,4d)\)，\((T,4d)\times(4d,d)\)</td><td>\(16Td^2\)</td></tr>
+    </table>
+    <p>每层前向 \(\approx 24Td^2 + 4T^2d\)。两项相等的临界点是 \(T = 6d\)。对 \(d=4096\) 的模型，\(T\approx 24\text{k}\) 之前 \(Td^2\) 项占大头。但<b>显存</b>和<b>访存</b>上，朴素实现必须物化 \(B\times H\times T\times T\) 的注意力矩阵：\(T=32\text{k}\)、\(H=32\)、bf16 时单样本单层就是 \(32\cdot 32768^2\cdot 2\text{B}\approx 64\text{GiB}\)，这才是长上下文的真正瓶颈。FlashAttention 不改变 FLOPs，但把显存降到 \(O(T)\)（§8）。</p>
+    <p><b>解码阶段</b>：每生成一个 token，新 query 要和缓存里的 \(t\) 个 key 做点积，每层 \(O(td)\)，生成长度 \(T\) 的总代价 \(O(T^2d)\)；没有 KV cache 时每步都要重算整个前缀，总代价变成 \(O(T^3d)\)，投影部分也从 \(O(Td^2)\) 变成 \(O(T^2d^2)\)。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Per layer, the projections and the MLP cost on the order of T times d squared, while the two attention matmuls cost about four T squared d FLOPs. So at typical context lengths the MLP dominates compute, and attention only takes over when T is several times d. The bigger practical problem is memory traffic: a naive implementation materializes a B by H by T by T score matrix, which is quadratic in sequence length. FlashAttention keeps the FLOPs the same but avoids ever writing that matrix to HBM.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>At what sequence length does attention compute equal MLP compute for d=4096?</b><details><summary>思路</summary><div class="inner">令 \(4T^2d = 24Td^2\)（MHA + 4× FFN），得 \(T=6d\approx 24576\)。若用 SwiGLU / GQA，系数略有变化，但量级是"几倍 \(d\)"。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-mha">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Multi-head attention：动机与精确形状</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把 \(d\) 维拆成 \(H\) 个 \(d_h=d/H\) 维的子空间，每个头独立做 attention、关注不同的关系，拼接后再用 \(W_O\) 混合；参数量和 FLOPs 与单头相同。</p><p class="en">Multi-head attention runs H smaller attentions in parallel subspaces so each head can attend to different things, then concatenates and mixes them with an output projection, at the same cost as one big head.</p></div>
+  <div class="deep">
+    <p><b>为什么要多头？</b>单头 attention 的每一行只有一个概率分布——一个 token 只能"看向一个混合方向"。如果它同时需要关注上一个 token（局部语法）和段首的主语（长程指代），单头只能取平均，信息被糊掉。多头给每个 token \(H\) 个独立的分布。实证上不同头确实特化（previous-token head、induction head、句法头等），但也有很多头可以被剪掉，说明存在冗余。</p>
+    <p><b>精确形状流水线</b>（面试白板必考）：</p>
+<pre><code class="language-text">x            (B, T, d)
+q = x @ Wq   (B, T, d)            Wq: (d, H*dh), d = H*dh
+q.view       (B, T, H, dh)        把最后一维拆成 H 个头
+.transpose   (B, H, T, dh)        头维提前，把 H 当成 batch 维
+scores       (B, H, T, T)         q @ k.transpose(-2, -1) / sqrt(dh)
+attn         (B, H, T, T)         softmax(dim=-1)
+out          (B, H, T, dh)        attn @ v
+.transpose   (B, T, H, dh)
+.contiguous().view (B, T, d)      拼接所有头（concat）
+@ Wo         (B, T, d)            输出投影：混合各头信息</code></pre>
+    <p><b>为什么 transpose 之后要 <code>.contiguous()</code>？</b>transpose 只改 stride 不搬数据，内存不再连续，<code>view</code> 要求连续内存（见 <a href="m01-pytorch.html">01 PyTorch</a> stride 一节）。用 <code>reshape</code> 会自动处理（必要时复制）。</p>
+    <p><b>\(W_O\) 的作用。</b>拼接只是把各头结果并排放；\(W_O\in\mathbb{R}^{d\times d}\) 让不同头的输出线性混合并映射回残差流。数学上等价于"每头有自己的 \(W_O^{(h)}\in\mathbb{R}^{d_h\times d}\)，输出相加"：\(\mathrm{concat}(o^{(1)},\dots,o^{(H)})W_O=\sum_h o^{(h)}W_O^{(h)}\)。可解释性里正是用这个"每头独立写入残差流"的视角。</p>
+    <p><b>参数量</b>（无 bias）：\(W_Q,W_K,W_V,W_O\) 各 \(d\times d\)，共 \(4d^2\)，<b>与头数无关</b>。FLOPs 也与头数无关（\(H\cdot d_h=d\)）。</p>
+    <p><b>头数的权衡。</b>\(d_h\) 太小（如 &lt;32）每头表达能力下降（"low-rank bottleneck"，\(QK^\top\) 秩 \(\le d_h\)）；\(d_h\) 太大头数少。现代 LLM 几乎都用 \(d_h=128\)（LLaMA、Mistral、Qwen 等），也有 64 和 256。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>直接 <code>q.view(B, H, T, dh)</code>（不经过 <code>(B,T,H,dh)</code> 再 transpose）：形状对，但把不同 token 的数据混到一个头里，完全错误且不报错。</li>
+      <li>拼接时忘记 transpose 回 <code>(B,T,H,dh)</code> 就 <code>view(B,T,d)</code>：同样形状对但语义错。</li>
+      <li>说"多头增加参数/计算"——不增加；增加的是表达的"多样性"。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Instead of one attention over the full model dimension, we split d into H heads of size d over H. I project x to queries, keys and values, view the last dimension as H by d_h, and transpose to batch, heads, time, head-dim, so heads behave like an extra batch dimension. Each head computes its own attention pattern, so one head can track the previous token while another tracks a long-range dependency. Then I transpose back, make it contiguous, concatenate the heads and apply the output projection, which mixes information across heads. The parameter count is four d squared regardless of the number of heads.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Can you prune attention heads? What does that tell you?</b><details><summary>思路</summary><div class="inner">可以，Michel et al. 2019 "Are Sixteen Heads Really Better than One?" 发现测试时可以去掉大量头而性能下降很小，Voita et al. 2019 发现少数"专门化"的头最重要。说明多头有冗余，但训练时多头可能有助于优化。GQA/MQA 也是在利用 KV 侧的冗余。</div></details></li>
+    <li><b>Why is d_h usually 128?</b><details><summary>思路</summary><div class="inner">经验 + 硬件。128 足够大避免每头低秩瓶颈，又让头数足够多；同时 128 是 tensor core / FlashAttention kernel 的高效 tile 尺寸。更大的模型通常增加头数而不是 \(d_h\)。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §2 -->
+<h2 class="sec" id="s-kv"><span class="num">§2 · KV-HEAD VARIANTS</span>KV 头变体：MQA、GQA、MLA 与局部注意力</h2>
+<p class="sec-intro">这些改动几乎都是为了<b>推理</b>：自回归解码是访存瓶颈，每一步都要从显存读出整个 KV cache。减少 KV cache 等于减少每步要搬的字节数，也等于能放下更大的 batch / 更长的上下文。详细的服务系统层面在 <a href="m08-inference.html">08</a>。</p>
+
+<section class="concept" id="c-gqa">
+  <div class="concept-head"><span class="pri p1">★</span><h3>MHA → MQA → GQA 与 KV cache 公式</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>MQA 让所有 query 头共享 1 组 K/V，GQA 让每 \(H/H_{kv}\) 个 query 头共享 1 组；KV cache 大小 \(=2\cdot L\cdot H_{kv}\cdot d_h\cdot T\cdot B\cdot\text{bytes}\)，按 \(H/H_{kv}\) 倍缩小，质量损失很小。</p><p class="en">GQA groups query heads to share key-value heads, shrinking the KV cache by H over H_kv with little quality loss; MQA is the extreme case of a single KV head.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th></th><th>MHA</th><th>GQA</th><th>MQA</th></tr>
+      <tr><td>KV 头数 \(H_{kv}\)</td><td>\(H\)</td><td>\(1&lt;H_{kv}&lt;H\)（常见 8）</td><td>1</td></tr>
+      <tr><td>KV cache / token / 层</td><td>\(2Hd_h=2d\)</td><td>\(2H_{kv}d_h\)</td><td>\(2d_h\)</td></tr>
+      <tr><td>\(W_K,W_V\) 参数</td><td>\(2d^2\)</td><td>\(2d\cdot H_{kv}d_h\)</td><td>\(2d\cdot d_h\)</td></tr>
+      <tr><td>质量</td><td>基准</td><td>接近 MHA</td><td>有可见下降，训练可能不稳</td></tr>
+      <tr><td>代表</td><td>GPT-3、LLaMA-1/2-7B</td><td>LLaMA-2-70B、LLaMA-3、Mistral</td><td>PaLM、Falcon</td></tr>
+    </table>
+    <p><b>KV cache 公式</b>（务必背熟，前面的 2 是 K 和 V）：</p>
+    $$\text{KV bytes}=2\times L\times H_{kv}\times d_h\times T\times B\times \text{bytes/elem}$$
+    <p><b>例子</b>（bf16，2 字节，脚本 <code>calc.py</code> 实测）：</p>
+    <ul>
+      <li>LLaMA-2-7B（\(L=32,H_{kv}=32,d_h=128\)），\(T=4096,B=1\)：\(2\cdot32\cdot32\cdot128\cdot4096\cdot2=2\,\text{GiB}\)，即每 token 512 KiB。</li>
+      <li>若改成 8 个 KV 头（GQA-8）：0.5 GiB。</li>
+      <li>LLaMA-2-70B（\(L=80,H_{kv}=8\)）：4k 上下文 1.25 GiB；128k 上下文 40 GiB——单条序列就占半张 80GB 卡。</li>
+    </ul>
+    <p><b>为什么 MQA/GQA 能加速？</b>解码时 batch 小，每步计算量很少，时间主要花在<b>从 HBM 读权重和 KV cache</b>上（memory-bound）。KV cache 缩小 \(H/H_{kv}\) 倍 → 每步访存减少 → 吞吐提高；同时显存省出来可以放更大 batch。训练时影响不大。</p>
+    <p><b>GQA 的实现</b>：K/V 投影只输出 \(H_{kv}\) 个头，计算前用 <code>repeat_interleave(H/H_kv, dim=1)</code> 扩展（或在 kernel 内部用索引共享，避免真的复制）。query 头 \(h\) 使用 KV 头 \(\lfloor h/(H/H_{kv})\rfloor\)。</p>
+    <p><b>Uptraining。</b><a href="https://arxiv.org/abs/2305.13245" target="_blank" rel="noreferrer">GQA 论文（Ainslie et al. 2023）</a>提出可以把已训好的 MHA checkpoint 的同组 K/V 头<b>平均池化</b>成一个，再用约 5% 的原预训练计算量继续训练，就能恢复大部分质量。MQA 出自 <a href="https://arxiv.org/abs/1911.02150" target="_blank" rel="noreferrer">Shazeer 2019</a>。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>KV cache 公式忘记乘 2（K 和 V）或乘了 \(H\) 而不是 \(H_{kv}\)。</li>
+      <li>以为 GQA 减少了 FLOPs——attention 的 FLOPs 基本不变（query 头数没变），省的是显存和带宽，以及少量 K/V 投影参数。</li>
+      <li>和 Tensor Parallel 的配合：TP 度最好不超过 \(H_{kv}\)，否则 KV 头需要在多卡上复制。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>During decoding we are memory-bandwidth bound: every step has to read the whole KV cache from HBM. The cache size is two, for keys and values, times layers times KV heads times head dim times sequence length times batch times bytes per element. Multi-query attention shares a single key-value head across all query heads, and grouped-query attention is the middle ground, where groups of query heads share one KV head. With eight KV heads instead of thirty-two you cut the cache four times, which means less memory traffic per token and room for larger batches, and in practice the quality is very close to full multi-head attention.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Compute the KV cache for a 70B GQA model at 32k context, batch 8, bf16.</b><details><summary>思路</summary><div class="inner">\(2\cdot80\cdot8\cdot128\cdot32768\cdot8\cdot2\) B \(=80\) GiB（每 token 320 KiB，乘 262144 个 token）。超过一张 80GB 卡，所以需要 TP、KV 量化（fp8 减半）或 paging 共享前缀。</div></details></li>
+    <li><b>Why does MQA hurt quality more than GQA?</b><details><summary>思路</summary><div class="inner">所有头被迫用同一组 key 空间和 value 内容，只有 query 能区分头，表达能力受限；GQA 保留了 \(H_{kv}\) 组不同的 K/V 子空间。经验上 8 组已经接近 MHA。另外 MQA 在大模型上报告过训练不稳定。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-mla">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>MLA：DeepSeek 的低秩潜在 KV 压缩</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把每个 token 的 K/V 联合压缩成一个低维潜在向量 \(c^{KV}\)（如 512 维）只缓存它，计算时再上投影；位置信息由一个单独的、所有头共享的小 RoPE key 承载（decoupled RoPE）。</p><p class="en">Multi-head latent attention caches a small joint latent per token instead of full keys and values, and carries positional information in a separate shared RoPE key so the up-projections can be absorbed at inference time.</p></div>
+  <div class="deep">
+    <p>出自 <a href="https://arxiv.org/abs/2405.04434" target="_blank" rel="noreferrer">DeepSeek-V2（2024）</a>，DeepSeek-V3 沿用。</p>
+    <p><b>核心公式</b>（省略层下标）：</p>
+    $$c_t^{KV}=W^{DKV}h_t\in\mathbb{R}^{d_c},\qquad k_t^{C}=W^{UK}c_t^{KV},\qquad v_t^{C}=W^{UV}c_t^{KV}$$
+    <p>其中 \(d_c\ll H d_h\)。<b>只缓存 \(c_t^{KV}\)</b>。关键技巧——<b>矩阵吸收</b>：</p>
+    $$q_t^\top k_s^{C}=q_t^\top W^{UK}c_s^{KV}=\big(W^{UK\top}q_t\big)^\top c_s^{KV}$$
+    <p>所以推理时可以把 \(W^{UK}\) 吸收进 query 投影，直接用潜在向量算分数；同理 \(W^{UV}\) 可以吸收进输出投影 \(W_O\)。不需要显式重建每个头的 K/V。</p>
+    <p><b>为什么需要 decoupled RoPE？</b>RoPE 在 \(q\) 和 \(k\) 上乘一个依赖位置的旋转矩阵 \(R_m\)：\(q^\top R_{m}^\top R_{n} W^{UK}c\)。中间夹着依赖相对位置的 \(R_{n-m}\)，\(W^{UK}\) 就无法再被吸收进固定的 query 投影。DeepSeek 的解法：额外用一个小维度 \(d_h^R\) 的 query/key 分量专门承载 RoPE，key 部分 \(k_t^R=\mathrm{RoPE}(W^{KR}h_t)\) <b>所有头共享</b>并单独缓存；最终 \(q=[q^C;q^R]\)，\(k=[k^C;k^R]\)。</p>
+    <p><b>缓存大小。</b>每 token 每层缓存 \(d_c+d_h^R\) 个元素。DeepSeek-V2/V3 用 \(d_c=512\)（\(=4d_h\)），\(d_h^R=64\)（\(=d_h/2\)），即 576 个元素；论文称这相当于只有 2.25 组的 GQA，但效果报告强于 MHA。对比 MHA 的 \(2Hd_h\)（V2 中 \(H=128,d_h=128\) 时是 32768 个元素）。</p>
+    <p>DeepSeek-V2 也对 query 做了低秩压缩（\(c^Q\)），主要是为了减少训练时激活显存，与 KV cache 无关。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>MLA 不是"K/V 共享头"——每个头仍有自己的上投影得到的 K/V，只是它们都由同一个低秩潜在向量生成（低秩分解），表达能力比 GQA 强。另外"不能直接加 RoPE"是面试必问的点。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>MLA compresses keys and values into a shared low-rank latent, around five hundred dimensions per token, and only that latent is cached. Per-head keys and values are up-projections of the latent, and because attention scores are bilinear, the key up-projection can be absorbed into the query side and the value up-projection into the output projection, so you never materialize full keys at inference. RoPE breaks that absorption because a position-dependent rotation sits between the query and the key up-projection, so DeepSeek adds a small decoupled RoPE key shared across heads. The cache ends up comparable to GQA with very few groups, while quality is reported to match or beat MHA.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>MLA vs GQA: which is more expressive at equal cache size?</b><details><summary>思路</summary><div class="inner">在同样缓存大小下，MLA 的 K/V 是低秩但每头不同的（\(W^{UK}_h c\)），GQA 是满秩但组内完全相同。可以把 GQA 看成 MLA 的一个特例（上投影是复制矩阵），所以 MLA 的函数类更大。代价是实现复杂、计算稍多（解码时在潜在空间算点积维度为 \(d_c\)）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-local">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Sliding window attention 与 attention sinks</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>滑动窗口只看最近 \(W\) 个 token，复杂度 \(O(TW)\)、KV cache 固定为 \(W\)；堆叠 \(L\) 层后感受野约 \(L\cdot W\)。Attention sink 指模型把大量注意力倒在前几个 token 上，流式推理时必须保留它们。</p><p class="en">Sliding-window attention bounds compute and cache by a window size while stacking layers grows the receptive field; attention sinks are initial tokens that soak up attention mass and must be kept when evicting the cache.</p></div>
+  <div class="deep">
+    <p><b>Sliding window（SWA）。</b>mask 改为 \(i-W&lt; j\le i\)。<a href="https://arxiv.org/abs/2310.06825" target="_blank" rel="noreferrer">Mistral 7B</a> 用 \(W=4096\)，配合 rolling buffer KV cache（环形缓冲区，大小恒为 \(W\)）。信息可以逐层向前传递，\(L\) 层后理论感受野 \(\approx L\times W\)。很多模型采用<b>局部/全局交替</b>：例如 <a href="https://arxiv.org/abs/2408.00118" target="_blank" rel="noreferrer">Gemma 2</a> 每隔一层用 4096 窗口的局部注意力，<a href="https://arxiv.org/abs/2503.19786" target="_blank" rel="noreferrer">Gemma 3</a> 改为 5 层局部（窗口 1024）配 1 层全局，以压缩长上下文 KV cache。</p>
+    <p><b>Attention sinks。</b><a href="https://arxiv.org/abs/2309.17453" target="_blank" rel="noreferrer">StreamingLLM（Xiao et al. 2023）</a>发现：即便语义无关，很多头会把大量注意力分给序列开头的几个 token。解释：softmax 要求权重和为 1，当一个头"不想读任何东西"时需要一个垃圾桶，而开头 token 对所有位置都可见，于是被学成了 sink。后果：纯滑动窗口在把开头 token 驱逐出 cache 后困惑度暴涨。解决：<b>永远保留前 4 个 token 的 KV + 最近窗口</b>，可以流式生成很长的文本（注意：这并不让模型"记住"窗口外的内容）。论文还提出预训练时加一个专门的可学习 sink token。</p>
+    <p>相关设计：在 softmax 分母里加一个可学习的"空选项"（相当于每个头一个 learned sink logit），让头可以把注意力"投给无"，OpenAI 的 <a href="https://arxiv.org/abs/2508.10925" target="_blank" rel="noreferrer">gpt-oss</a> 模型卡描述了每个头在 softmax 分母里有一个可学习 bias（让头可以"什么都不看"），层间交替使用 128 token 的带状窗口注意力和全注意力，并用 GQA（64 个 query 头共享 8 个 KV 头）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Sliding-window attention restricts each token to the last W tokens, so compute is linear in sequence length and the KV cache is bounded by the window; stacking layers still propagates information further, roughly L times W. Many models interleave local and global layers to get most of the memory savings while keeping some full attention. Attention sinks are the observation that many heads dump attention onto the first few tokens, because softmax weights must sum to one and those tokens are visible to everyone. If you evict them in a streaming setting, perplexity blows up, so StreamingLLM keeps the first few tokens plus a recent window.</p></div>
+</section>
+
+<!-- ============================================================ §3 -->
+<h2 class="sec" id="s-pos"><span class="num">§3 · POSITIONAL ENCODING</span>位置编码</h2>
+<p class="sec-intro">RoPE 是这一节的重中之重：几乎所有现代开源 LLM 都用它，面试官常要求现场推导"为什么 RoPE 只依赖相对位置"，再追问长上下文外推（PI / NTK / YaRN）。</p>
+
+<section class="concept" id="c-pos-why">
+  <div class="concept-head"><span class="pri p1">★</span><h3>为什么需要位置编码；绝对 vs 相对</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Attention 对 key 的顺序是置换不变的，"dog bites man" 与 "man bites dog" 在没有位置信息时看起来一样；位置编码可以加到输入上（绝对），也可以直接注入注意力分数（相对）。</p><p class="en">Attention by itself is order-agnostic, so we inject position either by adding absolute position vectors to the input or by making attention scores depend on relative offsets.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>方案</th><th>注入位置</th><th>相对/绝对</th><th>外推能力</th><th>代表</th></tr>
+      <tr><td>Sinusoidal</td><td>加到输入 embedding</td><td>绝对（但有线性相对结构）</td><td>差</td><td>原始 Transformer</td></tr>
+      <tr><td>Learned absolute</td><td>加到输入</td><td>绝对</td><td>无法超过训练长度</td><td>BERT、GPT-2/3</td></tr>
+      <tr><td>T5 relative bias</td><td>attention logit 加标量偏置 \(b(i-j)\)</td><td>相对（分桶）</td><td>中等</td><td>T5</td></tr>
+      <tr><td>RoPE</td><td>旋转 q、k</td><td>相对（在点积中）</td><td>中等，可插值扩展</td><td>LLaMA、Qwen、Mistral、DeepSeek…</td></tr>
+      <tr><td>ALiBi</td><td>logit 加 \(-m_h\cdot|i-j|\)</td><td>相对（线性惩罚）</td><td>较好</td><td>BLOOM、MPT</td></tr>
+      <tr><td>NoPE</td><td>无</td><td>靠 causal mask 隐式</td><td>有争议</td><td>研究 / 部分混合层</td></tr>
+    </table>
+    <p><b>为什么相对位置更好？</b>语言规律大多是平移不变的（"形容词在名词前一个位置"不依赖于句子在文档的哪里）。相对编码天然共享这种统计，并且对训练长度外的位置更有机会泛化。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Self-attention is permutation-equivariant, so without positional information the model can't distinguish word orders. The original Transformer added fixed sinusoidal vectors to the input, BERT and GPT-2 used learned absolute embeddings, and later work moved position into the attention score itself, which makes it relative: T5 adds a learned bias per relative distance bucket, ALiBi adds a linear distance penalty, and RoPE rotates queries and keys so their dot product depends only on the offset. Relative schemes match the translation-invariant structure of language and extrapolate better.</p></div>
+</section>
+
+<section class="concept" id="c-sinusoidal">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Sinusoidal、learned、T5 bias</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Sinusoidal：\(PE_{(p,2i)}=\sin(p/10000^{2i/d})\)，\(PE_{(p,2i+1)}=\cos(\cdot)\)，频率几何递减；\(PE_{p+k}\) 是 \(PE_p\) 的线性函数（旋转），这是 RoPE 的思想源头。</p><p class="en">Sinusoidal encodings use geometrically spaced frequencies, and shifting position is a rotation of each sine-cosine pair, which is exactly the idea RoPE later moves into the attention dot product.</p></div>
+  <div class="deep">
+    <p><b>Sinusoidal 的性质。</b>第 \(i\) 对维度的角频率 \(\omega_i=10000^{-2i/d}\)，波长从 \(2\pi\) 到 \(2\pi\cdot 10000\)。由和角公式</p>
+    $$\begin{pmatrix}\sin\omega(p+k)\\ \cos\omega(p+k)\end{pmatrix}=\begin{pmatrix}\cos\omega k & \sin\omega k\\ -\sin\omega k & \cos\omega k\end{pmatrix}\begin{pmatrix}\sin\omega p\\ \cos\omega p\end{pmatrix}$$
+    <p>偏移 \(k\) 对应一个只依赖 \(k\) 的旋转，所以模型"有可能"学到相对位置。但它是<b>加</b>在 embedding 上的，经过 \(W_Q,W_K\) 后点积里混入了内容-位置交叉项，相对性并不干净。</p>
+    <p><b>Learned absolute</b>：一个 \((T_{\max},d)\) 的可学习表，简单有效，但超过 \(T_{\max}\) 直接没有定义。</p>
+    <p><b>T5 relative bias</b>：每个头对每个相对距离"桶"学一个标量，加在 logit 上：\(S_{ij}=q_i\cdot k_j+b_{h}(\text{bucket}(i-j))\)。近距离精确分桶、远距离对数分桶。缺点：需要额外的 bias 矩阵加到 attention 上，和 FlashAttention 等融合 kernel 配合稍麻烦。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Sinusoidal encodings assign each pair of dimensions a frequency, decreasing geometrically from one to one over ten thousand. Shifting position by k rotates each sine-cosine pair by an angle proportional to k, so relative offsets are linear functions of the encoding. But because the encoding is added to the input and then passes through projections, the attention score mixes content and position terms. RoPE takes the rotation idea and applies it directly to queries and keys.</p></div>
+</section>
+
+<section class="concept" id="c-rope">
+  <div class="concept-head"><span class="pri p1">★</span><h3>RoPE：完整推导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把 \(q,k\) 的维度两两配对视为复数，位置 \(m\) 处乘以 \(e^{im\theta_i}\)（旋转角 \(m\theta_i\)），则 \(\langle R_mq,R_nk\rangle=\langle q,R_{n-m}k\rangle\)，点积只依赖相对位置 \(n-m\)；\(\theta_i=\text{base}^{-2i/d_h}\)，base 通常 10000。</p><p class="en">RoPE rotates each two-dimensional slice of the query and key by an angle proportional to position, so their dot product depends only on the relative offset.</p></div>
+  <div class="deep">
+    <p>出自 <a href="https://arxiv.org/abs/2104.09864" target="_blank" rel="noreferrer">RoFormer（Su et al. 2021）</a>。</p>
+    <h4>1. 二维情形</h4>
+    <p>设 \(q,k\in\mathbb{R}^2\)，定义旋转矩阵 \(R(\alpha)=\begin{pmatrix}\cos\alpha&-\sin\alpha\\ \sin\alpha&\cos\alpha\end{pmatrix}\)。位置 \(m\) 的 query 变成 \(R(m\theta)q\)，位置 \(n\) 的 key 变成 \(R(n\theta)k\)。点积：</p>
+    $$\big(R(m\theta)q\big)^\top R(n\theta)k=q^\top R(m\theta)^\top R(n\theta)k=q^\top R(-m\theta)R(n\theta)k=q^\top R\big((n-m)\theta\big)k$$
+    <p>用到两个事实：旋转矩阵正交，\(R(\alpha)^\top=R(-\alpha)\)；旋转可合成，\(R(\alpha)R(\beta)=R(\alpha+\beta)\)。结果只依赖 \(n-m\)。</p>
+    <h4>2. 复数形式（更简洁）</h4>
+    <p>把 \(q=(q_1,q_2)\) 看成 \(\tilde q=q_1+iq_2\)。旋转就是乘 \(e^{im\theta}\)。二维实向量点积 \(=\mathrm{Re}(\tilde q\,\overline{\tilde k})\)。于是</p>
+    $$\mathrm{Re}\Big[(\tilde q e^{im\theta})\overline{(\tilde k e^{in\theta})}\Big]=\mathrm{Re}\Big[\tilde q\,\overline{\tilde k}\,e^{i(m-n)\theta}\Big]$$
+    <p>同样只依赖 \(m-n\)。</p>
+    <h4>3. 推广到 \(d_h\) 维</h4>
+    <p>把 \(d_h\) 维分成 \(d_h/2\) 对，第 \(i\) 对用频率 \(\theta_i=\text{base}^{-2i/d_h}\)（\(i=0,\dots,d_h/2-1\)）。整体旋转是块对角矩阵 \(R_m=\mathrm{diag}(R(m\theta_0),\dots,R(m\theta_{d_h/2-1}))\)。点积是各对点积之和，每一项都只依赖 \(n-m\)，所以</p>
+    $$\langle R_mq,R_nk\rangle=q^\top R_{n-m}k=\sum_{i}\mathrm{Re}\big[\tilde q_i\overline{\tilde k_i}e^{i(m-n)\theta_i}\big]$$
+    <h4>4. 性质</h4>
+    <ul>
+      <li><b>保范数</b>：旋转正交，\(\|R_mq\|=\|q\|\)，不改变 logit 的尺度（不像加性编码）。</li>
+      <li><b>只作用于 q、k，不作用于 v</b>：位置只影响"看哪里"，不污染被搬运的内容。</li>
+      <li><b>多尺度</b>：高频对（\(i\) 小，\(\theta_i\approx1\)）对相邻位置敏感，编码局部顺序；低频对（\(\theta_i\approx 1/\text{base}\)）在训练长度内几乎不转一圈，编码长程/粗位置，也常被用作"语义通道"。</li>
+      <li><b>远程衰减</b>：论文证明在某些假设下 \(|q^\top R_{n-m}k|\) 的上界随 \(|n-m|\) 增大而衰减（这是一个上界性质，不是保证）。</li>
+      <li><b>相对性对 KV cache 友好</b>：缓存的 key 已经旋转好了，新 token 的 query 只需用自己的位置旋转。</li>
+    </ul>
+    <h4>5. 两种实现布局</h4>
+    <p><b>Interleaved</b>（原论文 / Meta 原版 LLaMA）：配对 \((x_0,x_1),(x_2,x_3),\dots\)，用 <code>view_as_complex</code> 实现。<b>Half-split / rotate_half</b>（HF transformers、GPT-NeoX）：配对 \((x_i,x_{i+d_h/2})\)：</p>
+    $$\mathrm{RoPE}(x)=x\odot\cos(m\theta)+\mathrm{rotate\_half}(x)\odot\sin(m\theta),\quad \mathrm{rotate\_half}([x_1;x_2])=[-x_2;x_1]$$
+    <p>其中 \(\cos(m\theta)\) 向量是 \([\cos m\theta_0,\dots,\cos m\theta_{d_h/2-1},\cos m\theta_0,\dots]\)（拼两遍）。验证第 \(i\) 对：新 \(x_i=x_i\cos-x_{i+d/2}\sin\)，新 \(x_{i+d/2}=x_{i+d/2}\cos+x_i\sin\)，正是二维旋转。两种布局只相差一个<b>固定的维度置换</b>，数学上等价，但<b>权重不能混用</b>（HF 转换 LLaMA 权重时会对 \(W_Q,W_K\) 的行做置换）。§11 的代码数值验证了这一点。</p>
+  </div>
+  <details class="deep"><summary>数值验证（numpy，来自 np_verify.py）</summary><div class="inner">
+<pre><code class="language-python">T, dh = 64, 16
+cos, sin = rope_cos_sin(T, dh)
+qv, kv = rng.standard_normal(dh), rng.standard_normal(dh)
+Q = apply_rope(np.tile(qv, (T, 1)), cos, sin)   # same content q at every position
+K = apply_rope(np.tile(kv, (T, 1)), cos, sin)
+S = Q @ K.T
+assert np.isclose(S[5, 2], S[3, 0]) and np.isclose(S[63, 60], S[3, 0])   # depends only on m - n
+assert np.isclose(S[10, 10], qv @ kv)                                     # offset 0 == plain dot product
+assert np.allclose(np.linalg.norm(Q, axis=-1), np.linalg.norm(qv))        # norm preserved</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>把 RoPE 加到 v 上，或加到 attention 输出上——错，只旋转 q 和 k。</li>
+      <li>在 GQA 中 repeat K 之后再做 RoPE——不会错但浪费；应在 repeat 前对 \(H_{kv}\) 个头做。</li>
+      <li>KV cache 解码时用错位置：新 token 的位置是 cache 长度（\(t\)），不是 0。</li>
+      <li>bf16 下算角度 \(m\theta_i\)：\(m\) 很大时 bf16 精度不够（8 位尾数），角度要在 fp32 里算。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>RoPE splits the query and key into two-dimensional pairs and rotates each pair by an angle equal to the position times a frequency, with frequencies decaying geometrically from one to one over the base, usually ten thousand. Because rotations are orthogonal and compose additively, the rotated query at position m dotted with the rotated key at position n equals q transpose R of n minus m times k. So the attention logit depends only on the relative offset, while the norms are preserved and values are left untouched. In complex form it is just multiplying each pair by e to the i m theta. High-frequency pairs capture local order and low-frequency pairs capture long-range position.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does RoPE fail to extrapolate beyond the training length?</b><details><summary>思路</summary><div class="inner">低频维度在训练长度 \(L\) 内转不满一圈（波长 \(\lambda_i=2\pi/\theta_i&gt;L\)），超过 \(L\) 后出现训练时从未见过的旋转角，分数分布异常（out-of-distribution）。高频维度已经转过很多圈，见过所有角度，不是问题。所以扩展方法都针对低频维度做文章。</div></details></li>
+    <li><b>What does increasing the RoPE base do?</b><details><summary>思路</summary><div class="inner">所有 \(\theta_i\) 变小（尤其低频端），同样的位置差对应更小的角度，波长变长，能覆盖更长上下文。LLaMA-3 用 base 500000；长上下文继续训练时常把 base 调大（"ABF, adjusted base frequency"）。NTK-aware 插值本质上就是改 base。</div></details></li>
+    <li><b>Is RoPE purely relative in practice?</b><details><summary>思路</summary><div class="inner">分数只依赖 \(n-m\)，是。但 causal mask 和 attention sink 等让模型仍能感知绝对位置（比如第一个 token 很特殊）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-rope-ext">
+  <div class="concept-head"><span class="pri p1">★</span><h3>RoPE 外推：PI、NTK-aware、YaRN；ALiBi；NoPE</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>PI 把位置线性压缩回训练范围（所有频率统一除以 \(s\)）；NTK-aware 改 base，高频几乎不动、低频被插值；YaRN 按频率分段（高频不动、低频插值、中间过渡）再加注意力温度修正，只需少量微调即可扩展多倍。</p><p class="en">Position interpolation squeezes positions uniformly, NTK-aware scaling changes the base so high frequencies stay intact, and YaRN interpolates only the low-frequency dimensions plus a temperature correction.</p></div>
+  <div class="deep">
+    <p>设训练长度 \(L\)，目标长度 \(L'\)，扩展倍数 \(s=L'/L\)。</p>
+    <ol>
+      <li><b>Position Interpolation（PI，<a href="https://arxiv.org/abs/2306.15595" target="_blank" rel="noreferrer">Chen et al. 2023</a>）</b>：把位置 \(m\) 换成 \(m/s\)，等价于所有 \(\theta_i\to\theta_i/s\)。所有旋转角都落在训练见过的范围里，再微调约 1000 步。缺点：高频维度也被压缩了 \(s\) 倍，相邻 token 的角度差变小，局部分辨率下降。</li>
+      <li><b>NTK-aware</b>（社区提出，后在 YaRN 论文中整理）：改 base 为 \(b'=b\cdot s^{d_h/(d_h-2)}\)。效果：最高频 \(\theta_0=1\) 不变，最低频恰好被除以 \(s\)，中间平滑过渡。不微调也能有一定效果。</li>
+      <li><b>YaRN（<a href="https://arxiv.org/abs/2309.00071" target="_blank" rel="noreferrer">Peng et al. 2023</a>）</b>：
+        <ul>
+          <li>"NTK-by-parts"：对每一维计算它在训练长度内转的圈数 \(r=L/\lambda_i\)。\(r&lt;\alpha\)（低频，转不满）：完全插值（\(\theta/s\)）；\(r&gt;\beta\)（高频）：不动；中间线性 ramp。LLaMA 推荐 \(\alpha=1,\beta=32\)。</li>
+          <li>注意力温度：logit 除以 \(t\)，推荐 \(\sqrt{1/t}=0.1\ln s+1\)，实现上把 q、k 各乘 \(\sqrt{1/t}\)，零开销。原因：插值后注意力分布熵会变化，需要校正。</li>
+          <li>论文报告相比之前方法所需微调 token 少约 10 倍、步数少约 2.5 倍。gpt-oss、Qwen、DeepSeek 等都用过 YaRN 扩展上下文。</li>
+        </ul></li>
+      <li><b>ALiBi（<a href="https://arxiv.org/abs/2108.12409" target="_blank" rel="noreferrer">Press et al. 2021</a>）</b>：不用任何位置 embedding，直接给 logit 加 \(-m_h\cdot(i-j)\)，每头斜率 \(m_h\) 取几何序列（如 8 头时 \(1/2,1/4,\dots,1/256\)）。"Train short, test long"：短训练长外推的困惑度表现好，但本质是强制近因偏置，长程检索能力有限。</li>
+      <li><b>NoPE</b>：decoder-only + causal mask 不加任何位置编码也能训练，因为 causal mask 本身泄漏了位置（例如可以通过"有多少 token 可见"来计数）。有研究报告其长度泛化不差（<a href="https://arxiv.org/abs/2305.19466" target="_blank" rel="noreferrer">Kazemnejad et al. 2023</a>），但大规模 LLM 很少纯 NoPE；也有模型在部分层用 NoPE、部分层用 RoPE 混合。</li>
+    </ol>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为改了 RoPE 缩放就"支持"长上下文了。位置外推只是必要条件；真正的长上下文能力还要长文档数据继续训练、评测（needle-in-a-haystack 远远不够，见 RULER 等），以及 KV cache 显存（见 <a href="m05-pretraining.html">05</a>、<a href="m08-inference.html">08</a>）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>RoPE breaks beyond the training length because the low-frequency dimensions encounter rotation angles they never saw in training. Position interpolation divides all positions by the extension factor, so every angle stays in range, but it also compresses the high frequencies and blurs local order. NTK-aware scaling instead changes the base, leaving the highest frequency unchanged and fully interpolating the lowest. YaRN refines this per dimension: frequencies that complete many rotations within the training context are left alone, ones that don't complete a full rotation are interpolated, with a linear ramp in between, plus a small attention temperature correction. With a short fine-tune it extends context several-fold.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Derive why NTK-aware base change leaves θ_0 unchanged and divides the lowest frequency by s.</b><details><summary>思路</summary><div class="inner">\(\theta_i'=b'^{-2i/d}=b^{-2i/d}\cdot s^{-\frac{2i}{d}\cdot\frac{d}{d-2}}=\theta_i\cdot s^{-2i/(d-2)}\)。\(i=0\)：因子 \(s^0=1\)，不变。最低频 \(i=d/2-1\)：指数 \(-\frac{2(d/2-1)}{d-2}=-1\)，因子 \(1/s\)，恰好等价于 PI。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §4 -->
+<h2 class="sec" id="s-block"><span class="num">§4 · BLOCK STRUCTURE</span>Block 结构：一层 Transformer 里有什么</h2>
+<p class="sec-intro">现代 decoder-only LLM 的一层：<code>x = x + Attn(Norm(x)); x = x + FFN(Norm(x))</code>。每个细节（Norm 放哪、用什么 Norm、FFN 用什么激活、要不要 bias、embedding 要不要共享）都有一个"为什么"。</p>
+
+<section class="concept" id="c-decoder-block">
+  <div class="concept-head"><span class="pri p1">★</span><h3>现代 decoder block 全景与"标准配方"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Token embedding → \(L\) 个 [Pre-RMSNorm → (GQA + RoPE) → 残差加；Pre-RMSNorm → SwiGLU FFN → 残差加] → 最终 RMSNorm → LM head（可与 embedding 共享）→ softmax。</p><p class="en">A modern decoder block is pre-norm attention plus a pre-norm gated MLP, each wrapped in a residual connection, with a final norm before the LM head.</p></div>
+  <div class="deep">
+<pre><code class="language-text">tokens (B,T) ──Embedding──► h (B,T,d)
+for each of L layers:
+    h = h + Attention( RMSNorm(h) )      # GQA, RoPE on q/k, causal
+    h = h + SwiGLU_FFN( RMSNorm(h) )     # d -> ~8/3 d -> d
+logits = RMSNorm(h) @ W_U                # W_U (d,V), often tied to embedding
+loss  = cross_entropy(logits[:, :-1], tokens[:, 1:])</code></pre>
+    <table>
+      <tr><th>组件</th><th>原始 Transformer (2017)</th><th>GPT-2/3</th><th>LLaMA 系（现代默认）</th><th>理由</th></tr>
+      <tr><td>Norm 位置</td><td>Post-Norm</td><td>Pre-Norm</td><td>Pre-Norm</td><td>深层训练稳定，无需长 warmup</td></tr>
+      <tr><td>Norm 类型</td><td>LayerNorm</td><td>LayerNorm</td><td>RMSNorm</td><td>更省、效果相当</td></tr>
+      <tr><td>位置</td><td>Sinusoidal</td><td>Learned</td><td>RoPE</td><td>相对位置、可扩展</td></tr>
+      <tr><td>FFN</td><td>ReLU 4×</td><td>GELU 4×</td><td>SwiGLU ≈8/3×</td><td>同参数量下质量更好</td></tr>
+      <tr><td>Attention</td><td>MHA</td><td>MHA</td><td>GQA</td><td>KV cache 小</td></tr>
+      <tr><td>Bias</td><td>有</td><td>有</td><td>无</td><td>省参数、更稳定</td></tr>
+      <tr><td>Dropout</td><td>0.1</td><td>0.1</td><td>0</td><td>单 epoch 大数据不过拟合</td></tr>
+    </table>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A modern decoder-only block, LLaMA style, is: RMSNorm, then grouped-query attention with RoPE applied to queries and keys, added back to the residual stream; then another RMSNorm, a SwiGLU MLP, and another residual add. After the last layer there's a final norm and the unembedding, often tied to the input embedding. Compared with the original Transformer, the norm moved before each sublayer for stability, LayerNorm became RMSNorm, ReLU became a gated SwiGLU, absolute positions became RoPE, multi-head became grouped-query, and biases and dropout were removed.</p></div>
+</section>
+
+<section class="concept" id="c-prenorm">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Pre-Norm vs Post-Norm：梯度论证</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Post-Norm \(x_{l+1}=\mathrm{LN}(x_l+F(x_l))\) 把 LN 放在残差主路上，梯度每层都要穿过 LN 的 Jacobian，深层时初始化附近梯度不稳、需要 warmup；Pre-Norm \(x_{l+1}=x_l+F(\mathrm{LN}(x_l))\) 留下一条恒等的"梯度高速公路"，训练稳定，但最终效果有时略差（表征坍缩到残差主路）。</p><p class="en">Pre-norm keeps an identity path through the residual stream so gradients flow cleanly and training is stable without long warmup; post-norm can reach slightly better quality but is hard to train deep.</p></div>
+  <div class="deep">
+    <p><b>梯度论证。</b>Pre-Norm 展开：\(x_L=x_0+\sum_{l=0}^{L-1}F_l(\mathrm{LN}(x_l))\)，所以</p>
+    $$\frac{\partial \mathcal{L}}{\partial x_l}=\frac{\partial \mathcal{L}}{\partial x_L}\Big(I+\sum_{k\ge l}\frac{\partial F_k(\mathrm{LN}(x_k))}{\partial x_l}\Big)$$
+    <p>其中的恒等项 \(I\) 保证了任意浅层都能直接收到顶层的梯度，不经过任何乘性衰减。Post-Norm 中：\(\partial x_{l+1}/\partial x_l=J_{\mathrm{LN}}\,(I+\partial F/\partial x_l)\)，梯度是 \(L\) 个这样的矩阵连乘，LN 的 Jacobian 会按输入范数缩放梯度，无恒等通路。<a href="https://arxiv.org/abs/2002.04745" target="_blank" rel="noreferrer">Xiong et al. 2020（On Layer Normalization in the Transformer Architecture）</a>证明初始化时 Post-Norm 靠近输出层的参数梯度期望很大，因此必须用 learning-rate warmup；Pre-Norm 梯度表现良好，可以去掉 warmup 或缩短。</p>
+    <p><b>Pre-Norm 的缺点。</b>残差流 \(x_l\) 的范数随层数增长（每层都往上加东西，而主路从不被归一化），深层的 \(F_l\) 输出相对于主路越来越小，使得后面的层贡献减弱、"有效深度"变浅。这是 Post-Norm 调好时最终效果可能更好的一个解释。另外必须在最后加一个 <b>final norm</b>，否则输出尺度失控。</p>
+    <p><b>折中方案。</b></p>
+    <ul>
+      <li><b>DeepNorm</b>（<a href="https://arxiv.org/abs/2203.00555" target="_blank" rel="noreferrer">DeepNet, Wang et al. 2022</a>）：Post-Norm 但残差放大 \(x_{l+1}=\mathrm{LN}(\alpha x_l+F(x_l))\)，\(\alpha&gt;1\)，并按深度缩小初始化，训练到 1000 层。</li>
+      <li><b>Sandwich norm</b>：子层输入和输出都加 norm，即 \(x+\mathrm{Norm}(F(\mathrm{Norm}(x)))\)，Gemma 2/3 采用（pre- 与 post-norm 并用）。</li>
+      <li>OLMo 2 把 norm 放到子层输出端（\(x+\mathrm{Norm}(F(x))\)）并配合 QK-norm 以提升稳定性。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>Pre-Norm 是 <code>x + F(norm(x))</code>，不是 <code>norm(x + F(x))</code>，也不是 <code>norm(x) + F(norm(x))</code>（后者会把归一化后的值写入残差主路，破坏恒等通路）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In post-norm, the layer norm sits on the residual path, so the gradient to early layers is a product of L Jacobians that each pass through a norm, and at initialization the gradients near the output are large, which is why post-norm needs careful warmup. In pre-norm, we normalize only the input to each sublayer, so the residual stream is a sum, and the gradient with respect to any layer contains an identity term straight from the top. That makes deep models train stably. The downside is that the residual norm grows with depth, so later layers contribute relatively less, and you need a final norm before the output head.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does the original Transformer need learning-rate warmup?</b><details><summary>思路</summary><div class="inner">Post-Norm 初始化时输出层附近的梯度大，若一开始就用大 lr 会发散；Adam 在早期二阶矩估计不准也贡献了不稳定（RAdam 论文的观点）。warmup 让参数先进入一个梯度更温和的区域。Pre-Norm 大大减轻了这个需求，但 LLM 实践中仍保留短 warmup（Adam 统计量问题仍在）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-rmsnorm">
+  <div class="concept-head"><span class="pri p1">★</span><h3>LayerNorm vs RMSNorm</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>LayerNorm 减均值、除标准差、再仿射（\(\gamma,\beta\)）；RMSNorm 只除以均方根 \(\sqrt{\mathrm{mean}(x^2)+\epsilon}\) 再乘 \(\gamma\)，省掉均值计算和 bias，速度更快、效果相当。</p><p class="en">RMSNorm drops the mean-centering and bias of LayerNorm and just rescales by the root mean square, which is cheaper and works as well in practice.</p></div>
+  <div class="deep">
+    $$\mathrm{LN}(x)=\gamma\odot\frac{x-\mu}{\sqrt{\sigma^2+\epsilon}}+\beta,\qquad \mathrm{RMSNorm}(x)=\gamma\odot\frac{x}{\sqrt{\frac1d\sum_i x_i^2+\epsilon}}$$
+    <p><a href="https://arxiv.org/abs/1910.07467" target="_blank" rel="noreferrer">RMSNorm（Zhang &amp; Sennrich 2019）</a>的假设：LayerNorm 的成功主要来自<b>尺度不变性</b>（re-scaling invariance），而不是平移不变性（re-centering）。去掉均值后少一次规约、少一个参数向量，在 GPU 上是 memory-bound 操作，省一次读写就有实际收益。</p>
+    <p><b>为什么 Transformer 用 LN 不用 BN？</b>BN 依赖 batch 统计量，对变长序列、padding、小 batch、自回归推理（batch=1，逐 token）都很别扭，训练/推理行为不一致；LN/RMSNorm 对每个 token 独立归一化，与 batch 和序列长度无关。</p>
+    <p><b>数值注意。</b>bf16 下求平方均值会损失精度，实现里先 <code>.float()</code> 计算再转回；\(\epsilon\) 常取 1e-5 或 1e-6（见 §10）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>LayerNorm subtracts the mean, divides by the standard deviation, and applies a learned scale and shift. RMSNorm skips the mean subtraction and the shift: it divides by the root mean square and multiplies by a learned gain. The argument is that the useful property is scale invariance, not re-centering. Since normalization is memory-bound, dropping a reduction and a parameter vector gives a real speedup, and empirically quality is the same. We use per-token normalization rather than batch norm because batch statistics don't make sense for variable-length sequences or one-token-at-a-time decoding.</p></div>
+</section>
+
+<section class="concept" id="c-ffn">
+  <div class="concept-head"><span class="pri p1">★</span><h3>FFN：4× 扩展、SwiGLU 与 8/3</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>标准 FFN \(W_2\,\sigma(W_1x)\)，中间维度 \(4d\)，参数 \(8d^2\)；SwiGLU \(W_2(\mathrm{SiLU}(W_1x)\odot W_3x)\) 有三个矩阵，中间维度取 \(\frac{8}{3}d\) 使参数仍为 \(3\cdot d\cdot\frac83 d=8d^2\)。</p><p class="en">The MLP expands to 4d and back; SwiGLU adds a gating matrix, so its hidden size is set to about eight-thirds d to keep the parameter count at eight d squared.</p></div>
+  <div class="deep">
+    <p><b>FFN 的作用。</b>逐位置的两层 MLP，占每层约 2/3 参数（MHA 下 \(4d^2\) vs \(8d^2\)）。attention 负责"在 token 间搬运信息"，FFN 负责"在每个 token 内做非线性变换/查知识"。</p>
+    <p><b>GLU 家族</b>（<a href="https://arxiv.org/abs/2002.05202" target="_blank" rel="noreferrer">Shazeer 2020, GLU Variants Improve Transformer</a>）：</p>
+    $$\mathrm{FFN}_{\text{SwiGLU}}(x)=W_2\big(\mathrm{SiLU}(W_1x)\odot W_3x\big),\qquad \mathrm{SiLU}(z)=z\,\sigma(z)$$
+    <p>一个分支做"门"（经过非线性），另一个分支是线性"值"，逐元素相乘。门控让网络可以乘性地选择特征，表达能力更强；论文在相同参数/计算下发现 SwiGLU、GeGLU 困惑度最好。</p>
+    <p><b>8/3 的来源。</b>保持参数量 \(=8d^2\)：\(3\cdot d\cdot d_{ff}=8d^2\Rightarrow d_{ff}=\frac83 d\)。LLaMA 实际做法：\(d_{ff}=\text{round\_up}(\frac{2}{3}\cdot 4d,\ 256)\)。对 \(d=4096\)：\(\frac83\cdot4096=10922.67\to 11008\)（256 的倍数，硬件友好）。这就是 LLaMA-7B 的 11008。</p>
+    <p><b>FFN 作为 key-value 记忆</b>（<a href="https://arxiv.org/abs/2012.14913" target="_blank" rel="noreferrer">Geva et al. 2021</a>）：把 \(W_1\) 的每一行看成一个 "key"，\(W_2\) 的每一列看成对应的 "value"。\(\mathrm{FFN}(x)=\sum_i \sigma(k_i\cdot x)\,v_i\)：输入与 key 匹配的程度决定对应 value 被写入残差流的量。他们发现浅层 key 匹配表层模式（n-gram），深层 key 匹配语义模式，value 倾向于提升匹配后下一个 token 的概率。这和 attention 很像，只是 "keys" 是固定参数而非上下文 token，softmax 换成了逐元素非线性（不归一化）。ROME 等知识编辑方法就基于"事实存储在中层 FFN"这一观点。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>SwiGLU 参数计数时忘记第三个矩阵；或者以为 SwiGLU 中间维度也是 \(4d\)（那样参数会变成 \(12d^2\)）。另外 PaLM 用了 SwiGLU 但<b>没有</b>缩小中间维度（\(4d\)），所以它的 FFN 更大——问到具体模型时要谨慎。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The MLP is applied to each token independently and holds most of the parameters. The classic version projects up to four d, applies a nonlinearity and projects back, which is eight d squared parameters. SwiGLU replaces it with a gated unit: one projection goes through SiLU and multiplies elementwise with a second linear projection, and then a third matrix projects down. Since there are three matrices, the hidden size is set to two-thirds of four d, about eight-thirds d, rounded to a hardware-friendly multiple, which is how LLaMA-7B gets 11008. Gating gives consistently better perplexity at the same parameter count. A useful interpretation is that the MLP is a key-value memory: rows of the first matrix detect patterns and columns of the second write associated outputs.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does gating help? Any theory?</b><details><summary>思路</summary><div class="inner">原论文坦言没有理论解释（"we offer no explanation"，归因于 divine benevolence）。常见直觉：乘性交互让网络更容易表达特征的条件选择（类似 LSTM 门），二次项增加表达能力，SiLU 平滑。诚实回答"主要是经验结果"是加分的。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-residual">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Residual stream 视角</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把残差连接看成一条贯穿所有层的"总线"：每个 attention 头和 FFN 从中<b>读</b>（经过 norm + 线性投影），把结果<b>加</b>回去；最终的 logits 是所有组件贡献的线性叠加（除去 norm 的缩放）。</p><p class="en">The residual stream is a shared communication channel: every head and MLP reads from it through a projection and writes its output back additively.</p></div>
+  <div class="deep">
+    <p>\(x_L=x_0+\sum_l \mathrm{Attn}_l(\cdot)+\sum_l\mathrm{FFN}_l(\cdot)\)。因为是相加，可以把输出分解为每个组件的贡献（direct logit attribution），可以在中间层直接乘 unembedding 看模型"当前预测"（logit lens）。不同组件在残差流的不同（近似正交的）子空间里通信。这是 mechanistic interpretability 的基础框架（<a href="https://transformer-circuits.pub/2021/framework/index.html" target="_blank" rel="noreferrer">Elhage et al. 2021, A Mathematical Framework for Transformer Circuits</a>），详见 <a href="m11-interp.html">11</a>。</p>
+    <p>工程意义：残差流维度 \(d\) 是信息带宽瓶颈；深层模型的残差范数增长、massive activations / outlier features（个别维度数值极大）都在残差流中出现，影响量化与稳定性。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I think of the residual stream as a shared bus that runs through the whole network. Each attention head and each MLP reads from it through a norm and a linear projection, and adds its output back. Because everything is additive, the final logits decompose into contributions from individual components, which is what interpretability tools like the logit lens and direct logit attribution exploit. It also means the model dimension acts as the bandwidth of that channel.</p></div>
+</section>
+
+<section class="concept" id="c-embed">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Tied embeddings、final norm、LM head、并行 attn+FFN</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>输入 embedding \(E\in\mathbb{R}^{V\times d}\) 和输出 unembedding 可以共享（\(\text{logits}=hE^\top\)），省 \(Vd\) 参数，小模型收益大；并行块 \(x+\mathrm{Attn}(\mathrm{LN}(x))+\mathrm{FFN}(\mathrm{LN}(x))\) 让两个子层可以融合矩阵乘、提速约 15%。</p><p class="en">Weight tying shares the input embedding with the output projection, saving V times d parameters; parallel blocks compute attention and MLP from the same normalized input to fuse matmuls.</p></div>
+  <div class="deep">
+    <p><b>Weight tying</b>（<a href="https://arxiv.org/abs/1608.05859" target="_blank" rel="noreferrer">Press &amp; Wolf 2017</a>）：直觉是"输入时 token 的表示"和"输出时预测该 token 的方向"应该相似。GPT-2、T5（部分版本）、Gemma 共享；LLaMA 不共享。对 \(V=256\text{k}\)、\(d=2048\) 的小模型，embedding 占 5 亿参数，共享节省很多；大模型中占比小，不共享更灵活。共享时注意：embedding 的梯度来自两个地方；某些实现会把输入 embedding 乘 \(\sqrt d\)（原始 Transformer、Gemma）以匹配尺度。</p>
+    <p><b>Final norm</b>：Pre-Norm 架构中残差流从未被归一化，LM head 前必须再加一个 norm。</p>
+    <p><b>并行 attention + FFN</b>（GPT-J 首创，<a href="https://arxiv.org/abs/2204.02311" target="_blank" rel="noreferrer">PaLM</a> 采用）：\(y=x+\mathrm{Attn}(\mathrm{LN}(x))+\mathrm{MLP}(\mathrm{LN}(x))\)。两个子层的输入投影可以合并成一个大矩阵乘法，PaLM 报告大规模下训练快约 15%，小模型有轻微质量下降、62B 规模下可忽略。代价：FFN 看不到同层 attention 的输出。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Weight tying uses the same matrix for the input embedding and the output projection, so logits are the hidden state dotted with every token embedding. It saves V times d parameters, which matters for small models with big vocabularies, and acts as a mild regularizer; many large models untie them for flexibility. In a pre-norm model you also need a final norm before the head. Parallel blocks, used in GPT-J and PaLM, feed the same normalized input to attention and the MLP and sum both outputs, which lets you fuse the input matmuls and gives around fifteen percent speedup at scale.</p></div>
+</section>
+
+<!-- ============================================================ §5 -->
+<h2 class="sec" id="s-params"><span class="num">§5 · PARAMS &amp; FLOPS</span>参数量与 FLOPs 估算</h2>
+<p class="sec-intro">面试官非常喜欢让你心算："一个 d=4096、32 层的模型多少参数？训练 2T token 要多少 FLOPs？用 1000 张 H100 要多久？"这一节给出可以在白板上 2 分钟推完的公式，并用脚本精确核对了 LLaMA-2-7B。</p>
+
+<section class="concept" id="c-param-count">
+  <div class="concept-head"><span class="pri p1">★</span><h3>参数量：≈ 12Ld² + Vd 的推导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每层 attention \(4d^2\) + FFN（4×）\(8d^2\) = \(12d^2\)，\(L\) 层共 \(12Ld^2\)，再加 embedding \(Vd\)（不共享时再加 \(Vd\)）；norm 和 bias 可忽略。</p><p class="en">Each layer has four d squared attention parameters and eight d squared MLP parameters, so about twelve L d squared in total, plus V times d for embeddings.</p></div>
+  <div class="deep">
+    <h4>逐项推导（无 bias、MHA、标准 4× FFN）</h4>
+    <ul>
+      <li>Attention：\(W_Q,W_K,W_V,W_O\in\mathbb{R}^{d\times d}\) → \(4d^2\)</li>
+      <li>FFN：\(W_1\in\mathbb{R}^{d\times 4d}\)，\(W_2\in\mathbb{R}^{4d\times d}\) → \(8d^2\)</li>
+      <li>2 个 norm：\(2d\)（RMSNorm）或 \(4d\)（LN 含 bias）→ 可忽略</li>
+      <li>每层 \(\approx12d^2\)；全模型 \(N\approx 12Ld^2+Vd\,(+Vd\text{ 若不共享})\)</li>
+    </ul>
+    <h4>变体</h4>
+    <ul>
+      <li><b>SwiGLU</b>：\(3\cdot d\cdot d_{ff}\)，取 \(d_{ff}=\frac83 d\) 时仍是 \(8d^2\)。</li>
+      <li><b>GQA</b>：\(W_K,W_V\) 变成 \(d\times H_{kv}d_h\)，attention 参数 \(=2d^2+2d\cdot H_{kv}d_h=2d^2(1+H_{kv}/H)\)。</li>
+      <li><b>MoE</b>：FFN 部分 ×\(E\)（总参数），激活参数只 ×\(k\)。</li>
+    </ul>
+    <h4>精确核对：LLaMA-2-7B</h4>
+    <p>\(d=4096,L=32,V=32000,d_{ff}=11008\)，32 头 MHA，RMSNorm，不共享 embedding，无 bias：</p>
+    <table>
+      <tr><th>项</th><th>计算</th><th>数值</th></tr>
+      <tr><td>Attention / 层</td><td>\(4\times4096^2\)</td><td>67,108,864</td></tr>
+      <tr><td>SwiGLU FFN / 层</td><td>\(3\times4096\times11008\)</td><td>135,266,304</td></tr>
+      <tr><td>2 × RMSNorm / 层</td><td>\(2\times4096\)</td><td>8,192</td></tr>
+      <tr><td>每层合计</td><td></td><td>202,383,360</td></tr>
+      <tr><td>32 层</td><td></td><td>6,476,267,520</td></tr>
+      <tr><td>Embedding + LM head</td><td>\(2\times32000\times4096\)</td><td>262,144,000</td></tr>
+      <tr><td>Final norm</td><td></td><td>4,096</td></tr>
+      <tr><td><b>总计</b></td><td></td><td><b>6,738,415,616 ≈ 6.74B</b></td></tr>
+    </table>
+    <p>粗估 \(12Ld^2=6.44\text{B}\)，加 embedding \(0.26\text{B}\) 得 6.7B，误差 &lt;1%（11008 略大于 \(\frac83 d\)）。脚本同样精确复现了 GPT-2 small 的 124,439,808（含 bias、learned position embedding、tied embedding）。LLaMA-2-70B（\(d=8192,L=80,d_{ff}=28672\)，64 头、8 KV 头）按同一公式得约 68.98B。</p>
+  </div>
+  <details class="deep"><summary>参数 / FLOPs / KV cache 计算器（已运行）</summary><div class="inner">
+<pre><code class="language-python">def count_params(d, L, V, d_ff, n_heads, n_kv_heads=None, gated=True, tied=False, norm="rms"):
+    """Decoder-only LLaMA-style param count (no biases)."""
+    n_kv_heads = n_kv_heads or n_heads
+    dh = d // n_heads
+    attn = d * d + 2 * d * (n_kv_heads * dh) + d * d      # Wq, Wk, Wv, Wo
+    mlp = (3 if gated else 2) * d * d_ff                  # SwiGLU: W1, W3, W2
+    norms = 2 * d * (1 if norm == "rms" else 2)           # 2 norms per block (LN has bias)
+    per_layer = attn + mlp + norms
+    emb = V * d
+    head = 0 if tied else V * d
+    final_norm = d * (1 if norm == "rms" else 2)
+    total = L * per_layer + emb + head + final_norm
+    return dict(attn=attn, mlp=mlp, per_layer=per_layer, emb=emb, total=total)
+
+def train_flops(N, D):          # forward 2ND + backward 4ND
+    return 6 * N * D
+
+def attn_flops_per_token(L, d, ctx):   # QK^T and AV, forward, per token
+    return 2 * 2 * L * ctx * d          # = 4 * L * ctx * d  (Kaplan uses 2*L*ctx*d for one mult-add convention)
+
+def kv_cache_bytes(L, n_kv_heads, dh, seq, batch=1, bytes_per=2):
+    return 2 * L * n_kv_heads * dh * seq * batch * bytes_per
+
+if __name__ == "__main__":
+    p = count_params(d=4096, L=32, V=32000, d_ff=11008, n_heads=32)
+    print(p)
+    assert p["total"] == 6_738_415_616, p["total"]
+    # GPT-2 small (124M): learned pos emb 1024*768, LN with bias, biases everywhere, tied
+    d, L, V = 768, 12, 50257
+    per = (4 * d * d + 4 * d) + (2 * d * 4 * d + 4 * d + d) + 2 * 2 * d   # attn w+b, mlp w+b, 2 LN
+    gpt2 = L * per + V * d + 1024 * d + 2 * d
+    print("gpt2-small", gpt2)
+    assert gpt2 == 124_439_808
+    # 12 L d^2 rule of thumb
+    print("12Ld^2 for llama-7b-ish", 12 * 32 * 4096 ** 2)
+    # LLaMA-2-70B: d=8192, L=80, V=32000, d_ff=28672, 64 heads, 8 kv heads
+    p70 = count_params(d=8192, L=80, V=32000, d_ff=28672, n_heads=64, n_kv_heads=8)
+    print("70b", p70["total"])
+    # KV cache examples
+    print("7B MHA 4k:", kv_cache_bytes(32, 32, 128, 4096) / 2**30, "GiB")
+    print("7B GQA8 4k:", kv_cache_bytes(32, 8, 128, 4096) / 2**30, "GiB")
+    print("70B GQA8 4k:", kv_cache_bytes(80, 8, 128, 4096) / 2**30, "GiB")
+    print("70B GQA8 128k:", kv_cache_bytes(80, 8, 128, 131072) / 2**30, "GiB")
+    print("6ND 7B x 2T:", f"{train_flops(7e9, 2e12):.2e}")
+    print("attn flops ratio at ctx 4096, d 4096:", attn_flops_per_token(32, 4096, 4096) / (2 * 6.74e9))</code></pre>
+<p>输出：LLaMA-2-7B 总参数 6,738,415,616；GPT-2 small 124,439,808；70B 68,976,648,192；7B MHA 4k KV cache 2.0 GiB，GQA-8 0.5 GiB；70B 128k 40 GiB；\(6\times7\text{e}9\times2\text{e}12=8.4\times10^{22}\) FLOPs。</p>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Each layer has four d squared parameters in attention, for the query, key, value and output projections, and eight d squared in the MLP, with up and down projections to four d. So it's about twelve d squared per layer, twelve L d squared in total, plus V times d for the embedding and another V times d if the head is untied. For LLaMA-2-7B, with d equal to 4096 and 32 layers, twelve L d squared is 6.4 billion, plus about a quarter billion for embeddings, which gives 6.7 billion. SwiGLU keeps the same count by using an eight-thirds hidden size, and GQA shrinks the key and value matrices.</p></div>
+</section>
+
+<section class="concept" id="c-flops">
+  <div class="concept-head"><span class="pri p1">★</span><h3>训练 FLOPs ≈ 6ND；推理 ≈ 2N / token</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每个参数每个 token：前向 1 次乘加 = 2 FLOPs；反向要算对激活的梯度和对权重的梯度，各 2 FLOPs，共 4；合计 6。所以训练 \(C\approx6ND\)，推理前向 \(\approx2N\) FLOPs/token（不计 attention 的 \(T\) 相关项）。</p><p class="en">Training costs about six N D FLOPs: two for the forward multiply-add per parameter per token, and four for the backward pass, which computes gradients with respect to both activations and weights.</p></div>
+  <div class="deep">
+    <h4>推导</h4>
+    <p>考虑一个线性层 \(Y=XW\)，\(X\in\mathbb{R}^{D\times m}\)（\(D\) 个 token），\(W\in\mathbb{R}^{m\times n}\)，参数 \(mn\)。</p>
+    <ul>
+      <li>前向：\(XW\) 需要 \(D\cdot m\cdot n\) 次乘加 = \(2Dmn\) FLOPs → 每参数每 token <b>2</b>。</li>
+      <li>反向-对输入：\(\partial\mathcal L/\partial X=(\partial\mathcal L/\partial Y)W^\top\)，同样 \(2Dmn\)（为了继续往前传）。</li>
+      <li>反向-对权重：\(\partial\mathcal L/\partial W=X^\top(\partial\mathcal L/\partial Y)\)，同样 \(2Dmn\)。</li>
+      <li>合计 \(6Dmn\)，对所有矩阵求和得 \(6ND\)。</li>
+    </ul>
+    <p>Embedding 查表不是矩阵乘（几乎 0 FLOPs），所以严格来说 \(N\) 应该取非 embedding 参数加上 LM head（LM head 是真矩阵乘）。Kaplan 等用非 embedding 参数 \(N\)。</p>
+    <h4>Attention 项</h4>
+    <p>每 token 每层，\(QK^\top\) 和 \(AV\) 前向各 \(2\cdot T_{\text{ctx}}\cdot d\) FLOPs（因果时平均可减半）。前向每 token 共 \(\approx 4Ld\,T_{\text{ctx}}\)，与 \(2N\approx 24Ld^2\) 相比比值 \(\approx T_{\text{ctx}}/(6d)\)。\(T=4096,d=4096\) 时约 16%，长上下文训练时不能忽略（<a href="https://arxiv.org/abs/2001.08361" target="_blank" rel="noreferrer">Kaplan et al. 2020</a> 写作 \(C_{\text{fwd}}\approx 2N+2n_{\text{layer}}n_{\text{ctx}}d_{\text{attn}}\)，attention 项系数与这里差 2 倍，来自是否把 \(AV\) 单列、是否按因果平均等约定差异；面试时说清楚自己的约定即可）。</p>
+    <h4>训练时间估算（白板模板）</h4>
+    <p>LLaMA-2-7B，\(D=2\text{T}\)：\(C=6\times6.7\times10^9\times2\times10^{12}\approx8\times10^{22}\)。假设 H100 bf16 稠密峰值约 \(10^{15}\) FLOP/s（约 989 TFLOPs），MFU 40%：每卡 \(4\times10^{14}\)。1000 张卡：\(4\times10^{17}\) FLOP/s → \(8\times10^{22}/4\times10^{17}=2\times10^5\) 秒 \(\approx\) 2.3 天。（数量级估算，峰值数字取整。）</p>
+    <h4>推理</h4>
+    <p>每生成一个 token \(\approx 2N\) FLOPs + attention 项 \(\approx 4Ld\cdot t\)。7B 模型 ≈ 14 GFLOPs/token。但 batch=1 解码是带宽瓶颈：每步要读全部 14 GB 权重（bf16），H100 HBM 约 3.35 TB/s → 上限约 240 tokens/s。详见 <a href="m08-inference.html">08</a>。</p>
+    <p><b>"backward = 2× forward" 何时不成立？</b>开启 activation checkpointing 时要额外重算一次前向，变成约 \(8ND\)（硬件 FLOPs，HFU）；MFU 的分子仍按 \(6ND\) 计算。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>说 "\(3ND\)" 或 "\(2ND\)"——忘了乘加算 2 FLOPs 或忘了反向两份。</li>
+      <li>把 \(D\) 理解为数据集大小（样本数）——是 token 数。</li>
+      <li>对 MoE 用总参数 \(N\)——应该用激活参数。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For every parameter and every token, the forward pass does one multiply-add, which is two FLOPs. The backward pass does two matmuls of the same size: one for the gradient with respect to the input, to keep backpropagating, and one for the gradient with respect to the weight. That's four more FLOPs, so six in total, giving six N D for training. Inference is just the forward pass, about two N FLOPs per token. On top of that, attention adds a term proportional to layers times d times context length, which is small relative to six N D unless the context is several times the model width. As a sanity check, a 7B model on two trillion tokens is about eight times ten to the twenty-two FLOPs.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Given a budget of 1e23 FLOPs, what model size and token count would Chinchilla suggest?</b><details><summary>思路</summary><div class="inner">Chinchilla 经验：\(D\approx20N\)。\(C=6ND=120N^2=10^{23}\Rightarrow N\approx\sqrt{8.3\times10^{20}}\approx2.9\times10^{10}\)，即约 29B 参数、约 580B tokens。实践中为推理成本通常会"过度训练"更小的模型。详见 <a href="m05-pretraining.html">05</a>。</div></details></li>
+    <li><b>How many FLOPs per token does a 7B model need at 32k context?</b><details><summary>思路</summary><div class="inner">\(2N\approx13.5\) GFLOPs；attention 项 \(4\cdot32\cdot4096\cdot32768\approx17\) GFLOPs（若最后一个 token 看满 32k）。attention 已超过矩阵参数部分，长上下文推理成本翻倍以上。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §6 -->
+<h2 class="sec" id="s-arch"><span class="num">§6 · ENCODER / DECODER</span>Encoder-only、Decoder-only、Encoder-Decoder</h2>
+<p class="sec-intro">高频的"讨论题"：为什么今天的大模型几乎都是 decoder-only？没有唯一正确答案，要把论点讲清楚，并承认这在一定程度上是经验和工程选择。</p>
+
+<section class="concept" id="c-enc-dec">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>BERT / GPT / T5 / Prefix LM 与 decoder-only 为何主导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Encoder-only（BERT）双向注意力 + MLM，擅长理解/表征；decoder-only（GPT）因果注意力 + 下一个 token 预测，天然能生成；encoder-decoder（T5）编码器双向、解码器因果 + cross-attention；prefix LM 对前缀双向、对后续因果。</p><p class="en">Encoder-only models are bidirectional and good for representations, decoder-only models are causal and generate natively, and encoder-decoders combine a bidirectional encoder with a causal decoder via cross-attention.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th></th><th>Encoder-only</th><th>Decoder-only</th><th>Encoder-decoder</th><th>Prefix LM</th></tr>
+      <tr><td>注意力</td><td>全双向</td><td>因果</td><td>enc 双向；dec 因果 + cross</td><td>前缀双向，其余因果</td></tr>
+      <tr><td>预训练目标</td><td>MLM（遮 15%）</td><td>NTP</td><td>span corruption</td><td>前缀条件的 NTP</td></tr>
+      <tr><td>每 token 训练信号</td><td>仅被遮的 ~15%</td><td>100% 位置</td><td>仅目标 span</td><td>仅非前缀部分</td></tr>
+      <tr><td>代表</td><td>BERT、RoBERTa</td><td>GPT、LLaMA</td><td>T5、BART</td><td>UniLM、部分 PaLM 变体</td></tr>
+    </table>
+    <p><b>Decoder-only 占主导的论点</b>（作为论点陈述，非定论）：</p>
+    <ol>
+      <li><b>目标统一、训练信号密</b>：NTP 每个位置都有 loss；任何任务都能写成"给定前文生成后文"，零样本/少样本/指令都自然。</li>
+      <li><b>简单、易扩展</b>：一个栈、一种注意力、一套并行方案；scaling law 研究和基础设施都围绕它发展。</li>
+      <li><b>推理效率</b>：KV cache 在多轮对话中可以复用；encoder-decoder 改变输入要重算 encoder。</li>
+      <li><b>经验结果</b>：<a href="https://arxiv.org/abs/2204.05832" target="_blank" rel="noreferrer">Wang et al. 2022</a> 对比多种架构与目标，发现 causal decoder + 全语言建模在零样本泛化上（无多任务微调时）最好，而 encoder-decoder 在多任务微调后更强；</li>
+      <li><b>低秩论证</b>（有争议）：有观点认为双向注意力矩阵可能退化为低秩，而因果的下三角注意力矩阵（对角元为正时）满秩，表达能力不受此限制。</li>
+    </ol>
+    <p><b>反方/细节</b>：同参数下 encoder-decoder 在条件生成（翻译、摘要）上常更高效；双向编码器对检索/分类仍是首选（embedding 模型）。"decoder-only 胜出"很大程度上也是路径依赖和工程生态。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd say decoder-only won for a mix of reasons rather than one decisive one. Next-token prediction gives a training signal at every position and casts every task as continuation, so the same model does zero-shot, few-shot and instruction following. The architecture is a single homogeneous stack, which is simple to scale and to serve, and the KV cache can be reused across turns. Empirically, causal decoders trained with plain language modeling had the best zero-shot generalization in controlled comparisons. That said, encoder-decoders can be more parameter-efficient for conditional generation, and bidirectional encoders are still the default for embeddings.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why can't BERT generate text easily?</b><details><summary>思路</summary><div class="inner">它学的是"给定双向上下文填被遮的 token"，没有一个从左到右的联合分布分解；生成需要迭代式 mask-predict，质量和效率都不如 AR。这与离散扩散 LM 的思路有关（见 <a href="m12-generative.html">12</a>）。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §7 -->
+<h2 class="sec" id="s-moe"><span class="num">§7 · MIXTURE OF EXPERTS</span>MoE：稀疏专家混合</h2>
+<p class="sec-intro">前沿模型大量使用 MoE（Mixtral、DeepSeek-V2/V3、Qwen MoE、gpt-oss 等）。面试重点：路由怎么做、负载为什么会不均衡、怎么修、通信代价在哪、总参数 vs 激活参数。</p>
+
+<section class="concept" id="c-moe-basics">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Router、top-k、capacity factor、token dropping</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把 FFN 换成 \(E\) 个专家 FFN + 一个线性 router；每个 token 只送往 router 分数最高的 \(k\) 个专家，输出按门控权重加权求和；总参数随 \(E\) 增长，但每 token 计算只随 \(k\) 增长。</p><p class="en">An MoE layer replaces the MLP with many expert MLPs and a learned router that sends each token to its top-k experts, so total parameters scale with the number of experts while per-token compute scales only with k.</p></div>
+  <div class="deep">
+    <p><b>计算</b>（token-choice top-k）：</p>
+    $$p(x)=\mathrm{softmax}(W_rx)\in\mathbb{R}^E,\quad \mathcal{T}=\mathrm{TopK}(p,k),\quad y=\sum_{e\in\mathcal T}g_e(x)\,\mathrm{FFN}_e(x)$$
+    <p>门控 \(g_e\) 可以是原 softmax 概率，或在选中的 \(k\) 个上重新归一化（Mixtral 先 top-k 再对这 \(k\) 个 logit 做 softmax）。router 通过门控权重接收梯度（top-k 选择本身不可微）。</p>
+    <p><b>为什么有效？</b>同样的每 token FLOPs 下，参数（知识容量）多得多。<a href="https://arxiv.org/abs/2401.04088" target="_blank" rel="noreferrer">Mixtral 8x7B</a>：8 专家 top-2，总参数约 47B，激活约 13B（attention 等是共享的，所以不是 56B）。<a href="https://arxiv.org/abs/2412.19437" target="_blank" rel="noreferrer">DeepSeek-V3</a>：总 671B，激活 37B。</p>
+    <p><b>Capacity factor 与 token dropping。</b>为了让 kernel 形状固定（尤其在 TPU/专家并行下），每个专家每个 batch 最多处理 \(\text{capacity}=\text{CF}\times\frac{k\cdot\#\text{tokens}}{E}\) 个 token。CF=1.0 表示刚好均分；常用 1.25。超出容量的 token 被<b>丢弃</b>（不经过该专家，只走残差连接），容量不足的专家补 padding 浪费计算。CF 越大丢得越少但浪费越多。较新的实现（如 MegaBlocks 的 dropless MoE）用分块稀疏矩阵乘避免丢 token。</p>
+    <p><b>Expert-choice routing</b>（Zhou et al. 2022）：反过来让每个专家选 top-\(c\) 个 token，天然负载均衡，但对自回归推理不友好（一个 token 可能没被任何专家选中，且选择依赖于 batch 中的其他 token，破坏因果性）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"Mixtral 8x7B = 56B 参数"——错，attention、embedding 是共享的，只有 FFN 有 8 份，约 47B。另外 MoE 节省的是 FLOPs，<b>不</b>节省显存：所有专家都必须装在（某些）GPU 上，推理时小 batch 下访存也更多。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A mixture-of-experts layer replaces the dense MLP with E expert MLPs and a small linear router. For each token, the router produces a softmax over experts, we pick the top k, usually one, two or eight, and the output is the gate-weighted sum of those experts' outputs. This decouples total parameters from per-token compute: you get the capacity of a huge model at the FLOPs of a small one. In practice each expert has a capacity, a capacity factor times the even share of tokens, and overflow tokens are dropped and just pass through the residual. The catch is that all experts must sit in memory and you need load balancing and all-to-all communication.</p></div>
+</section>
+
+<section class="concept" id="c-moe-balance">
+  <div class="concept-head"><span class="pri p1">★</span><h3>负载均衡：Switch aux loss、router z-loss、aux-loss-free</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Router 有"富者愈富"的坍缩倾向；Switch 的辅助损失 \(\alpha E\sum_e f_eP_e\) 在均匀分配时取最小值 \(\alpha\)；z-loss 惩罚 router logit 的 logsumexp 平方以防数值爆炸；DeepSeek-V3 改用只影响选择的偏置项 \(b_e\) 动态调节，几乎不需要辅助损失。</p><p class="en">Routers tend to collapse onto a few experts, so we add a load-balancing loss, alpha times E times the sum of dispatch fraction times mean router probability, plus a z-loss on router logits; DeepSeek-V3 instead adjusts a per-expert bias used only for selection.</p></div>
+  <div class="deep">
+    <p><b>为什么会坍缩？</b>被选中多的专家得到更多梯度、变得更好、更常被选——正反馈。坍缩后大部分专家闲置（浪费参数），专家并行时某些 GPU 过载（慢）。</p>
+    <h4>Switch Transformer 负载均衡损失</h4>
+    <p>（<a href="https://arxiv.org/abs/2101.03961" target="_blank" rel="noreferrer">Fedus et al. 2021</a>）对一个 batch 的 \(N\) 个 token：</p>
+    $$\mathcal{L}_{\text{aux}}=\alpha\cdot E\cdot\sum_{e=1}^{E}f_e\,P_e,\qquad f_e=\frac1N\sum_{x}\mathbb{1}[\arg\max p(x)=e],\qquad P_e=\frac1N\sum_x p_e(x)$$
+    <ul>
+      <li>\(f_e\)：实际分配给专家 \(e\) 的 token 比例（来自 argmax，<b>不可微</b>）；\(P_e\)：router 给专家 \(e\) 的平均概率（<b>可微</b>，梯度通过它流回 router）。</li>
+      <li>均匀时 \(f_e=P_e=1/E\)，\(\sum_e f_eP_e=E\cdot\frac{1}{E^2}=\frac1E\)，乘 \(E\) 后损失 \(=\alpha\)（与 \(E\) 无关，这就是乘 \(E\) 的原因）。完全坍缩到一个专家时 \(=\alpha E\)。</li>
+      <li>梯度直觉：\(\partial\mathcal L/\partial P_e\propto f_e\)，过载专家（\(f_e\) 大）的概率被压得更狠。</li>
+      <li>Switch 用 \(\alpha=10^{-2}\)。top-\(k\) 时 \(f_e\) 统计所有 \(k\) 个分配（通常再除以 \(k\) 归一化）。</li>
+    </ul>
+    <h4>Router z-loss</h4>
+    <p>（<a href="https://arxiv.org/abs/2202.08906" target="_blank" rel="noreferrer">ST-MoE, Zoph et al. 2022</a>）\(\mathcal L_z=\frac1N\sum_x\big(\log\sum_e e^{z_e(x)}\big)^2\)，系数约 \(10^{-3}\)。惩罚过大的 router logit，减少 bf16 下 exp 的舍入误差和训练不稳定，几乎不损失质量。同样的 z-loss 思想也用于 LM head 输出 logit（PaLM）。</p>
+    <h4>Fine-grained + shared experts（DeepSeekMoE）</h4>
+    <p>（<a href="https://arxiv.org/abs/2401.06066" target="_blank" rel="noreferrer">Dai et al. 2024</a>）(1) <b>细粒度切分</b>：把每个专家切成 \(m\) 个更小的专家，同时 top-k 变成 top-\(mk\)，计算量不变，但组合数大增，专家更专一；(2) <b>共享专家</b>：若干个所有 token 都会经过的专家，承载通用知识，减少路由专家之间的冗余。DeepSeek-V3：每层 1 个共享 + 256 个路由专家，每 token 激活 8 个路由专家。</p>
+    <h4>Auxiliary-loss-free 负载均衡（DeepSeek-V3）</h4>
+    <p>辅助损失太大会损害主任务。<a href="https://arxiv.org/abs/2412.19437" target="_blank" rel="noreferrer">DeepSeek-V3</a> 给每个专家一个偏置 \(b_e\)，<b>只在选 top-k 时</b>加到亲和度分数上（\(s_e+b_e\)），门控权重仍用原分数 \(s_e\)。每个训练 step 结束时：专家过载则 \(b_e\leftarrow b_e-\gamma\)，欠载则 \(b_e\leftarrow b_e+\gamma\)（前 14.3T token 用 \(\gamma=0.001\)，最后 500B token 设为 0）。偏置不接收梯度，不干扰主目标。另外保留一个极小权重（\(\alpha=10^{-4}\)）的序列级平衡损失，防止单个序列内极端不均衡。V3 的亲和度用 sigmoid（而非 softmax），然后在选中的专家上归一化。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把 \(f_e\) 也当成可微量——它来自 argmax/top-k，没有梯度；损失的梯度全部经过 \(P_e\)。另一个误区：认为平衡损失能保证每个 batch 完美均衡——只是软约束，仍需 capacity 或 dropless 实现兜底。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Routers have a rich-get-richer dynamic: popular experts get more gradient, improve, and get picked even more. The Switch Transformer fixes this with an auxiliary loss, alpha times E times the sum over experts of f_e times P_e, where f_e is the fraction of tokens actually dispatched to expert e and P_e is the mean router probability for e. Only P_e is differentiable, and the gradient pushes down the probability of overloaded experts. The loss equals alpha at perfect balance. ST-MoE adds a router z-loss, the squared log-sum-exp of router logits, for numerical stability. DeepSeek-V3 goes further and replaces most of the auxiliary loss with a per-expert bias that's added only when selecting the top-k and is nudged up or down after each step depending on load.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why multiply by E in the Switch loss?</b><details><summary>思路</summary><div class="inner">使均匀分配时的损失值 \(=\alpha\) 与专家数无关，这样改变 \(E\) 时不用重调 \(\alpha\)。</div></details></li>
+    <li><b>What are common MoE training instabilities and fixes?</b><details><summary>思路</summary><div class="inner">router logit 爆炸（z-loss、router 用 fp32 计算）；专家坍缩（平衡损失/偏置）；loss spike（降低 lr、更小的 router 初始化）；微调时过拟合（MoE 在小数据上微调更容易过拟合，ST-MoE 建议更高 dropout / 只调部分参数）；路由在训练后期剧烈变化导致不稳定。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-moe-ep">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Expert parallelism 与 all-to-all</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把不同专家放在不同 GPU 上；每层 MoE 需要两次 all-to-all：先把每个 token 发到其专家所在的卡（dispatch），算完再发回（combine）。通信量与 token 数 × \(d\) × \(k\) 成正比，常常是 MoE 的瓶颈。</p><p class="en">Expert parallelism shards experts across devices and needs two all-to-all exchanges per MoE layer, one to dispatch tokens and one to combine results.</p></div>
+  <div class="deep">
+    <p>数据并行切 batch、专家并行切专家。每张卡上的 token 根据路由结果打包发送给持有对应专家的卡，计算后发回原卡按门控加权。跨节点 all-to-all 带宽远低于 NVLink，所以 DeepSeek-V3 限制每个 token 最多路由到 4 个节点（node-limited routing），并设计了计算-通信重叠的流水线。推理时 MoE 的显存（所有专家）和小 batch 下的访存（不同 token 激活不同专家）是主要成本。详见 <a href="m09-distributed.html">09</a>。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>With expert parallelism each device hosts a subset of experts. In every MoE layer, tokens are routed, then an all-to-all sends each token's hidden state to the devices holding its chosen experts, the experts run, and a second all-to-all returns the outputs to be combined. The communication volume scales with tokens times hidden size times k, and across nodes it can dominate step time, which is why systems like DeepSeek-V3 limit how many nodes a token can be routed to and overlap communication with computation.</p></div>
+</section>
+
+<!-- ============================================================ §8 -->
+<h2 class="sec" id="s-eff"><span class="num">§8 · EFFICIENT ATTENTION</span>高效注意力：FlashAttention、线性注意力、SSM</h2>
+<p class="sec-intro">FlashAttention 几乎必问，标准回答要点：IO-aware、tiling、online softmax、FLOPs 不变甚至更多、反向重算。online softmax 的递推最好能现场推出来。</p>
+
+<section class="concept" id="c-online-softmax">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Online softmax：递推推导</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>流式维护当前最大值 \(m\) 和归一化和 \(\ell=\sum e^{x_j-m}\)；遇到新值时 \(m'=\max(m,x)\)，\(\ell'=\ell\,e^{m-m'}+e^{x-m'}\)。一次遍历就得到稳定的 softmax 分母，并可分块并行合并。</p><p class="en">Online softmax keeps a running max and a running sum, rescaling the sum by e to the old max minus new max whenever the max changes, so softmax can be computed in one streaming pass over blocks.</p></div>
+  <div class="deep">
+    <p><b>问题。</b>稳定 softmax 需要三遍：(1) 求 \(m=\max_j x_j\)；(2) 求 \(\ell=\sum_j e^{x_j-m}\)；(3) 输出 \(e^{x_i-m}/\ell\)。对长序列，每遍都要从 HBM 读一次。</p>
+    <p><b>递推</b>（<a href="https://arxiv.org/abs/1805.02867" target="_blank" rel="noreferrer">Milakov &amp; Gimelshein 2018</a>）。定义前 \(t\) 个元素的 \(m_t=\max_{j\le t}x_j\)，\(\ell_t=\sum_{j\le t}e^{x_j-m_t}\)。则</p>
+    $$m_t=\max(m_{t-1},x_t),\qquad \ell_t=\sum_{j\le t-1}e^{x_j-m_t}+e^{x_t-m_t}=\underbrace{\Big(\sum_{j\le t-1}e^{x_j-m_{t-1}}\Big)}_{\ell_{t-1}}e^{m_{t-1}-m_t}+e^{x_t-m_t}$$
+    <p>初始化 \(m_0=-\infty,\ell_0=0\)。关键一步：\(e^{x_j-m_t}=e^{x_j-m_{t-1}}\cdot e^{m_{t-1}-m_t}\)。由于 \(m_t\ge m_{t-1}\)，缩放因子 \(\le1\)，数值稳定。</p>
+    <p><b>两个块的合并</b>（并行版本）：\((m_A,\ell_A)\) 与 \((m_B,\ell_B)\) 合并为 \(m=\max(m_A,m_B)\)，\(\ell=\ell_Ae^{m_A-m}+\ell_Be^{m_B-m}\)。这个运算满足结合律，所以可以任意分块、树形归约。</p>
+    <p><b>推广到 attention 输出。</b>我们要的其实是 \(o=\sum_j \mathrm{softmax}_j\,v_j\)。同样维护未归一化的累加器 \(\mathrm{acc}=\sum_j e^{s_j-m}v_j\)，每当最大值从 \(m\) 变成 \(m'\)，就把 \(\mathrm{acc}\) 乘 \(e^{m-m'}\) 再加新块的贡献；最后 \(o=\mathrm{acc}/\ell\)。这正是 FlashAttention 前向的核心。</p>
+  </div>
+  <details class="deep"><summary>代码：online softmax 与分块 attention（numpy，已运行）</summary><div class="inner">
+<pre><code class="language-python">def online_softmax_stats(xs):
+    m, l = -np.inf, 0.0
+    for x_ in xs:
+        m_new = max(m, x_)
+        l = l * np.exp(m - m_new) + np.exp(x_ - m_new)   # rescale old sum, add new term
+        m = m_new
+    return m, l
+
+def flash_forward(q, k, v, Bc=16, causal=False):
+    """Tiled attention for one head: never materializes the (Tq, Tk) matrix."""
+    Tq, d = q.shape; Tk = k.shape[0]
+    scale = 1 / np.sqrt(d)
+    m = np.full(Tq, -np.inf); l = np.zeros(Tq); acc = np.zeros((Tq, v.shape[1]))
+    for j in range(0, Tk, Bc):                          # stream over key/value blocks
+        s = q @ k[j:j+Bc].T * scale                     # (Tq, Bc) scores for this block
+        if causal:
+            qi = np.arange(Tq)[:, None]; kj = np.arange(j, min(j+Bc, Tk))[None]
+            s = np.where(kj &lt;= qi, s, -np.inf)
+        m_new = np.maximum(m, s.max(1))
+        alpha = np.exp(m - m_new)                       # correction for previously seen blocks
+        p = np.exp(s - m_new[:, None])
+        l = l * alpha + p.sum(1)
+        acc = acc * alpha[:, None] + p @ v[j:j+Bc]
+        m = m_new
+    return acc / l[:, None]
+
+# verified: equals softmax(q k^T / sqrt(d)) v, with and without causal mask
+</code></pre>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The standard stable softmax needs a pass for the max, a pass for the sum, and a pass to normalize. Online softmax fuses the first two: I keep a running max m and a running sum l of exponentials relative to m. When a new element arrives, the new max is the larger of the two, and the old sum is multiplied by e to the old max minus the new max before adding the new term. The same rescaling applies to a running weighted sum of value vectors, and two partial results can be merged associatively, which is exactly what lets FlashAttention process attention block by block.</p></div>
+</section>
+
+<section class="concept" id="c-flash">
+  <div class="concept-head"><span class="pri p1">★</span><h3>FlashAttention：IO-aware 精确注意力</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>注意力的瓶颈是 HBM 读写而非算力；FlashAttention 把 Q、K、V 切块载入片上 SRAM，用 online softmax 在块内完成全部计算，从不把 \(T\times T\) 矩阵写回 HBM；反向时重算注意力而非存储它。结果是<b>精确</b>的（不是近似），FLOPs 不变（反向还略多），但显存 \(O(T)\)、速度快数倍。</p><p class="en">FlashAttention is exact attention that tiles Q, K and V into on-chip SRAM and uses online softmax so the T by T matrix never goes to HBM; it recomputes attention in the backward pass, trading extra FLOPs for far less memory traffic.</p></div>
+  <div class="deep">
+    <p>出自 <a href="https://arxiv.org/abs/2205.14135" target="_blank" rel="noreferrer">Dao et al. 2022</a>。</p>
+    <p><b>为什么朴素 attention 慢？</b>GPU 存储层级：HBM（几十 GB，约 2–3 TB/s）与 SRAM（每个 SM 约百 KB 级，带宽高一个数量级以上）。朴素实现：算 \(S=QK^\top\) 写回 HBM → 读 \(S\) 做 softmax 写回 \(P\) → 读 \(P\) 算 \(PV\)。\(S,P\) 都是 \(O(T^2)\)，读写量远大于 \(Q,K,V\) 本身。softmax、mask、dropout 都是逐元素操作，算术强度极低，被访存卡住。</p>
+    <p><b>算法（前向）。</b></p>
+    <ol>
+      <li>把 \(Q\) 切成行块 \(Q_i\)（大小 \(B_r\)），\(K,V\) 切成块 \(K_j,V_j\)（大小 \(B_c\)），块大小按 SRAM 容量选。</li>
+      <li>对每个 \(Q_i\)：在 SRAM 中维护 \(m_i,\ell_i,\mathrm{acc}_i\)；遍历所有 \(K_j,V_j\)：算 \(S_{ij}=Q_iK_j^\top/\sqrt d\)，按 online softmax 更新统计量与累加器（见上一节代码）。</li>
+      <li>最后 \(O_i=\mathrm{acc}_i/\ell_i\) 写回 HBM，同时保存 logsumexp \(L_i=m_i+\log\ell_i\)（每行一个标量）供反向使用。</li>
+    </ol>
+    <p><b>反向：重算（recomputation）。</b>标准反向需要存 \(P\)（\(O(T^2)\)）。FlashAttention 只存 \(O\) 和 \(L\)，反向时用 \(Q,K,V\) 和 \(L\) 分块重新算出 \(P_{ij}=\exp(S_{ij}-L_i)\)。多做了一次 \(QK^\top\)，但避免了 \(O(T^2)\) 的 HBM 读写，反而更快。这是"用计算换访存"的典型例子，与 activation checkpointing 同理。</p>
+    <p><b>IO 复杂度。</b>论文给出 HBM 访问量 \(\Theta(T^2d^2/M)\)（\(M\) 为 SRAM 大小），而标准实现是 \(\Theta(Td+T^2)\)；对典型 \(d\) 和 \(M\)，\(d^2/M\ll1\)，访问量少很多倍。</p>
+    <p><b>后续版本。</b></p>
+    <ul>
+      <li><b><a href="https://arxiv.org/abs/2307.08691" target="_blank" rel="noreferrer">FlashAttention-2</a></b>（2023）：减少非矩阵乘 FLOPs（例如把除以 \(\ell\) 推迟到最后）、在序列长度维度上也并行（不只是 batch×head）、改进 warp 间分工减少共享内存读写。约 2× 加速，A100 上达到理论峰值的 50–73%。</li>
+      <li><b><a href="https://arxiv.org/abs/2407.08608" target="_blank" rel="noreferrer">FlashAttention-3</a></b>（2024，Hopper/H100）：利用 Tensor Core 与 TMA 的异步性做 warp specialization（生产者/消费者 warp）、块间交错 matmul 与 softmax、FP8 低精度（块量化 + incoherent processing 降低误差）。FP16 下约 740 TFLOPs/s（约 75% 利用率），FP8 接近 1.2 PFLOPs/s。</li>
+      <li><b>Flash-Decoding</b>：解码时 query 只有 1 个，改为沿 KV 长度维度切分并行，再合并（用的就是 online softmax 的合并公式）。见 <a href="m08-inference.html">08</a>。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>
+    <ul>
+      <li>"FlashAttention 是近似注意力 / 降低了复杂度"——错，它是精确的，FLOPs 仍是 \(O(T^2d)\)，只是 IO 和显存优化。</li>
+      <li>"FlashAttention 减少了 FLOPs"——反向因为重算还多了。</li>
+      <li>忘记反向需要保存 logsumexp \(L\)。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>FlashAttention starts from the observation that attention is memory-bound, not compute-bound: the naive version writes the T by T score matrix to HBM, reads it back for the softmax, writes the probabilities, and reads them again for the value product. FlashAttention tiles Q, K and V into blocks that fit in on-chip SRAM, and for each query block it streams over key-value blocks, using the online softmax recurrence to maintain a running max, normalizer and output accumulator. The full attention matrix never touches HBM, so memory is linear in sequence length. In the backward pass it stores only the output and the log-sum-exp per row and recomputes the attention probabilities block by block. It's exact, the FLOPs are the same or slightly higher, but wall-clock is several times faster.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why is recomputation in the backward pass faster than storing the attention matrix?</b><details><summary>思路</summary><div class="inner">GPU 算力增长远快于带宽，现代 GPU 每读一个字节可以做几百次 FLOP。重算 \(QK^\top\) 是高算术强度的 GEMM，在 SRAM 中完成；而存/读 \(O(T^2)\) 的 \(P\) 是低算术强度的 HBM 流量。同时省下的 \(O(T^2)\) 显存允许更长序列和更大 batch。</div></details></li>
+    <li><b>How does FlashAttention handle causal masking efficiently?</b><details><summary>思路</summary><div class="inner">完全在对角线上方的 (i, j) 块直接跳过（约省一半计算）；跨越对角线的块在块内应用 mask；完全在下方的块不需要 mask。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-linear-attn">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>线性注意力：核技巧与递推形式</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把 \(\exp(q\cdot k)\) 换成特征映射内积 \(\phi(q)^\top\phi(k)\)，利用结合律先算 \(\sum_j\phi(k_j)v_j^\top\)，复杂度变成 \(O(Td^2)\)；因果版本等价于一个状态为 \(d\times d\) 矩阵的 RNN，解码每步 \(O(1)\)。</p><p class="en">Linear attention replaces the softmax kernel with a feature-map inner product, so by associativity the causal version becomes an RNN with a d by d matrix state and constant cost per token.</p></div>
+  <div class="deep">
+    <p>（<a href="https://arxiv.org/abs/2006.16236" target="_blank" rel="noreferrer">Katharopoulos et al. 2020, Transformers are RNNs</a>）</p>
+    $$o_i=\frac{\sum_{j\le i}\phi(q_i)^\top\phi(k_j)\,v_j}{\sum_{j\le i}\phi(q_i)^\top\phi(k_j)}=\frac{\phi(q_i)^\top\overbrace{\textstyle\sum_{j\le i}\phi(k_j)v_j^\top}^{S_i\in\mathbb{R}^{d_k\times d_v}}}{\phi(q_i)^\top\underbrace{\textstyle\sum_{j\le i}\phi(k_j)}_{z_i}}$$
+    <p>递推：\(S_i=S_{i-1}+\phi(k_i)v_i^\top\)，\(z_i=z_{i-1}+\phi(k_i)\)。训练时可以用并行（矩阵）形式或分块（chunkwise）形式，推理时用递推形式，状态大小固定——没有随长度增长的 KV cache。常用 \(\phi(x)=\mathrm{elu}(x)+1\)。我们数值验证了并行形式与递推形式完全相等。</p>
+    <p><b>弱点</b>：固定大小的状态是"有损压缩"，精确检索/复制（如 "在长文中找出某个电话号码"）能力明显弱于 softmax attention；没有 softmax 的尖锐选择。后续工作加入衰减/门控（RetNet、GLA、Mamba-2）和 delta rule（DeltaNet，按"误差"更新状态）来改善。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Linear attention swaps the exponential similarity for an inner product of feature maps, phi of q dot phi of k. Then by associativity you can sum phi of k times v transpose over the keys first, so cost becomes linear in sequence length. In the causal case this is literally an RNN: the state is a d by d matrix updated by adding phi of k_t times v_t transpose each step, so decoding is constant time and memory. The trade-off is that a fixed-size state is lossy, so exact retrieval and copying over long contexts are much weaker than with softmax attention; gating, decay and delta-rule updates are the modern fixes.</p></div>
+</section>
+
+<section class="concept" id="c-ssm">
+  <div class="concept-head"><span class="pri p3">○</span><h3>SSM / Mamba、混合架构、稀疏注意力（简介）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Mamba 是输入相关（selective）的状态空间模型，线性时间、常数解码状态；纯 SSM 在召回类任务上弱，所以实际大模型多用"少量 attention 层 + 大量线性/SSM 层"的混合架构。</p><p class="en">Mamba is a selective state-space model with linear-time training and constant-size decoding state; in practice hybrids that keep a few attention layers among many linear or SSM layers work best.</p></div>
+  <div class="deep">
+    <p><b>SSM</b>：连续系统 \(h'(t)=Ah(t)+Bx(t)\)，\(y=Ch\)，离散化后是线性 RNN \(h_t=\bar Ah_{t-1}+\bar Bx_t\)。S4 等用固定参数（可以写成长卷积并行训练）。<b><a href="https://arxiv.org/abs/2312.00752" target="_blank" rel="noreferrer">Mamba（Gu &amp; Dao 2023）</a></b>让 \(B,C,\Delta\) 依赖输入（selective），从而能"选择性记住/遗忘"，失去卷积形式后用硬件感知的并行 scan 训练。Mamba-2 揭示了 SSM 与（带衰减的）线性注意力的对偶关系。</p>
+    <p><b>混合架构</b>例子：<a href="https://arxiv.org/abs/2403.19887" target="_blank" rel="noreferrer">Jamba</a>（Transformer 与 Mamba 层以 1:7 交错，加 MoE）；<a href="https://arxiv.org/abs/2501.08313" target="_blank" rel="noreferrer">MiniMax-01</a>（lightning attention 线性注意力为主，每 7 层线性注意力后接 1 层 softmax attention）。动机：线性层处理大部分 token 混合以节省长上下文成本，少量全注意力层负责精确检索。</p>
+    <p><b>稀疏注意力</b>：固定模式（局部 + 全局 token，如 Longformer、BigBird）；可学习/内容相关的块选择（例如 DeepSeek 的 NSA 等"原生稀疏注意力"研究方向）。核心问题始终是：如何在 \(o(T^2)\) 的代价下保留精确检索能力。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>State-space models like Mamba are linear recurrences whose transition parameters depend on the input, so the model can choose what to keep in its fixed-size state. They train in parallel with a hardware-aware scan and decode in constant time per token. Their weakness, like linear attention, is exact recall over long contexts. That's why most production-scale efforts that use them are hybrids: mostly linear or SSM layers for cheap mixing, plus a few full softmax attention layers for precise retrieval.</p></div>
+</section>
+
+<!-- ============================================================ §9 -->
+<h2 class="sec" id="s-tok"><span class="num">§9 · TOKENIZATION</span>Tokenizer</h2>
+<p class="sec-intro">看似琐碎，其实很多"模型怪现象"（不会数 strawberry 里的 r、算术出错、多语言成本高）都源于 tokenizer。BPE 的训练和编码过程需要能手动模拟。</p>
+
+<section class="concept" id="c-bpe">
+  <div class="concept-head"><span class="pri p1">★</span><h3>BPE：训练与编码，一步一步</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>训练：从字符（或字节）开始，反复统计语料中最频繁的相邻符号对并合并成新符号，记录合并顺序，直到达到词表大小。编码：对新词从字符开始，按<b>训练时的合并顺序（优先级）</b>依次应用合并。</p><p class="en">BPE training repeatedly merges the most frequent adjacent pair of symbols and records the merge order; encoding applies those merges to new text in the same priority order.</p></div>
+  <div class="deep">
+    <p>（<a href="https://arxiv.org/abs/1508.07909" target="_blank" rel="noreferrer">Sennrich et al. 2016</a> 把 BPE 引入 NMT）</p>
+    <h4>手动示例</h4>
+    <p>语料（词 → 频次）：<code>low:5, lower:2, newest:6, widest:3</code>，每个词末尾加 <code>&lt;/w&gt;</code>。</p>
+    <ol>
+      <li>初始：<code>l o w &lt;/w&gt;</code>(5)，<code>l o w e r &lt;/w&gt;</code>(2)，<code>n e w e s t &lt;/w&gt;</code>(6)，<code>w i d e s t &lt;/w&gt;</code>(3)。</li>
+      <li>统计相邻对：<code>(e,s)</code>=6+3=9，<code>(s,t)</code>=9，<code>(t,&lt;/w&gt;)</code>=9，<code>(l,o)</code>=7，<code>(o,w)</code>=7，<code>(w,e)</code>=8 …… 最高频为 9，三者并列；按字典序打破平局选 <code>(e,s)</code> → 合并 1：<code>es</code>。</li>
+      <li>更新后 <code>(es,t)</code>=9 最高 → 合并 2：<code>est</code>。</li>
+      <li><code>(est,&lt;/w&gt;)</code>=9 → 合并 3：<code>est&lt;/w&gt;</code>（词尾的 "est"）。</li>
+      <li><code>(l,o)</code>=7，<code>(o,w)</code>=7 并列 → 合并 4：<code>lo</code>。</li>
+    </ol>
+    <p>编码新词 <code>lowest</code>：<code>l o w e s t &lt;/w&gt;</code> → 按优先级 es → est → est&lt;/w&gt; → lo，得到 <code>[lo, w, est&lt;/w&gt;]</code>。编码 <code>newer</code>：没有适用合并（<code>(e,r)</code> 未学过），保持字符级 <code>[n, e, w, e, r, &lt;/w&gt;]</code>。</p>
+    <p><b>编码时为什么要按合并顺序，而不是贪心最长匹配？</b>BPE 的定义就是按学到的顺序重放合并；最长匹配（WordPiece 的做法）可能得到不同切分。实现时每一步找当前序列中 rank 最小的相邻对合并，朴素实现 \(O(n^2)\)。</p>
+  </div>
+  <details class="deep"><summary>代码：BPE 训练与编码（纯 Python，已运行）</summary><div class="inner">
+<pre><code class="language-python">from collections import Counter
+
+def train_bpe(words, num_merges):
+    """words: dict word -&gt; count. Each word is split into chars + end marker '&lt;/w&gt;'."""
+    vocab = {tuple(w) + ("&lt;/w&gt;",): c for w, c in words.items()}
+    merges = []
+    for _ in range(num_merges):
+        pairs = Counter()
+        for sym, c in vocab.items():
+            for a, b in zip(sym, sym[1:]):
+                pairs[(a, b)] += c
+        if not pairs:
+            break
+        best = min(pairs, key=lambda p: (-pairs[p], p))  # most frequent; ties -&gt; lexicographically smallest
+        merges.append(best)
+        new_vocab = {}
+        for sym, c in vocab.items():
+            out, i = [], 0
+            while i &lt; len(sym):
+                if i &lt; len(sym) - 1 and (sym[i], sym[i + 1]) == best:
+                    out.append(sym[i] + sym[i + 1]); i += 2
+                else:
+                    out.append(sym[i]); i += 1
+            new_vocab[tuple(out)] = c
+        vocab = new_vocab
+    return merges, vocab
+
+def encode(word, merges):
+    """Apply merges in the order they were learned (rank = priority)."""
+    sym = list(word) + ["&lt;/w&gt;"]
+    rank = {p: i for i, p in enumerate(merges)}
+    while len(sym) &gt; 1:
+        pairs = [(rank.get((a, b), float("inf")), i) for i, (a, b) in enumerate(zip(sym, sym[1:]))]
+        r, i = min(pairs)
+        if r == float("inf"):
+            break
+        sym[i:i + 2] = [sym[i] + sym[i + 1]]
+    return sym
+
+if __name__ == "__main__":
+    corpus = {"low": 5, "lower": 2, "newest": 6, "widest": 3}
+    merges, vocab = train_bpe(corpus, 4)
+    print(merges)
+    print(vocab)
+    assert merges[:3] == [("e", "s"), ("es", "t"), ("est", "&lt;/w&gt;")]
+    print(encode("lowest", merges), encode("newer", merges))
+    assert "".join(encode("lowest", merges)) == "lowest&lt;/w&gt;"</code></pre>
+<p>输出：merges = [('e','s'), ('es','t'), ('est','&lt;/w&gt;'), ('l','o')]；encode('lowest') = ['lo','w','est&lt;/w&gt;']。</p>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>BPE training starts from a base vocabulary of characters, or bytes in byte-level BPE, counts all adjacent symbol pairs in the corpus weighted by frequency, merges the most frequent pair into a new symbol, and repeats until the vocabulary reaches the target size. The ordered list of merges is the tokenizer. To encode new text, you split into base symbols and repeatedly apply the highest-priority merge that appears, in the same order they were learned. Frequent words end up as single tokens, and rare words decompose into subwords, so there are no out-of-vocabulary tokens.</p></div>
+</section>
+
+<section class="concept" id="c-tok-variants">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Byte-level BPE、WordPiece、Unigram / SentencePiece</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Byte-level BPE 以 256 个字节为基础词表，保证任何字符串都能编码（无 UNK）；WordPiece 按似然增益（而非频次）选合并、编码用最长匹配；Unigram 从大词表出发按似然剪枝，编码用 Viterbi 找最可能切分；SentencePiece 是把空格当普通字符、直接处理原始文本的工具库，支持 BPE 和 Unigram。</p><p class="en">Byte-level BPE guarantees coverage with a 256-byte base; WordPiece picks merges by likelihood gain; Unigram prunes a large vocabulary by likelihood and decodes with Viterbi; SentencePiece is a library that treats whitespace as a symbol and works on raw text.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>方法</th><th>训练</th><th>编码</th><th>代表</th></tr>
+      <tr><td>BPE（字符）</td><td>自底向上合并最频繁对</td><td>按合并顺序</td><td>早期 NMT</td></tr>
+      <tr><td>Byte-level BPE</td><td>同上，基础单元是 UTF-8 字节；先用正则预切分（不跨越空格/数字/标点类别合并）</td><td>同上</td><td>GPT-2/3/4（tiktoken）、LLaMA-3</td></tr>
+      <tr><td>WordPiece</td><td>合并使 \(\frac{\text{count}(ab)}{\text{count}(a)\text{count}(b)}\) 最大的对（似然增益）</td><td>从左到右贪心最长匹配，后缀加 <code>##</code></td><td>BERT</td></tr>
+      <tr><td>Unigram LM</td><td>从大候选集开始，EM 估计每个子词概率，反复删除对似然影响最小的子词</td><td>Viterbi 求最大概率切分；可采样多种切分（subword regularization）</td><td>T5、ALBERT（经 SentencePiece）</td></tr>
+    </table>
+    <p><b>SentencePiece</b>（<a href="https://arxiv.org/abs/1808.06226" target="_blank" rel="noreferrer">Kudo &amp; Richardson 2018</a>）：不依赖语言相关的预分词，把空格替换成 <code>▁</code> 当普通字符，所以解码可逆、对中文日文等无空格语言友好。LLaMA-1/2 使用 SentencePiece BPE（32k 词表，带 byte fallback：未知字符退回字节）。<a href="https://arxiv.org/abs/1804.10959" target="_blank" rel="noreferrer">Unigram（Kudo 2018）</a>。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Byte-level BPE runs BPE on UTF-8 bytes, so the base vocabulary is 256 and any string can be encoded with no unknown token; GPT-2 onward also pre-splits with a regex so merges don't cross word or digit boundaries. WordPiece, used in BERT, chooses merges by likelihood gain rather than raw frequency and encodes greedily by longest match. Unigram goes top-down: it starts from a big vocabulary, fits a unigram language model, and prunes the pieces that least affect likelihood, then segments with Viterbi. SentencePiece is the library that treats whitespace as an ordinary symbol and supports both BPE and Unigram.</p></div>
+</section>
+
+<section class="concept" id="c-tok-tradeoffs">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>词表大小权衡与 tokenizer 伪影</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>词表大 → 序列短（省 attention 和推理步数）、多语言更公平，但 embedding/LM head 参数多、softmax 贵、稀有 token 训练不足；小词表则反之。很多怪现象（数字、空格、拼写、多语言成本、glitch token）来自 tokenizer。</p><p class="en">A larger vocabulary shortens sequences but costs embedding parameters, softmax compute and undertrained rare tokens; many model quirks with numbers, spelling and multilingual cost trace back to tokenization.</p></div>
+  <div class="deep">
+    <p><b>趋势</b>：GPT-2 约 50k，LLaMA-2 32k，LLaMA-3 128k，Gemma 256k。更大词表对多语言和代码更省 token。</p>
+    <p><b>常见伪影</b>：</p>
+    <ul>
+      <li><b>数字</b>：不同长度数字被切得不规律（"1234" 可能是 "123"+"4"），算术困难；LLaMA 系把数字拆成单个数字，GPT-4 的 tokenizer 把数字按最多 3 位一组切分。</li>
+      <li><b>空格/大小写</b>：" hello" 和 "hello" 是不同 token；prompt 末尾多一个空格可能显著改变输出（token healing 问题）。</li>
+      <li><b>拼写/字符级任务</b>：模型看不到 token 内部字符（"strawberry 有几个 r"）。</li>
+      <li><b>多语言 fertility</b>：每个词平均 token 数（fertility）在低资源语言上高好几倍 → 更贵、更短的有效上下文、更差的表现。</li>
+      <li><b>Glitch tokens</b>：tokenizer 语料中高频、但模型训练语料中几乎没出现的 token（如著名的 "SolidGoldMagikarp"，来自 Reddit 用户名），其 embedding 几乎没被训练，输入时引发怪异行为。根源是 tokenizer 训练数据与模型训练数据不一致。</li>
+      <li><b>评估</b>：不同 tokenizer 的困惑度不可直接比较，应换算成 bits-per-byte（见 <a href="m05-pretraining.html">05</a>）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Vocabulary size is a trade-off. A bigger vocabulary compresses text into fewer tokens, which saves attention cost and decoding steps and is fairer to non-English languages, but it adds embedding and output-layer parameters and leaves rare tokens undertrained. Tokenization also explains many quirks: inconsistent digit chunking hurts arithmetic, the model can't see characters inside a token so spelling tasks are hard, trailing spaces change the token sequence, and glitch tokens appear when a token was frequent in the tokenizer's training data but almost absent from the model's.</p></div>
+</section>
+
+<!-- ============================================================ §10 -->
+<h2 class="sec" id="s-details"><span class="num">§10 · OTHER DETAILS</span>其他高频细节</h2>
+<p class="sec-intro">这些常作为"快问快答"出现，或者在你讲完主干后被追问："你们为什么去掉 bias？""bf16 下 LN 的 epsilon 有什么讲究？"</p>
+
+<section class="concept" id="c-stability-tricks">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>稳定性技巧：QK-norm、logit soft-capping、z-loss</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>大模型训练中 attention logit 和输出 logit 会增长导致不稳定；QK-norm 在点积前对 q、k 做归一化，soft-capping 用 \(c\cdot\tanh(z/c)\) 把 logit 平滑限制在 \((-c,c)\)，z-loss 惩罚 \(\log Z\) 偏离 0。</p><p class="en">QK-norm normalizes queries and keys before the dot product, soft-capping squashes logits with c times tanh of z over c, and z-loss penalizes the log partition function, all to stop logit growth from destabilizing training.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Attention logit 增长</b>：<a href="https://arxiv.org/abs/2302.05442" target="_blank" rel="noreferrer">ViT-22B（Dehghani et al. 2023）</a>报告 attention logit 失控增长导致 attention 熵接近 0、训练发散，引入 QK-norm（对 q、k 做 LayerNorm）解决。之后 OLMo 2、Gemma 3 等也采用 QK-norm。</li>
+      <li><b>Logit soft-capping</b>：<a href="https://arxiv.org/abs/2408.00118" target="_blank" rel="noreferrer">Gemma 2</a> 对 attention logit（cap = 50）和最终输出 logit（cap = 30）做 \(z\leftarrow c\tanh(z/c)\)。小 \(z\) 时近似恒等，大 \(z\) 时饱和。缺点：与标准 FlashAttention kernel 不直接兼容（需要支持 softcap 的 kernel）。<a href="https://arxiv.org/abs/2503.19786" target="_blank" rel="noreferrer">Gemma 3</a> 用 QK-norm 取代了 Gemma 2 的 attention soft-capping。</li>
+      <li><b>z-loss</b>：\(\mathcal L_z=10^{-4}\cdot(\log Z)^2\)（PaLM 对输出 softmax 使用），鼓励 \(\log Z\approx0\)，防止输出 logit 漂移；MoE router 也用（§7）。</li>
+      <li><b>LN epsilon 与 bf16</b>：bf16 只有 8 位有效尾数（约 2–3 位十进制有效数字），在 bf16 里计算方差会严重舍入；标准做法是 norm 内部升到 fp32 计算再转回。\(\epsilon\) 常为 1e-5（LLaMA-2 RMSNorm）或 1e-6；当某些 token 的激活非常小时，\(\epsilon\) 的相对大小会影响输出，epsilon 太小可能导致除以极小数放大噪声。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A common failure in large-scale training is logit growth: query and key norms grow, attention entropy collapses toward one-hot, and loss spikes. QK-norm fixes this by normalizing queries and keys before the dot product, which bounds the logits. Gemma 2 instead soft-capped logits with c times tanh of z over c, at fifty for attention and thirty for the final logits, and Gemma 3 switched to QK-norm. For the output softmax, z-loss adds a small penalty on the squared log partition function to keep logits from drifting. And norms are computed in fp32 even when the model runs in bf16.</p></div>
+</section>
+
+<section class="concept" id="c-misc">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>无 bias、无 dropout、embedding scaling、初始化</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>现代 LLM 线性层通常去掉 bias（PaLM 报告提升大模型训练稳定性，省参数）；预训练不用 dropout（单 epoch、数据量远大于参数，不会过拟合）；部分模型给 embedding 乘 \(\sqrt d\)；残差输出投影按深度缩小初始化（GPT-2：\(1/\sqrt{2L}\)）。</p><p class="en">Modern LLMs drop biases for stability, skip dropout because single-epoch pretraining doesn't overfit, sometimes scale embeddings by root d, and shrink the initialization of residual output projections with depth.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>无 bias</b>：PaLM 论文称去掉所有 dense 层和 LayerNorm 的 bias 提升了大模型训练稳定性。bias 在有 norm 的网络里作用有限，而且对 KV cache 无影响但增加了实现复杂度。（注：Qwen 系列保留了 QKV 投影的 bias，说明这不是铁律。）</li>
+      <li><b>无 dropout</b>：预训练只过数据约 1 遍，训练 loss ≈ 验证 loss，没有过拟合；dropout 只会降低有效容量和吞吐。微调小数据时可能会加回。</li>
+      <li><b>Embedding scaling</b>：原始 Transformer 与 Gemma 把 embedding 输出乘 \(\sqrt{d}\)，因为 tied embedding 的初始化标准差较小（\(\sim1/\sqrt d\)），乘 \(\sqrt d\) 使输入尺度与位置编码/残差流匹配。</li>
+      <li><b>初始化</b>：常用 \(\mathcal N(0,0.02^2)\)；GPT-2 将每个残差分支的输出投影（\(W_O\)、\(W_2\)）再乘 \(1/\sqrt{2L}\)（每层有 2 个残差加），使残差流方差不随深度线性增长。更系统的方案是 μP（见 <a href="m05-pretraining.html">05</a>）。</li>
+      <li><b>KV cache</b>：推理时缓存每层已计算的 K、V，每步只算新 token；系统细节（PagedAttention、量化、驱逐）见 <a href="m08-inference.html">08</a>。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Most modern LLMs remove biases from linear layers and norms; PaLM reported it improved training stability at scale, and it simplifies things. They also use no dropout in pretraining, since you see each token about once and the model is far from overfitting, so dropout just wastes capacity. Some models multiply embeddings by root d to match scales when weights are tied. And residual output projections are initialized smaller as depth increases, like GPT-2's one over root two L, so the residual stream variance doesn't blow up with depth.</p></div>
+</section>
+
+<section class="concept" id="c-looped">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Looped / recurrent-depth Transformer</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>让同一组层（或整个 block 栈）权重共享、循环多次，计算深度与参数量解耦；可以按输入难度自适应地决定循环次数，是"潜空间推理"的一条路线。</p><p class="en">Looped transformers reuse the same layers for multiple iterations, decoupling compute depth from parameter count and allowing adaptive computation, which connects to latent reasoning.</p></div>
+  <div class="deep">
+    <p><b>Universal Transformer</b>（<a href="https://arxiv.org/abs/1807.03819" target="_blank" rel="noreferrer">Dehghani et al. 2018</a>）：所有层共享权重、在深度上循环，并用 ACT（Adaptive Computation Time）让每个位置决定何时停止。ALBERT 也做跨层共享以压缩参数。近年的循环深度模型把"多想几步"放在潜空间而不是生成更多 token，与显式 CoT 形成对比。详见 <a href="m07-reasoning.html">07 推理能力</a> 的潜空间推理一节。</p>
+    <p>延伸阅读：Ouro / Looped LMs（<a href="https://arxiv.org/abs/2510.25741" target="_blank" rel="noreferrer">arXiv 2510.25741</a>）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A looped or recurrent-depth transformer applies the same block several times, so you can increase effective depth without adding parameters, and in principle choose the number of iterations per input, like the adaptive computation time in the Universal Transformer. It's one way to do reasoning in latent space rather than through generated chain-of-thought tokens, and the open questions are training stability, how to learn when to stop, and whether it scales as well as adding parameters.</p></div>
+</section>
+
+<!-- ============================================================ §11 -->
+<h2 class="sec" id="s-code"><span class="num">§11 · CODE FROM SCRATCH</span>代码：从零写一个现代 Transformer</h2>
+<p class="sec-intro">下面的代码可以直接拼接成一个文件运行（依赖 <code>torch</code>）。目标：面试中能在 20–30 分钟内从空白文件写出 SDPA + MHA/GQA + RoPE + RMSNorm + SwiGLU + block + tiny GPT。<b>验证说明</b>：每段 PyTorch 代码都配有自测（与 <code>F.scaled_dot_product_attention</code> 对照、因果性检查、RoPE 相对性、参数计数、tiny GPT 训练 loss 下降等），测试文件保存在 scratchpad 的 <code>m04/torch_tests/</code>；同一算法的 numpy 版本（同形状、同逻辑）已全部运行通过。建议自己写一遍再对照。</p>
+
+<section class="concept" id="c-code-sdpa">
+  <div class="concept-head"><span class="pri p1">★</span><h3>SDPA（causal + padding mask）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>四行核心：<code>scores = q @ k.transpose(-2,-1) / sqrt(dh)</code> → masked_fill(-inf) → <code>softmax(dim=-1)</code> → <code>@ v</code>。causal mask 用右下角对齐，KV cache 解码时也正确。</p><p class="en">Scores, mask with minus infinity, softmax over keys, multiply by values; align the causal mask to the bottom-right so it also works with a KV cache.</p></div>
+<pre><code class="language-python">import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def sdpa(q, k, v, causal=True, key_padding_mask=None):
+    """q: (B, H, Tq, dh); k, v: (B, H, Tk, dh); key_padding_mask: (B, Tk) bool, True = real token."""
+    dh = q.size(-1)
+    scores = q @ k.transpose(-2, -1) / math.sqrt(dh)            # (B, H, Tq, Tk)
+    Tq, Tk = scores.shape[-2:]
+    if causal:
+        # query i sits at absolute position Tk - Tq + i and may see keys j &lt;= that position.
+        # (bottom-right alignment: also correct when decoding with a KV cache, Tq &lt; Tk)
+        allowed = torch.ones(Tq, Tk, dtype=torch.bool, device=q.device).tril(diagonal=Tk - Tq)
+        scores = scores.masked_fill(~allowed, float('-inf'))
+    if key_padding_mask is not None:
+        scores = scores.masked_fill(~key_padding_mask[:, None, None, :], float('-inf'))
+    attn = scores.softmax(dim=-1)                                 # normalize over KEYS (last dim)
+    return attn @ v, attn                                         # (B, H, Tq, dh)</code></pre>
+  <details class="deep"><summary>自测（torch_tests/01_sdpa.py 的核心断言）</summary><div class="inner">
+<pre><code class="language-python">q, k, v = (torch.randn(2, 4, 7, 16) for _ in range(3))
+out, attn = sdpa(q, k, v, causal=True)
+assert torch.allclose(out, F.scaled_dot_product_attention(q, k, v, is_causal=True), atol=1e-5)
+assert torch.all(attn.triu(1) == 0)                        # no attention to the future
+o1, _ = sdpa(q[:, :, -1:], k, v, causal=True)              # decode step: 1 query, 7 keys
+assert torch.allclose(o1, out[:, :, -1:], atol=1e-6)       # == last row of full causal attention</code></pre>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I compute scores as q times k transpose over root d_h, giving batch, heads, query length, key length. For the causal mask I build a lower-triangular boolean matrix aligned to the bottom-right, so when I decode one query against a cache of keys it can still see everything. Masked positions get minus infinity, then softmax over the last dimension, the keys, and multiply by v.</p></div>
+</section>
+
+<section class="concept" id="c-code-rope">
+  <div class="concept-head"><span class="pri p1">★</span><h3>RoPE（rotate_half 与复数两种写法）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>预计算 \(\cos(m\theta_i),\sin(m\theta_i)\)，<code>x*cos + rotate_half(x)*sin</code>；复数写法是 <code>view_as_complex</code> 后乘 \(e^{im\theta}\)。两种布局差一个固定置换。</p><p class="en">Precompute cos and sin of position times frequency, then x times cos plus rotate-half of x times sin; the complex version multiplies pairs by e to the i m theta.</p></div>
+<pre><code class="language-python">def rope_cache(T, dh, base=10000.0, device=None):
+    inv_freq = base ** (-torch.arange(0, dh, 2, device=device).float() / dh)  # theta_i, (dh/2,)
+    pos = torch.arange(T, device=device).float()
+    ang = torch.outer(pos, inv_freq)                 # (T, dh/2): angle = m * theta_i
+    ang = torch.cat([ang, ang], dim=-1)              # (T, dh): "half-split" layout (HF LLaMA)
+    return ang.cos(), ang.sin()
+
+def rotate_half(x):
+    x1, x2 = x.chunk(2, dim=-1)                      # pair dim i with dim i + dh/2
+    return torch.cat([-x2, x1], dim=-1)
+
+def apply_rope(x, cos, sin):
+    """x: (B, H, T, dh); cos, sin: (T, dh), broadcast over B and H."""
+    return x * cos + rotate_half(x) * sin
+
+def apply_rope_complex(x, base=10000.0):
+    """Same rotation in the 'interleaved' layout (pairs (0,1), (2,3), ...), as in Meta's original LLaMA code."""
+    *lead, T, dh = x.shape
+    inv_freq = base ** (-torch.arange(0, dh, 2).float() / dh)
+    ang = torch.outer(torch.arange(T).float(), inv_freq)                 # (T, dh/2)
+    rot = torch.polar(torch.ones_like(ang), ang)                         # e^{i m theta}
+    xc = torch.view_as_complex(x.float().reshape(*lead, T, dh // 2, 2).contiguous())  # (..., T, dh/2)
+    return torch.view_as_real(xc * rot).flatten(-2).type_as(x)</code></pre>
+  <details class="deep"><summary>自测：数值验证相对位置性质</summary><div class="inner">
+<pre><code class="language-python">cos, sin = rope_cache(32, 16)
+qv, kv = torch.randn(16), torch.randn(16)
+Q = apply_rope(qv.expand(1, 1, 32, 16), cos, sin)[0, 0]    # same q placed at every position
+K = apply_rope(kv.expand(1, 1, 32, 16), cos, sin)[0, 0]
+S = Q @ K.T
+assert torch.allclose(S[9, 4], S[5, 0], atol=1e-4)         # only m - n matters
+assert torch.allclose(S[7, 7], qv @ kv, atol=1e-4)         # offset 0 -> unrotated dot product
+perm = torch.cat([torch.arange(0, 16, 2), torch.arange(1, 16, 2)])
+x = torch.randn(1, 1, 32, 16)                              # interleaved vs half-split: same op up to a permutation
+assert torch.allclose(apply_rope_complex(x)[..., perm], apply_rope(x[..., perm], cos, sin), atol=1e-5)</code></pre>
+  </div></details>
+</section>
+
+<section class="concept" id="c-code-mha">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Multi-head attention（支持 GQA / MQA）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>投影 → <code>view(B,T,H,dh).transpose(1,2)</code> → RoPE → <code>repeat_interleave</code> 扩展 KV 头 → SDPA → <code>transpose(1,2).contiguous().view(B,T,d)</code> → <code>wo</code>。</p><p class="en">Project, split heads, apply RoPE, expand KV heads for GQA, attend, merge heads, output projection.</p></div>
+<pre><code class="language-python">class Attention(nn.Module):
+    """Causal self-attention. n_kv_heads = n_heads -&gt; MHA; 1 -&gt; MQA; in between -&gt; GQA."""
+    def __init__(self, d_model, n_heads, n_kv_heads=None):
+        super().__init__()
+        self.h = n_heads
+        self.h_kv = n_kv_heads or n_heads
+        assert d_model % n_heads == 0 and n_heads % self.h_kv == 0
+        self.dh = d_model // n_heads
+        self.wq = nn.Linear(d_model, self.h * self.dh, bias=False)
+        self.wk = nn.Linear(d_model, self.h_kv * self.dh, bias=False)
+        self.wv = nn.Linear(d_model, self.h_kv * self.dh, bias=False)
+        self.wo = nn.Linear(self.h * self.dh, d_model, bias=False)
+
+    def forward(self, x, cos=None, sin=None):
+        B, T, _ = x.shape
+        q = self.wq(x).view(B, T, self.h, self.dh).transpose(1, 2)       # (B, H, T, dh)
+        k = self.wk(x).view(B, T, self.h_kv, self.dh).transpose(1, 2)    # (B, Hkv, T, dh)
+        v = self.wv(x).view(B, T, self.h_kv, self.dh).transpose(1, 2)
+        if cos is not None:                                               # RoPE on q and k only
+            q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
+        rep = self.h // self.h_kv
+        if rep &gt; 1:   # query heads [g*rep, (g+1)*rep) share KV head g
+            k = k.repeat_interleave(rep, dim=1)
+            v = v.repeat_interleave(rep, dim=1)
+        out, _ = sdpa(q, k, v, causal=True)                               # (B, H, T, dh)
+        out = out.transpose(1, 2).contiguous().view(B, T, self.h * self.dh)  # concat heads
+        return self.wo(out)                                               # mix heads</code></pre>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span><code>repeat_interleave</code> 与 <code>repeat</code> 不同：前者得到 [k0,k0,k1,k1,…]（query 头 0、1 共享 KV 头 0），后者得到 [k0,k1,k0,k1,…]。只要训练和推理一致都"能用"，但加载预训练权重时必须与原实现一致（HF LLaMA 用的是 repeat_interleave 语义）。</div>
+</section>
+
+<section class="concept" id="c-code-norm">
+  <div class="concept-head"><span class="pri p1">★</span><h3>RMSNorm 与 SwiGLU</h3></div>
+<pre><code class="language-python">class RMSNorm(nn.Module):
+    def __init__(self, d, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(d))     # gain only, no bias, no mean-centering
+
+    def forward(self, x):
+        xf = x.float()                                # do the reduction in fp32 even under bf16
+        xf = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + self.eps)
+        return xf.type_as(x) * self.weight
+
+class SwiGLU(nn.Module):
+    def __init__(self, d, hidden=None, multiple_of=256):
+        super().__init__()
+        hidden = hidden or int(8 * d / 3)             # 8/3 d keeps params ~= a 4d two-matrix FFN
+        hidden = multiple_of * ((hidden + multiple_of - 1) // multiple_of)  # round up for hardware
+        self.w1 = nn.Linear(d, hidden, bias=False)    # gate projection
+        self.w3 = nn.Linear(d, hidden, bias=False)    # up projection
+        self.w2 = nn.Linear(hidden, d, bias=False)    # down projection
+
+    def forward(self, x):
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))</code></pre>
+  <p class="deep">自测：<code>SwiGLU(4096)</code> 的隐藏维度为 11008（\(\frac83\cdot4096=10922\to\) 向上取整到 256 的倍数），与 LLaMA-7B 一致；RMSNorm 输出每个 token 的均方 ≈ 1。</p>
+</section>
+
+<section class="concept" id="c-code-gpt">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Decoder block 与 tiny GPT</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Pre-Norm block：<code>x = x + attn(norm1(x)); x = x + mlp(norm2(x))</code>；模型：embedding → blocks → final norm → (tied) head → cross-entropy。</p><p class="en">Pre-norm block with residuals, then embedding, blocks, final norm, tied head and cross-entropy.</p></div>
+<pre><code class="language-python">class Block(nn.Module):
+    def __init__(self, d, n_heads, n_kv_heads=None):
+        super().__init__()
+        self.norm1 = RMSNorm(d)
+        self.attn = Attention(d, n_heads, n_kv_heads)
+        self.norm2 = RMSNorm(d)
+        self.mlp = SwiGLU(d)
+
+    def forward(self, x, cos, sin):
+        x = x + self.attn(self.norm1(x), cos, sin)    # Pre-Norm: normalize only the branch input
+        x = x + self.mlp(self.norm2(x))               # residual stream x itself is never normalized
+        return x
+
+class TinyGPT(nn.Module):
+    def __init__(self, vocab, d=128, n_layers=4, n_heads=4, n_kv_heads=2, max_T=256, tie=True):
+        super().__init__()
+        self.tok = nn.Embedding(vocab, d)
+        self.blocks = nn.ModuleList([Block(d, n_heads, n_kv_heads) for _ in range(n_layers)])
+        self.norm = RMSNorm(d)                        # final norm before the LM head
+        self.head = nn.Linear(d, vocab, bias=False)
+        if tie:
+            self.head.weight = self.tok.weight        # weight tying: one (V, d) matrix
+        cos, sin = rope_cache(max_T, d // n_heads)
+        self.register_buffer('cos', cos, persistent=False)
+        self.register_buffer('sin', sin, persistent=False)
+        self.apply(self._init)
+
+    @staticmethod
+    def _init(m):
+        if isinstance(m, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(m.weight, mean=0.0, std=0.02)
+
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+        x = self.tok(idx)                             # (B, T, d)
+        cos, sin = self.cos[:T], self.sin[:T]
+        for blk in self.blocks:
+            x = blk(x, cos, sin)
+        logits = self.head(self.norm(x))              # (B, T, V)
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss</code></pre>
+  <details class="deep"><summary>训练冒烟测试（torch_tests/05_tiny_gpt.py）</summary><div class="inner">
+<pre><code class="language-python">torch.manual_seed(0)
+text = "hello transformer world! " * 40
+chars = sorted(set(text)); stoi = {c: i for i, c in enumerate(chars)}
+data = torch.tensor([stoi[c] for c in text])
+model = TinyGPT(len(chars), d=64, n_layers=2, n_heads=4, n_kv_heads=2, max_T=64)
+opt = torch.optim.AdamW(model.parameters(), lr=3e-3)
+T = 32
+for step in range(150):
+    ix = torch.randint(0, len(data) - T - 1, (16,))
+    xb = torch.stack([data[i:i + T] for i in ix])
+    yb = torch.stack([data[i + 1:i + T + 1] for i in ix])    # targets = inputs shifted by one
+    _, loss = model(xb, yb)
+    opt.zero_grad(); loss.backward(); opt.step()
+# asserted: final loss &lt; half of initial loss; changing the last token leaves earlier logits unchanged</code></pre>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The model is an embedding, a stack of pre-norm blocks, a final RMSNorm and a linear head tied to the embedding. Each block adds attention of the normalized input to the residual stream, then adds the SwiGLU MLP of the normalized result. RoPE cos and sin tables are registered as non-persistent buffers so they move with the model but aren't saved in the checkpoint. The loss is cross-entropy between logits at position t and the token at t plus one.</p></div>
+</section>
+
+<section class="concept" id="c-code-moe">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>MoE 层（top-k + aux loss + z-loss）</h3></div>
+<pre><code class="language-python">class MoE(nn.Module):
+    """Token-choice top-k MoE FFN with Switch-style balance loss and router z-loss."""
+    def __init__(self, d, n_experts=8, k=2, hidden=None):
+        super().__init__()
+        self.k, self.E = k, n_experts
+        self.router = nn.Linear(d, n_experts, bias=False)
+        self.experts = nn.ModuleList([SwiGLU(d, hidden) for _ in range(n_experts)])
+
+    def forward(self, x):
+        B, T, D = x.shape
+        xf = x.reshape(-1, D)                                    # (N, D), N = B*T tokens
+        logits = self.router(xf)                                 # (N, E)
+        probs = logits.softmax(-1)
+        topv, topi = probs.topk(self.k, dim=-1)                  # (N, k)
+        gate = topv / topv.sum(-1, keepdim=True)                 # renormalize over the chosen k
+        out = torch.zeros_like(xf)
+        for e, expert in enumerate(self.experts):
+            tok, slot = (topi == e).nonzero(as_tuple=True)       # tokens routed to expert e
+            if tok.numel() == 0:
+                continue
+            out.index_add_(0, tok, gate[tok, slot].unsqueeze(-1) * expert(xf[tok]))
+        # f_e: fraction of routing assignments to e (not differentiable); P_e: mean router prob (differentiable)
+        counts = torch.zeros(self.E, device=x.device).scatter_add_(
+            0, topi.flatten(), torch.ones(topi.numel(), device=x.device))
+        f = counts / topi.numel()
+        P = probs.mean(0)
+        aux_loss = self.E * (f * P).sum()                        # == 1 when perfectly uniform
+        z_loss = torch.logsumexp(logits, dim=-1).pow(2).mean()   # keeps router logits small
+        return out.view(B, T, D), aux_loss, z_loss</code></pre>
+  <p class="deep">自测：与逐 token 的稠密循环参考实现输出一致；<code>aux_loss + z_loss</code> 能把梯度传回 router。这个"按专家循环 + index_add_"的写法便于面试手写；生产实现会用排序 + 分组 GEMM（grouped GEMM）或 block-sparse kernel。</p>
+</section>
+
+<section class="concept" id="c-code-verify">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>验证脚本：√d 方差、online softmax、分块 attention、线性注意力</h3></div>
+  <div class="deep">
+    <p>以下 numpy 片段全部运行通过（<code>np_verify.py</code>）：</p>
+<pre><code class="language-python">import numpy as np
+rng = np.random.default_rng(0)
+
+# 1) Var[q.k] = d for unit-variance components
+for d in [16, 256, 4096]:
+    q = rng.standard_normal((20000, d)); k = rng.standard_normal((20000, d))
+    assert abs((q * k).sum(-1).var() / d - 1) &lt; 0.05
+
+# 2) masking with 0 instead of -inf leaks future tokens
+def softmax(x, axis=-1):
+    e = np.exp(x - x.max(axis=axis, keepdims=True)); return e / e.sum(axis=axis, keepdims=True)
+T = 6; s = rng.standard_normal((T, T))
+wrong = softmax(np.where(np.tril(np.ones((T, T), bool)), s, 0.0))
+assert not np.allclose(np.triu(wrong, 1), 0)            # positive weight on the future!
+
+# 3) causal linear attention: parallel form == recurrent form
+phi = lambda z: np.where(z &gt; 0, z + 1, np.exp(z))       # elu(z) + 1
+Q, K, V = rng.standard_normal((12, 4)), rng.standard_normal((12, 4)), rng.standard_normal((12, 5))
+A = np.tril(phi(Q) @ phi(K).T)
+parallel = (A @ V) / A.sum(1, keepdims=True)
+S = np.zeros((4, 5)); z = np.zeros(4); rec = []
+for t in range(12):
+    S += np.outer(phi(K[t]), V[t]); z += phi(K[t])      # d x d state, O(1) per step
+    rec.append(phi(Q[t]) @ S / (phi(Q[t]) @ z))
+assert np.allclose(parallel, np.array(rec))</code></pre>
+  </div>
+</section>
+
+<!-- ============================================================ §12 -->
+<h2 class="sec" id="s-ex"><span class="num">§12 · EXERCISES</span>练习</h2>
+<p class="sec-intro">先独立做，限时；数值题请写出完整算式。答案都经过脚本核对。</p>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.1</b> · 难度 ★</div>
+<p>一个 decoder-only 模型：\(d=2048\)，\(L=24\)，MHA，标准 4× GELU FFN（两矩阵），\(V=50000\)，embedding 共享，无 bias。估算参数量。</p>
+<details><summary>提示</summary><div class="inner">每层 \(12d^2\)，再加一份 \(Vd\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(12\cdot24\cdot2048^2=12\cdot24\cdot4{,}194{,}304=1{,}207{,}959{,}552\)；embedding \(50000\cdot2048=102{,}400{,}000\)。合计约 <b>1.31B</b>（norm 参数 \(\approx 2\cdot24\cdot2048\) 可忽略）。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.2</b> · 难度 ★★</div>
+<p>把上题改成 SwiGLU（\(d_{ff}=5632\)）+ GQA（16 个 query 头，4 个 KV 头，\(d_h=128\)），重新计算每层参数。</p>
+<details><summary>提示</summary><div class="inner">Attention \(=2d^2+2d\cdot H_{kv}d_h\)；FFN \(=3d\,d_{ff}\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">Attention：\(2\cdot2048^2+2\cdot2048\cdot512=8{,}388{,}608+2{,}097{,}152=10{,}485{,}760\)。FFN：\(3\cdot2048\cdot5632=34{,}603{,}008\)。每层 \(45{,}088{,}768\)（对比 MHA+4×：\(12d^2=50{,}331{,}648\)）。24 层 \(\approx1.082\)B，加 embedding 0.102B ≈ <b>1.18B</b>。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.3</b> · 难度 ★★</div>
+<p>用 512 张 GPU（每张 bf16 峰值约 1e15 FLOP/s，MFU 40%）训练一个 13B 模型 1T tokens，需要多少天？</p>
+<details><summary>提示</summary><div class="inner">\(C=6ND\)，有效算力 = 卡数 × 峰值 × MFU。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(C=6\cdot1.3\times10^{10}\cdot10^{12}=7.8\times10^{22}\)。有效算力 \(512\cdot4\times10^{14}=2.05\times10^{17}\) FLOP/s。时间 \(=3.8\times10^{5}\) s \(\approx\) <b>4.4 天</b>。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.4</b> · 难度 ★★</div>
+<p>LLaMA-2-70B 结构（\(L=80\)，8 KV 头，\(d_h=128\)），bf16。服务 batch=16、每条 8k 上下文，KV cache 多大？如果是 MHA（64 个 KV 头）呢？</p>
+<details><summary>提示</summary><div class="inner">\(2\cdot L\cdot H_{kv}\cdot d_h\cdot T\cdot B\cdot 2\)。</div></details>
+<details><summary>参考答案</summary><div class="inner">每 token：\(2\cdot80\cdot8\cdot128\cdot2=327{,}680\) B = 320 KiB。总 token \(16\cdot8192=131072\)。总计 \(320\text{ KiB}\cdot131072=40\) GiB。MHA 时 ×8 = <b>320 GiB</b>，GQA 时 <b>40 GiB</b>。这就是 70B 必须用 GQA 的原因。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.5</b> · 难度 ★★ · Find the bug</div>
+<p>下面的 attention 有 4 个 bug，全部找出来：</p>
+<pre><code class="language-python">def attention(x, Wq, Wk, Wv, Wo, H):
+    B, T, d = x.shape
+    dh = d // H
+    q = (x @ Wq).view(B, H, T, dh)                      # (a)
+    k = (x @ Wk).view(B, T, H, dh).transpose(1, 2)
+    v = (x @ Wv).view(B, T, H, dh).transpose(1, 2)
+    scores = q @ k.transpose(-2, -1)                    # (b)
+    mask = torch.triu(torch.ones(T, T), diagonal=1).bool()
+    scores = scores.masked_fill(~mask, float('-inf'))   # (c)
+    attn = scores.softmax(dim=-2)                       # (d)
+    out = (attn @ v).transpose(1, 2).reshape(B, T, d)
+    return out @ Wo</code></pre>
+<details><summary>提示</summary><div class="inner">逐行检查：头的拆分、缩放、mask 方向、softmax 维度。</div></details>
+<details><summary>参考答案</summary><div class="inner"><ol>
+<li>(a) 直接 <code>view(B, H, T, dh)</code> 把不同 token 混进同一头；应 <code>view(B, T, H, dh).transpose(1, 2)</code>。</li>
+<li>(b) 缺少缩放 <code>/ math.sqrt(dh)</code>。</li>
+<li>(c) mask 方向反了：<code>triu(diagonal=1)</code> 为 True 的是<b>未来</b>位置，应该 <code>masked_fill(mask, -inf)</code>；写成 <code>~mask</code> 会屏蔽过去和自身、保留未来（而且最后一行全被 mask → NaN）。</li>
+<li>(d) softmax 应在 key 维 <code>dim=-1</code>。</li>
+</ol>最后一行 <code>transpose(1, 2).reshape</code> 是对的（reshape 会处理非连续）。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.6</b> · 难度 ★★</div>
+<p>证明 RoPE 的相对位置性质：对 \(d_h\) 维向量，\(\langle R_mq,R_nk\rangle=\langle q,R_{n-m}k\rangle\)。说明用到了旋转矩阵的哪两个性质。</p>
+<details><summary>提示</summary><div class="inner">先做二维，再用块对角。</div></details>
+<details><summary>参考答案</summary><div class="inner">二维：\((R(m\theta)q)^\top R(n\theta)k=q^\top R(m\theta)^\top R(n\theta)k=q^\top R(-m\theta)R(n\theta)k=q^\top R((n-m)\theta)k\)。性质：(1) 正交性 \(R(\alpha)^\top=R(\alpha)^{-1}=R(-\alpha)\)；(2) 加法性 \(R(\alpha)R(\beta)=R(\alpha+\beta)\)（同一平面内旋转可交换、可合成）。\(d_h\) 维：\(R_m\) 是块对角，各块作用于互不相交的二维子空间，\(R_m^\top R_n=\mathrm{diag}(R(-m\theta_i)R(n\theta_i))=R_{n-m}\)。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.7</b> · 难度 ★★</div>
+<p>语料 <code>low:5, lower:2, newest:6, widest:3</code>（词尾加 <code>&lt;/w&gt;</code>），平局按字典序取最小的对。手算前 4 次 BPE 合并，并编码 <code>lowest</code>。</p>
+<details><summary>参考答案</summary><div class="inner">合并：<code>(e,s)</code>[9] → <code>(es,t)</code>[9] → <code>(est,&lt;/w&gt;)</code>[9] → <code>(l,o)</code>[7]。<code>lowest</code> → <code>[lo, w, est&lt;/w&gt;]</code>。（§9 代码已验证）</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.8</b> · 难度 ★★</div>
+<p>4 个 token、4 个专家、top-1 路由。router 概率：<br>
+t1 = [0.7, 0.2, 0.1, 0.0]，t2 = [0.6, 0.3, 0.05, 0.05]，t3 = [0.1, 0.8, 0.05, 0.05]，t4 = [0.5, 0.1, 0.2, 0.2]。<br>
+计算 Switch 负载均衡损失 \(E\sum_ef_eP_e\)（不乘 \(\alpha\)），并与完美均衡的值比较。</p>
+<details><summary>参考答案</summary><div class="inner">argmax：t1→0，t2→0，t3→1，t4→0，所以 \(f=[0.75,0.25,0,0]\)。\(P=\) 列平均 \(=[0.475,0.35,0.1,0.075]\)。\(\sum f_eP_e=0.75\cdot0.475+0.25\cdot0.35=0.35625+0.0875=0.44375\)。乘 \(E=4\)：<b>1.775</b>。完美均衡时为 1，完全坍缩时为 4。梯度会主要压低专家 0 的概率（\(\partial/\partial P_0\propto f_0=0.75\)）。（脚本核对）</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.9</b> · 难度 ★★</div>
+<p>对 \(d=4096,L=32\) 的模型，在上下文 \(T\) 下，每 token 前向的 attention FLOPs（\(4LdT\)）占 \(2N\)（\(N\approx 6.7\)B）的比例是多少？\(T=4\)k 和 \(T=128\)k 分别计算。</p>
+<details><summary>参考答案</summary><div class="inner">\(4\cdot32\cdot4096\cdot T=524{,}288\,T\)。\(T=4096\)：\(2.15\times10^9\)，\(2N=1.35\times10^{10}\)，比例 ≈ <b>16%</b>。\(T=131072\)：\(6.9\times10^{10}\)，约为 \(2N\) 的 <b>5.1 倍</b>。长上下文时 attention 主导。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.10</b> · 难度 ★★★</div>
+<p>给出 online softmax 两个部分结果 \((m_A,\ell_A,\mathrm{acc}_A)\)、\((m_B,\ell_B,\mathrm{acc}_B)\) 的合并公式，其中 \(\mathrm{acc}=\sum_j e^{s_j-m}v_j\)。证明合并满足结合律。</p>
+<details><summary>参考答案</summary><div class="inner">\(m=\max(m_A,m_B)\)，\(\ell=\ell_Ae^{m_A-m}+\ell_Be^{m_B-m}\)，\(\mathrm{acc}=\mathrm{acc}_Ae^{m_A-m}+\mathrm{acc}_Be^{m_B-m}\)，最终 \(o=\mathrm{acc}/\ell\)。结合律：任意一组元素合并后都满足不变量 \(\ell=\sum_{j\in\text{组}}e^{s_j-m}\)、\(\mathrm{acc}=\sum_{j}e^{s_j-m}v_j\)，\(m=\max_j s_j\)；而 \(\max\) 和"在共同基准下求和"都是结合的，所以无论合并顺序如何，结果都等于对全体元素直接计算的值。这正是 Flash-Decoding 在 KV 维度并行的依据。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.11</b> · 难度 ★★</div>
+<p>为什么 SwiGLU 的中间维度取 \(\frac83d\)？对 \(d=5120\)（LLaMA-13B）按"\(\frac83d\) 向上取整到 256 的倍数"计算 \(d_{ff}\)。</p>
+<details><summary>参考答案</summary><div class="inner">三个矩阵 \(3d\,d_{ff}=8d^2\Rightarrow d_{ff}=\frac83d\)，与 4× 两矩阵 FFN 参数相同。\(\frac83\cdot5120=13653.3\)，\(13653.3/256=53.33\to54\)，\(54\cdot256=\)<b>13824</b>，与 LLaMA-13B 的 FFN 维度一致。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.12</b> · 难度 ★★</div>
+<p>某个 Post-Norm 的 48 层 Transformer 在训练前几百步就发散。给出至少 4 个改动建议，并按优先级排序说明理由。</p>
+<details><summary>参考答案</summary><div class="inner">(1) 改成 Pre-Norm（或 DeepNorm）——恒等梯度通路，根本解决深层梯度问题；(2) 加/加长 lr warmup、降低峰值 lr；(3) 梯度裁剪（norm 1.0）；(4) 残差输出投影按 \(1/\sqrt{2L}\) 缩小初始化；(5) 若是 attention logit 爆炸，加 QK-norm；(6) 检查 bf16 下 norm/softmax 是否在 fp32 中计算，Adam \(\epsilon\)/\(\beta_2\)（如 0.95）。先看 grad norm、attention 熵、各层激活范数的监控曲线来定位。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.13</b> · 难度 ★★</div>
+<p>一个 MoE：每层 64 个专家、top-2、每个专家是 \(d=4096,d_{ff}=1408\) 的 SwiGLU，32 层；attention 为 MHA。估算每层 MoE 部分的总参数与激活参数，以及每层总激活参数。</p>
+<details><summary>参考答案</summary><div class="inner">每个专家 \(3\cdot4096\cdot1408=17{,}301{,}504\)。总：\(64\times\) = 1.107B/层；激活：\(2\times\) = 34.6M/层（router \(4096\cdot64\) 可忽略）。attention \(4d^2=67.1\)M。每层激活 ≈ 101.7M，32 层 ≈ 3.25B 激活（不计 embedding）；总参数 ≈ \(32\cdot(1.107+0.067)\)B ≈ 37.6B。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 12.14</b> · 难度 ★★★ · 编码</div>
+<p>不看 §11，从空白文件写出：(1) 带 GQA 的 causal attention 模块；(2) RoPE；(3) 用一个随机输入验证"改动最后一个 token 不影响前面位置的输出"以及 RoPE 的相对性。限时 25 分钟。</p>
+<details><summary>提示</summary><div class="inner">形状流水线：<code>(B,T,d) → (B,T,H,dh) → (B,H,T,dh)</code>；KV 头用 <code>repeat_interleave(H//Hkv, dim=1)</code>；RoPE 只作用于 q、k；验证 RoPE 时把同一个向量放在所有位置上，检查分数矩阵沿对角线方向恒定（Toeplitz）。</div></details>
+<details><summary>参考答案</summary><div class="inner">见 §11 的 <a href="#c-code-sdpa">SDPA</a>、<a href="#c-code-rope">RoPE</a>、<a href="#c-code-mha">Attention</a> 三段代码与其自测。</div></details></div>
+
+<!-- ============================================================ CHEAT SHEET -->
+<h2 class="sec" id="cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚过一遍。每一行都应该能展开讲 1–2 分钟。</p>
+
+<table>
+  <tr><th>主题</th><th>必须记住</th></tr>
+  <tr><td>Attention</td><td>\(\mathrm{softmax}(QK^\top/\sqrt{d_k})V\)；softmax 在 key 维（<code>dim=-1</code>）；mask 用 \(-\infty\) 且在 softmax 之前</td></tr>
+  <tr><td>√d</td><td>\(\mathrm{Var}[q\cdot k]=d_k\) → 除 \(\sqrt{d_k}\) 使方差为 1，防止 softmax 饱和、梯度消失</td></tr>
+  <tr><td>复杂度</td><td>每层前向 \(\approx24Td^2+4T^2d\)；朴素显存 \(O(BHT^2)\)；\(T=6d\) 时两项相等</td></tr>
+  <tr><td>MHA 形状</td><td><code>(B,T,d)→view(B,T,H,dh)→transpose(1,2)→(B,H,T,dh)</code>；合并：<code>transpose(1,2).contiguous().view(B,T,d)</code> 再 \(W_O\)</td></tr>
+  <tr><td>KV cache</td><td>\(2\cdot L\cdot H_{kv}\cdot d_h\cdot T\cdot B\cdot\text{bytes}\)；7B MHA 每 token 512 KiB（4k = 2 GiB）；70B GQA-8 每 token 320 KiB</td></tr>
+  <tr><td>GQA / MQA</td><td>\(H_{kv}\) 组 KV 共享；省显存/带宽不省 FLOPs；可从 MHA 平均池化 uptrain（约 5% 计算）</td></tr>
+  <tr><td>MLA</td><td>缓存低秩潜在 \(c^{KV}\)（\(d_c=512\)）+ 共享 RoPE key（64）；上投影可吸收；RoPE 破坏吸收 → decoupled RoPE</td></tr>
+  <tr><td>RoPE</td><td>\(\theta_i=\text{base}^{-2i/d_h}\)；\(\langle R_mq,R_nk\rangle=q^\top R_{n-m}k\)；只旋转 q、k；<code>x*cos + rotate_half(x)*sin</code></td></tr>
+  <tr><td>外推</td><td>PI：\(m\to m/s\)；NTK：\(b'=b\,s^{d/(d-2)}\)；YaRN：按频率分段 + 温度 \(\sqrt{1/t}=0.1\ln s+1\)；ALiBi：\(-m_h|i-j|\)</td></tr>
+  <tr><td>Block</td><td><code>x = x + Attn(Norm(x)); x = x + FFN(Norm(x))</code>；final norm；Pre-Norm 有恒等梯度通路</td></tr>
+  <tr><td>RMSNorm</td><td>\(\gamma\odot x/\sqrt{\mathrm{mean}(x^2)+\epsilon}\)；无均值、无 bias；fp32 计算</td></tr>
+  <tr><td>SwiGLU</td><td>\(W_2(\mathrm{SiLU}(W_1x)\odot W_3x)\)；\(d_{ff}=\frac83d\)（7B：11008；13B：13824）</td></tr>
+  <tr><td>参数量</td><td>\(\approx12Ld^2+Vd\)；LLaMA-2-7B 精确 6,738,415,616；GPT-2 small 124,439,808</td></tr>
+  <tr><td>FLOPs</td><td>训练 \(6ND\)（前向 2 + 反向 4）；推理 \(2N\)/token；attention 额外 \(\approx4LdT\)/token 前向</td></tr>
+  <tr><td>Chinchilla</td><td>\(D\approx20N\)；\(C=6ND\Rightarrow N=\sqrt{C/120}\)</td></tr>
+  <tr><td>MoE</td><td>top-k 路由；Switch aux \(\alpha E\sum f_eP_e\)（均衡时 = \(\alpha\)，\(f\) 不可微）；z-loss \((\log Z)^2\)；capacity = CF·kN/E；DeepSeek-V3 偏置只用于选择</td></tr>
+  <tr><td>Mixtral / V3</td><td>8 专家 top-2，47B 总 / 13B 激活；V3 1 共享 + 256 路由、激活 8，671B / 37B</td></tr>
+  <tr><td>Online softmax</td><td>\(m'=\max(m,x)\)，\(\ell'=\ell e^{m-m'}+e^{x-m'}\)；acc 同样乘 \(e^{m-m'}\)；合并满足结合律</td></tr>
+  <tr><td>FlashAttention</td><td>精确；tiling 到 SRAM；不写 \(T\times T\) 到 HBM；存 logsumexp，反向重算；FLOPs 不减；FA2 并行/少非 matmul；FA3 Hopper 异步 + FP8</td></tr>
+  <tr><td>线性注意力</td><td>\(\phi(q)^\top\sum\phi(k)v^\top\)；RNN 状态 \(d\times d\)；检索弱</td></tr>
+  <tr><td>BPE</td><td>反复合并最频繁相邻对；编码按合并顺序；byte-level 无 UNK；WordPiece 似然增益；Unigram 剪枝 + Viterbi</td></tr>
+  <tr><td>稳定性</td><td>QK-norm；soft-cap \(c\tanh(z/c)\)（Gemma 2：50 / 30）；z-loss；无 bias；无 dropout；残差投影 \(1/\sqrt{2L}\) 初始化</td></tr>
+</table>
+
+<!-- ============================================================ FAQ -->
+<h2 class="sec" id="faq"><span class="num">§ · TOP QUESTIONS</span>高频面试题清单</h2>
+<p class="sec-intro">按出现频率大致排序。每题先用英文 30 秒口头回答，再点链接对照。</p>
+<ol>
+  <li><a href="#c-sdpa">Write down the attention formula and explain Q, K, V.</a></li>
+  <li><a href="#c-scale">Why do we divide by √d_k? Derive it.</a></li>
+  <li><a href="#c-mask">How is causal masking implemented? Why −∞ and not 0?</a></li>
+  <li><a href="#c-complexity">What is the time and memory complexity of self-attention?</a></li>
+  <li><a href="#c-mha">Why multi-head attention? Walk me through the tensor shapes.</a></li>
+  <li><a href="#c-mha">How many parameters does an MHA layer have? Does it depend on the number of heads?</a></li>
+  <li><a href="#c-gqa">Explain MQA and GQA. Why do they speed up inference?</a></li>
+  <li><a href="#c-gqa">Compute the KV cache size for a given model and context.</a></li>
+  <li><a href="#c-mla">What is Multi-head Latent Attention and why does it need decoupled RoPE?</a></li>
+  <li><a href="#c-local">What are sliding-window attention and attention sinks?</a></li>
+  <li><a href="#c-pos-why">Why do Transformers need positional encodings? Compare the options.</a></li>
+  <li><a href="#c-rope">Derive RoPE and show the score depends only on relative position.</a></li>
+  <li><a href="#c-rope-ext">How do you extend context length of a RoPE model? PI vs NTK vs YaRN.</a></li>
+  <li><a href="#c-rope-ext">What is ALiBi? What is NoPE?</a></li>
+  <li><a href="#c-decoder-block">Draw a modern decoder block. What changed since the original Transformer?</a></li>
+  <li><a href="#c-prenorm">Pre-Norm vs Post-Norm: which trains better and why?</a></li>
+  <li><a href="#c-rmsnorm">LayerNorm vs RMSNorm vs BatchNorm — why not BatchNorm?</a></li>
+  <li><a href="#c-ffn">What is SwiGLU and why 8/3·d hidden size?</a></li>
+  <li><a href="#c-ffn">What role does the FFN play? (key-value memory view)</a></li>
+  <li><a href="#c-residual">What is the residual stream?</a></li>
+  <li><a href="#c-embed">What is weight tying? Pros and cons.</a></li>
+  <li><a href="#c-param-count">Estimate the parameter count of a 32-layer, d=4096 model.</a></li>
+  <li><a href="#c-flops">Derive 6ND. How long does it take to train a 7B model on 2T tokens?</a></li>
+  <li><a href="#c-flops">How many FLOPs per generated token? When does attention dominate?</a></li>
+  <li><a href="#c-enc-dec">Why are most LLMs decoder-only?</a></li>
+  <li><a href="#c-moe-basics">How does a Mixture-of-Experts layer work? Total vs active params.</a></li>
+  <li><a href="#c-moe-balance">Why do MoE routers collapse, and how do you balance load?</a></li>
+  <li><a href="#c-moe-balance">Write the Switch load-balancing loss. Which part gets the gradient?</a></li>
+  <li><a href="#c-moe-balance">What is DeepSeek's auxiliary-loss-free balancing?</a></li>
+  <li><a href="#c-moe-ep">What is the communication pattern of expert parallelism?</a></li>
+  <li><a href="#c-flash">Explain FlashAttention. Does it reduce FLOPs?</a></li>
+  <li><a href="#c-online-softmax">Derive the online softmax recurrence.</a></li>
+  <li><a href="#c-linear-attn">What is linear attention and what does it give up?</a></li>
+  <li><a href="#c-ssm">What are Mamba/SSMs and why hybrid architectures?</a></li>
+  <li><a href="#c-bpe">Walk through BPE training and encoding.</a></li>
+  <li><a href="#c-tok-tradeoffs">How do you choose vocabulary size? What tokenizer artifacts do you know?</a></li>
+  <li><a href="#c-stability-tricks">What tricks stabilize large-scale Transformer training?</a></li>
+  <li><a href="#c-misc">Why do modern LLMs remove biases and dropout?</a></li>
+  <li><a href="#c-code-sdpa">Implement causal multi-head attention from scratch.</a></li>
+  <li><a href="#c-code-mha">Implement GQA. What does repeat_interleave do?</a></li>
+  <li><a href="#c-looped">What are looped / recurrent-depth Transformers?</a></li>
+</ol>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m04" data-title="模块 04 自测卡片"></div>
+<div class="footer-nav"><a href="m03-dl-basics.html">← 03 深度学习基础</a><a href="m05-pretraining.html">05 预训练 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m04.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
