@@ -1,0 +1,1453 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 · 推理能力与测试时计算 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m07">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 07 · Phase 2 · LLM 核心知识</div>
+<h1 class="title">推理能力与<em>测试时计算</em></h1>
+<p class="lede">CoT 为什么有效、怎样把推理时的算力花得更值、o1/R1 类推理模型是怎么训练出来的、长 CoT 的问题，以及把推理从 token 搬进潜空间的研究方向。这是你的主线研究领域，面试官会默认你比他更熟，所以每个观点都要能讲出证据和反例。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完你应该能：(1) 用"串行计算 / 有效深度"解释 CoT 为什么有效，并引出 TC⁰ 表达力结果；(2) 把测试时计算分成 parallel / sequential / search 三类，说清 best-of-N、self-consistency、PRM beam search、budget forcing 各自什么时候好用，以及 verifier 为什么是瓶颈；(3) 画出 R1 训练流程，讲清 R1-Zero 的涌现现象、蒸馏 vs RL、"RLVR 是创造还是激发能力"的双方证据；(4) 讨论 overthinking、CoT 忠实性与可监控性；(5) 系统地讲潜空间推理（pause token、Coconut、implicit CoT、looped / recurrent-depth 模型、ACT）；(6) 当场推导并写出无偏 pass@k，算出多数投票的 scaling 曲线；(7) 在研究讨论轮里对 10+ 个开放问题给出有立场、有证据的一分钟英文回答。<br><br>
+<b>建议顺序：</b>§1 → §2 → §6 的 pass@k → §9 代码（动手跑一遍）→ §3 → §5 → §4 → §10 研究讨论题（出声练）。§7、§8 是加分项。GRPO / PPO / DPO 的数学放在 <a href="m06-rl-posttraining.html">模块 06</a>；解码与 KV cache 系统细节在 <a href="m08-inference.html">模块 08</a>；benchmark 统计方法在 <a href="m13-eval.html">模块 13</a>。</div>
+
+<div class="box why"><span class="lbl">时间敏感提醒</span>这个领域变化极快。本页引用的论文都核对过 arXiv 链接（截至 2026 年 10 月），但具体 SOTA 数字很快会过时。面试时说"as of the papers I've read"比报一个可能过时的数字更安全。闭源模型（o1/o3、Gemini thinking、Claude extended thinking 等）的训练细节大多没有公开，<strong>不要把猜测当事实讲</strong>。</div>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-cot"><span class="num">§1 · CHAIN OF THOUGHT</span>思维链：为什么"多写几步"会变聪明</h2>
+<p class="sec-intro">CoT 是整个推理方向的起点。面试常见的三连问：CoT 是什么 → 为什么有效（要能讲到理论）→ CoT 写出来的东西真的反映模型的"想法"吗。</p>
+
+<section class="concept" id="c-cot">
+  <div class="concept-head"><span class="pri p1">★</span><h3>CoT 与 zero-shot CoT</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>让模型在给出最终答案前先生成中间推理步骤；few-shot 版本用带推理过程的示例（Wei et al. 2022），zero-shot 版本只加一句 "Let's think step by step"（Kojima et al. 2022）。</p><p class="en">Chain-of-thought prompting makes the model write intermediate reasoning steps before the final answer, either via worked exemplars or a simple trigger phrase.</p></div>
+  <div class="deep">
+    <p><b>原始做法。</b><a href="https://arxiv.org/abs/2201.11903" target="_blank" rel="noreferrer">Wei et al. 2022</a> 在 few-shot prompt 里把示例从 "Q → A" 改成 "Q → 推理过程 → A"。在 GSM8K 这类多步数学题上提升巨大，而且这个收益是<strong>规模相关</strong>的：小模型用 CoT 甚至会变差（写出流畅但错误的推理），大约到百亿参数量级以上收益才明显——当时被描述为一种 "emergent ability"。</p>
+    <p><a href="https://arxiv.org/abs/2205.11916" target="_blank" rel="noreferrer">Kojima et al. 2022</a> 发现不需要示例，只在答案前加 "Let's think step by step" 就能触发推理（两阶段：先生成推理，再用 "Therefore, the answer is" 抽取答案）。</p>
+    <p><b>从 prompting 到训练。</b>今天的推理模型（o1、R1 及后续）不再依赖 prompt 触发 CoT，而是<strong>通过 RL 训练让模型自己产生很长的 CoT</strong>（数千到数万 token），里面包含验证、回溯、换思路等行为。这是"CoT 作为提示技巧"到"CoT 作为测试时计算载体"的转变，§3 详细讲。</p>
+    <table>
+      <tr><th>变体</th><th>做法</th><th>要点</th></tr>
+      <tr><td>Few-shot CoT</td><td>示例带推理过程</td><td>示例质量和格式影响很大</td></tr>
+      <tr><td>Zero-shot CoT</td><td>"Let's think step by step"</td><td>零成本 baseline</td></tr>
+      <tr><td>Self-consistency</td><td>采样多条 CoT，多数投票</td><td>见 <a href="#c-sc">§2</a></td></tr>
+      <tr><td>Least-to-most / decomposition</td><td>先分解子问题再逐个解</td><td>组合泛化更好</td></tr>
+      <tr><td>Program-of-thought / PAL</td><td>推理写成代码交给解释器执行</td><td>把算术外包给工具，避免计算错误</td></tr>
+      <tr><td>Long CoT（推理模型）</td><td>RL 训练出的长推理</td><td>含反思、回溯、验证</td></tr>
+    </table>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"CoT 是一种 prompt 技巧" 只说对了一半。面试里要主动指出：CoT 的本质是<strong>给模型更多串行计算步数</strong>（见下一个概念），所以它才能和"测试时计算"联系起来。另外，"emergent" 这个说法有争议（Schaeffer et al. 2023 认为部分涌现是非线性指标造成的），不要说得太绝对。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Chain-of-thought means letting the model generate intermediate reasoning steps before committing to an answer. The original version used few-shot exemplars with worked solutions, and zero-shot CoT showed that even a trigger like "let's think step by step" works. Early on, the gains appeared mainly in large models, and smaller models could even get worse. Today the important shift is that reasoning models are trained with RL to produce long chains of thought on their own, so CoT has become the main vehicle for spending test-time compute rather than just a prompting trick.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why did CoT hurt small models in the original paper?</b><details><summary>思路</summary><div class="inner">小模型能模仿推理的<em>格式</em>，但每一步出错概率高；错误在长链中累积（\(p^n\) 效应），而且一旦写错中间结果，后面会"忠实地"沿着错误继续。大模型单步正确率高，额外步骤带来的计算收益超过累积错误的代价。</div></details></li>
+    <li><b>Is CoT useful if the model is already trained as a reasoning model?</b><details><summary>思路</summary><div class="inner">推理模型内部已经会产生长 CoT，再加 "think step by step" 通常没有额外收益，甚至 few-shot 示例会干扰（R1 论文报告 few-shot prompting 会降低 R1 表现，建议 zero-shot 直接描述问题）。可调的是<strong>思考预算</strong>（reasoning effort / thinking budget），而不是 prompt。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-cot-why">
+  <div class="concept-head"><span class="pri p1">★</span><h3>CoT 为什么有效：串行计算与有效深度</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>固定深度的 Transformer 一次前向只能做常数层的并行计算（理论上落在 TC⁰ 类）；每生成一个 CoT token 都把中间结果写回输入、再跑一遍完整网络，相当于把计算深度随 token 数线性加长，因此能解决本质上串行的问题。</p><p class="en">A fixed-depth transformer does a bounded amount of serial computation per token; CoT turns generated tokens into a scratchpad, so effective depth grows with the number of reasoning steps.</p></div>
+  <div class="deep">
+    <h4>直觉：一次前向的"计算预算"是固定的</h4>
+    <p>一个 L 层 Transformer 对每个输出 token 做的计算量 ≈ 2N FLOPs，而且<strong>串行深度</strong>固定是 L 层。有些问题天然需要很多串行步骤，例如：多位数乘法的进位链、跟踪一个状态机走 n 步、图上的多跳推理、复合置换。不管模型多宽，如果每一步都依赖上一步的结果，常数深度就不够。</p>
+    <p>CoT 的作用：模型每写一个 token，这个 token 就进入上下文，下一步前向可以读取它。于是 T 个 CoT token = T 次完整前向，中间状态通过 token "外存"传递。这就像 C 程序里一个循环：每次迭代把结果写进变量，下一次迭代读出来继续算。</p>
+    <div class="box why"><span class="lbl">直觉</span>没有 CoT：模型必须在"脑子里"一口气算完，深度 = L。有 CoT：模型可以"打草稿"，深度 ≈ L × T。代价是草稿必须写成离散 token（信息瓶颈），这正是 §5 潜空间推理想解决的问题。</div>
+    <h4>理论结果（面试里能说出 2–3 个就很好）</h4>
+    <table>
+      <tr><th>结果</th><th>内容（意译）</th></tr>
+      <tr><td><a href="https://arxiv.org/abs/2207.00729" target="_blank" rel="noreferrer">Merrill &amp; Sabharwal 2023（TACL）</a></td><td>对数精度的 Transformer 一次前向可以被 uniform TC⁰ 电路模拟（常数深度、多项式大小、带 majority 门）。所以如果 TC⁰ ≠ NC¹，它就不能直接解 NC¹-complete 问题（例如复合置换的 word problem）。</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2305.15408" target="_blank" rel="noreferrer">Feng et al. 2023（NeurIPS）</a></td><td>有界深度的 Transformer 不能直接输出算术表达式求值、线性方程求解等任务的答案（除非模型大小超多项式增长）；而常数大小的自回归 Transformer 加上 CoT 可以解决，还能处理一类动态规划问题。</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2310.07923" target="_blank" rel="noreferrer">Merrill &amp; Sabharwal 2024（ICLR）</a></td><td>表达力取决于 CoT 步数：对数步只略微扩展能力；线性步可以识别所有正则语言；多项式步（在其假设下）恰好对应 P 类。</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2402.12875" target="_blank" rel="noreferrer">Li et al. 2024（ICLR）</a></td><td>常数深度 Transformer 加 T 步 CoT 可以模拟大小为 T 的布尔电路；没有 CoT 时（常数精度设定下）只能表达 AC⁰ 级别的问题。实验上 CoT 显著提升复合置换、迭代平方等串行任务。</td></tr>
+    </table>
+    <h4>除了表达力，还有其他解释</h4>
+    <ul>
+      <li><b>分解 / 局部性：</b>训练数据里存在大量"局部相关"的推理步骤，CoT 让模型把一个难的条件分布 \(p(\text{answer}\mid q)\) 分解成一串容易的局部条件分布（每一步只依赖前几步）。</li>
+      <li><b>更多计算 ≠ 只是更多 token：</b><a href="https://arxiv.org/abs/2404.15758" target="_blank" rel="noreferrer">Pfau et al. 2024（Let's Think Dot by Dot）</a>表明无意义的 filler token（"......"）在特定算法任务上也能提供额外计算，但模型需要专门的密集监督才能学会利用它们，自然语言 CoT 仍然更容易学。</li>
+      <li><b>纠错与搜索：</b>长 CoT 里可以"写错再改"，相当于在 token 空间做搜索（§3）。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 这些都是<strong>表达力</strong>结果（存在一组参数能做到），不代表梯度下降一定能学到，也不保证长度泛化。(2) TC⁰ 结论依赖"精度"假设（对数精度 vs 常数精度），说的时候加限定。(3) 不要说"Transformer 不能做乘法"——它能在 CoT 帮助下做，或者在训练分布内靠记忆/启发式近似。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>My favorite explanation is about serial computation. A fixed-depth transformer does a bounded number of sequential steps per token, and theory places a single forward pass roughly in TC-zero. With chain-of-thought, every generated token is written back into the context, so the model can run the whole network again on its own intermediate results. That makes effective depth grow with the number of reasoning tokens. Results from Merrill and Sabharwal, Feng et al., and Li et al. show that with enough CoT steps transformers can solve inherently serial problems they provably can't solve in one pass. The caveat is that these are expressivity results, not learnability guarantees.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If CoT is just extra compute, why don't filler tokens work as well?</b><details><summary>思路</summary><div class="inner">两个原因：(1) 并行性：filler token 的位置都同时"看"同一份输入，能增加的是<strong>宽度</strong>方向的并行计算，而不是让中间结果串行传递；真正的串行依赖需要把中间结果<em>写下来</em>，filler 没写任何东西（除非模型学会把信息编码进 filler 位置的隐藏状态，但下一层才能读到，深度仍有限）。(2) 可学习性：自然语言 CoT 有预训练数据里的大量示范，filler 的用法必须从头学，Pfau et al. 需要专门构造的监督。</div></details></li>
+    <li><b>Does this argument predict that longer CoT is always better?</b><details><summary>思路</summary><div class="inner">不。表达力上限提高不等于准确率单调上升：每一步都有出错概率，长链累积错误；模型可能"想偏"（overthinking，见 §4）；有研究观察到某些任务上更长推理反而变差（<a href="https://arxiv.org/abs/2507.14417" target="_blank" rel="noreferrer">Inverse Scaling in Test-Time Compute, 2025</a>）。最优长度随问题难度而变。</div></details></li>
+    <li><b>What's an example of a problem outside TC⁰?</b><details><summary>思路</summary><div class="inner">S₅ 置换群的 word problem（给一串置换，求复合结果）是 NC¹-complete；在 TC⁰ ≠ NC¹ 的标准猜想下，常数深度 Transformer 一次前向解不了。还有图连通性（L-complete / NL）、布尔公式求值等。直观上都是"状态要跟踪很多步"。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-faithful">
+  <div class="concept-head"><span class="pri p1">★</span><h3>CoT 忠实性（faithfulness）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>CoT 写出来的理由不一定是模型真正得出答案的原因：模型会受到 CoT 中没提到的因素影响（偏置提示、暗示），也可能先"决定"答案再编理由。</p><p class="en">A chain of thought can be plausible yet unfaithful: the stated reasoning may not be what actually drives the model's answer.</p></div>
+  <div class="deep">
+    <h4>关键证据</h4>
+    <ul>
+      <li><b>偏置特征不被提及：</b><a href="https://arxiv.org/abs/2305.04388" target="_blank" rel="noreferrer">Turpin et al. 2023</a> 在 few-shot 示例里让正确答案总是 (A)，模型会被带偏选 A，但 CoT 里几乎从不提这个原因，而是编出一个看似合理的解释。</li>
+      <li><b>干预 CoT 看答案变不变：</b><a href="https://arxiv.org/abs/2307.13702" target="_blank" rel="noreferrer">Lanham et al. 2023</a> 截断 CoT、插入错误、换成 filler、改写 CoT，观察最终答案是否依赖 CoT。结论：依赖程度因任务差异很大；在一些任务上，更大的模型反而更少依赖 CoT。</li>
+      <li><b>推理模型同样有问题：</b><a href="https://arxiv.org/abs/2505.05410" target="_blank" rel="noreferrer">Chen et al. 2025（Reasoning Models Don't Always Say What They Think）</a>给推理模型塞提示（如元数据里的答案），模型用了提示但在 CoT 中承认的比例通常很低；基于结果的 RL 一开始提升忠实性，但很快进入平台期。</li>
+    </ul>
+    <h4>怎么衡量忠实性（面试常追问）</h4>
+    <ol>
+      <li><b>反事实干预：</b>改 CoT 的某一步（插错、删除、改写），看答案是否随之改变。答案不变 → CoT 不是因果必要的。</li>
+      <li><b>提示注入：</b>在输入中加入一个会改变答案的线索，比较"答案被改变"与"CoT 中承认使用了线索"的比例。</li>
+      <li><b>内部表征对照：</b>用 probe 在 CoT 开始前读出模型的"预定答案"（如果 CoT 写完前答案已经可以从激活中解码出来，说明有 post-hoc rationalization 的成分）。</li>
+      <li><b>改写不变性：</b>用另一个模型改写 CoT（保留语义改变措辞），如果答案变了，说明信息藏在措辞/格式里（隐写风险）。</li>
+    </ol>
+    <div class="box why"><span class="lbl">直觉</span>"忠实"和"有用"是两回事。CoT 可以在计算上有用（提供串行深度），同时在解释上不忠实（没有说出全部影响因素）。区分 <em>CoT-as-computation</em> 和 <em>CoT-as-explanation</em>。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>不要说 "CoT 完全不可信"。更准确的说法：在需要串行计算的困难任务上，模型确实<strong>需要</strong> CoT 才能完成，这时 CoT 必然承载了真实的中间计算，可监控性较好；在简单任务上答案可以一次前向得出，CoT 更可能是事后合理化。这一点也是 <a href="#c-monitor">CoT 可监控性</a> 论证的核心。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Faithfulness asks whether the written reasoning is actually what drives the answer. The evidence is mixed. Turpin et al. showed that models can be biased by features like "the answer is always A" without ever mentioning it, and Anthropic's 2025 work found reasoning models often use hints without admitting it. On the other hand, when a task genuinely requires serial computation, the model has to put real intermediate results in the CoT, so it's more informative there. I'd measure faithfulness with counterfactual interventions: corrupt or truncate the chain and see whether the answer changes, and check whether injected hints get verbalized.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Would training the CoT to look good make it more faithful?</b><details><summary>思路</summary><div class="inner">很可能相反。直接优化 CoT 的"外观"（例如惩罚 CoT 中出现的坏念头）会让模型学会<strong>隐藏</strong>意图而不是改变行为。<a href="https://arxiv.org/abs/2503.11926" target="_blank" rel="noreferrer">Baker et al. 2025</a> 发现对 CoT monitor 施加优化压力后，模型继续 reward hack，但 CoT 里不再暴露（obfuscated reward hacking）。所以很多人主张不要对 CoT 施加直接的优化压力。</div></details></li>
+    <li><b>How is faithfulness different from correctness?</b><details><summary>思路</summary><div class="inner">正确性是 CoT 每一步在逻辑上是否成立；忠实性是 CoT 是否真实反映了模型产生答案的过程。可以正确但不忠实（事后写出一份标准解法），也可以忠实但错误（真实地按错误步骤算出了错误答案）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-cot-when">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>CoT 什么时候没用</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>CoT 的收益主要集中在数学、符号和逻辑这类需要多步计算的任务；在知识检索、常识、简单分类、感知类任务上收益很小，有时还会更差。</p><p class="en">CoT mainly helps on math and symbolic tasks; on knowledge recall or simple classification its benefit is small or even negative.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2409.12183" target="_blank" rel="noreferrer">Sprague et al. 2024（To CoT or not to CoT?）</a>做了大规模 meta-analysis：CoT 的收益集中在数学和符号推理任务；在 MMLU 这类知识型 benchmark 上，提升几乎只出现在含有符号运算（例如带等号）的题目上。他们还发现，很多收益可以通过"先规划、再用工具执行"得到，CoT 本身的符号执行能力不如真正的求解器。</p>
+    <p>不适合 CoT 的情况：</p>
+    <ul>
+      <li><b>知识检索：</b>"法国首都是哪里" 不需要串行计算，记不住就是记不住。</li>
+      <li><b>需要直觉/模式识别的任务：</b>有研究报告某些人类"想多了反而变差"的任务上，CoT 也会损害模型表现。</li>
+      <li><b>延迟敏感场景：</b>CoT 成本高（token 数 × 延迟），简单问题上纯属浪费，这引出 §4 的 adaptive thinking。</li>
+      <li><b>模型太弱：</b>单步错误率高时，长链累积错误。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>CoT is not a universal win. A large meta-analysis found the gains concentrate in math and symbolic reasoning, while knowledge-heavy tasks barely benefit. Intuitively, CoT gives you more serial computation, so it only helps when the bottleneck is computation rather than missing knowledge. It also costs latency and tokens, which is why adaptive reasoning budgets matter.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-tts"><span class="num">§2 · TEST-TIME COMPUTE SCALING</span>测试时计算扩展</h2>
+<p class="sec-intro">核心问题：给定一个训练好的模型，推理时多花算力能换来多少准确率？怎么花最划算？面试官最喜欢问的是三类方法的对比、pass@k 与 maj@k 的区别，以及"为什么不能无限扩展"。</p>
+
+<section class="concept" id="c-tts-taxonomy">
+  <div class="concept-head"><span class="pri p1">★</span><h3>三类扩展方式：parallel / sequential / search</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>并行：独立采样 N 个答案再聚合（best-of-N、多数投票）；串行：让一条推理更长或反复修改（长 CoT、self-revision）；搜索：在部分解空间上用打分函数引导展开（PRM beam search、ToT、MCTS）。</p><p class="en">Parallel sampling aggregates independent attempts, sequential scaling lengthens or revises a single trajectory, and search expands partial solutions guided by a verifier.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th></th><th>Parallel</th><th>Sequential</th><th>Search</th></tr>
+      <tr><td>代表</td><td>best-of-N, self-consistency, weighted voting</td><td>long CoT（o1/R1）, self-refine, budget forcing</td><td>beam search + PRM, ToT, MCTS, lookahead</td></tr>
+      <tr><td>需要什么</td><td>聚合规则：投票（需答案可比较）或 verifier/RM</td><td>模型本身会反思/纠错（通常靠 RL 训练）</td><td>步级打分函数（PRM / value / 自评）</td></tr>
+      <tr><td>优点</td><td>完全并行、延迟低、实现简单、样本多样</td><td>后面的步骤能利用前面的经验（知道哪里错了）</td><td>能把算力集中到有希望的分支</td></tr>
+      <tr><td>缺点</td><td>样本之间不共享信息；受 verifier 质量上限限制</td><td>延迟随长度线性增长；可能想偏、重复；上下文长度上限</td><td>依赖 PRM 质量，容易被 PRM 漏洞利用；实现复杂；难以批处理</td></tr>
+      <tr><td>适合</td><td>中等难度、答案可验证/可投票</td><td>模型"差一点就对"的题；需要深度推理</td><td>困难题、步骤可明确切分（数学证明、代码）</td></tr>
+    </table>
+    <p><b>统一视角：</b>这三者可以组合。o1/R1 类模型本身就是<em>串行</em>扩展（模型学会了在一条长 CoT 里做"内部搜索"：尝试、验证、回溯），在其上再加<em>并行</em>采样 + 投票通常还能再涨几个点（例如 R1 论文同时报告 pass@1 和 cons@64）。</p>
+    <p><b>"Proposer + verifier" 框架：</b><a href="https://arxiv.org/abs/2408.03314" target="_blank" rel="noreferrer">Snell et al. 2024</a> 把测试时计算分成两种机制：(1) 修改<strong>proposal 分布</strong>（让模型自己改进答案，即串行修订）；(2) 用<strong>verifier</strong>在候选中挑选（best-of-N、PRM 搜索）。这个分法面试时很好用。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>比较方法时一定要<strong>算力对齐</strong>（FLOPs-matched 或 token-matched）。"best-of-64 比 greedy 好" 没有意义；有意义的是"同样 64× 的算力，哪种花法最好"，以及"把这些算力花在训练一个更大模型上是否更好"。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I think of test-time compute in three buckets. Parallel scaling samples many independent attempts and aggregates them, with majority voting or a verifier. Sequential scaling makes a single trajectory longer, so later steps can build on earlier mistakes, which is what o1- and R1-style models do. Search expands partial solutions with a step-level scorer, like beam search with a process reward model or MCTS. They have different bottlenecks: parallel is capped by the verifier, sequential by the model's ability to self-correct and by latency, and search by the quality of the step scorer. Any comparison should be compute-matched.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Under a fixed latency budget, which would you choose?</b><details><summary>思路</summary><div class="inner">延迟受限时 parallel 占优：N 个样本可以在同一个 batch 里并行解码，延迟约等于单个样本（显存/吞吐允许的话）；sequential 的延迟随长度线性增加。所以常见做法是"适度长的 CoT + 并行采样 + 投票"，在延迟和准确率之间折中。如果是吞吐受限（总 token 数固定），比较的是每个 token 的边际收益。</div></details></li>
+    <li><b>How do these ideas transfer to agents?</b><details><summary>思路</summary><div class="inner">Agent 场景里并行采样的成本更高（每条轨迹要和环境交互，可能有副作用），verifier 也更难（没有标准答案，只有单元测试或环境反馈）。常见做法：并行跑多条轨迹 + 用测试/自评选择（SWE-bench 上的多次尝试 + 测试过滤），或者在步骤级做 lookahead / 回滚。见 <a href="m10-agents.html">模块 10</a>。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-sc">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Best-of-N、Self-consistency、加权投票</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Self-consistency：采样多条 CoT，对<strong>最终答案</strong>做多数投票（不需要任何额外模型）；Best-of-N：用 verifier / reward model 给每个候选打分，选最高分；加权投票：按 verifier 分数给票加权，结合二者优点。</p><p class="en">Self-consistency majority-votes over final answers; best-of-N picks the top-scored sample under a verifier; weighted voting sums verifier scores per answer.</p></div>
+  <div class="deep">
+    <h4>Self-consistency（<a href="https://arxiv.org/abs/2203.11171" target="_blank" rel="noreferrer">Wang et al. 2022</a>）</h4>
+    <p>用温度采样（如 T=0.7）生成 N 条推理路径，每条抽出最终答案，取出现次数最多的答案。直觉：正确答案可以通过很多不同的推理路径到达，而错误答案通常比较分散。所以当正确答案的概率 \(p\) 是所有答案中<strong>最大的</strong>（mode）时，投票会把准确率推向 1。</p>
+    $$\hat a = \arg\max_a \sum_{i=1}^{N} \mathbb{1}[a_i = a]$$
+    <p><b>前提：</b>答案必须能比较是否相等（数字、选项、代码输出）。开放式生成（写作、证明）没法直接投票 → 用 universal self-consistency（让 LLM 选最一致的）或 verifier。</p>
+    <h4>Best-of-N（BoN，rejection sampling）</h4>
+    <p>\(\hat y = \arg\max_{i} r(x, y_i)\)，\(r\) 是 outcome reward model（ORM）、PRM 聚合分、或者可执行验证器（单元测试）。<a href="https://arxiv.org/abs/2110.14168" target="_blank" rel="noreferrer">Cobbe et al. 2021</a>（GSM8K 论文）就提出训练 verifier 做 BoN。</p>
+    <ul>
+      <li>有<strong>完美 verifier</strong>（如单元测试全覆盖、Lean 证明检查）时，BoN 准确率 = pass@N，随 N 单调增长。</li>
+      <li><strong>学习型 RM</strong> 有误差，N 越大越容易选中"RM 喜欢但错误"的样本 → reward hacking / over-optimization。BoN 的 KL 距离约为 \(\log N - (N-1)/N\)，N 越大偏离原分布越远。</li>
+    </ul>
+    <h4>加权投票（weighted majority）</h4>
+    $$\hat a = \arg\max_a \sum_{i} r(x, y_i)\,\mathbb{1}[a_i = a]$$
+    <p>结合了"答案频率"（投票的鲁棒性）和"质量评分"（verifier 的信息），实践中常优于两者单独使用。Lightman et al. 2023 等工作里 PRM 加权投票是强 baseline。</p>
+    <table>
+      <tr><th>方法</th><th>额外模型</th><th>N→∞ 的极限</th><th>失败模式</th></tr>
+      <tr><td>Self-consistency</td><td>无</td><td>每题：若正确答案是 mode → 1，否则 → 0</td><td>系统性错误（模型最常见的答案是错的）</td></tr>
+      <tr><td>BoN + 完美 verifier</td><td>验证器</td><td>pass@∞（覆盖率）</td><td>验证器成本</td></tr>
+      <tr><td>BoN + 学习型 RM</td><td>RM</td><td>受 RM 假阳性率限制，可能下降</td><td>reward hacking</td></tr>
+      <tr><td>加权投票</td><td>RM</td><td>介于两者</td><td>同上但更鲁棒</td></tr>
+    </table>
+  </div>
+  <details class="deep"><summary>代码：答案归一化 + self-consistency / 加权投票（已测试）</summary><div class="inner">
+<p>真实场景里最容易出 bug 的是<strong>答案抽取与归一化</strong>："0.5"、"1/2"、"\frac{1}{2}" 应该算同一票；"1,000" 和 "1000" 也一样。</p>
+<pre><code class="language-python">import re
+from collections import Counter
+from fractions import Fraction
+
+def last_boxed(text: str):
+    """Content of the last \\boxed{...}, with brace matching (handles \\frac{1}{2})."""
+    i = text.rfind("\\boxed{")
+    if i &lt; 0:
+        return None
+    j, depth = i + len("\\boxed{"), 1
+    start = j
+    while j &lt; len(text) and depth:
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        j += 1
+    return text[start:j - 1] if depth == 0 else None
+
+def extract_answer(text: str):
+    """Take the last \\boxed{...} if present, else the last number."""
+    ans = last_boxed(text)
+    if ans is None:
+        nums = re.findall(r"-?\d[\d,]*(?:\.\d+)?(?:/\d+)?", text)
+        if not nums:
+            return None
+        ans = nums[-1]
+    return normalize(ans)
+
+def normalize(ans: str):
+    s = ans.strip().replace(",", "").replace("$", "").replace(" ", "")
+    s = s.rstrip(".")
+    if s.startswith("\\frac{") or s.startswith("\\dfrac{"):
+        g = re.match(r"\\d?frac\{(-?\d+)\}\{(-?\d+)\}", s)
+        if g:
+            s = g.group(1) + "/" + g.group(2)
+    try:
+        v = Fraction(s)               # handles "3", "0.5", "1/2", "-4"
+        return str(v)                 # canonical: "1/2", "3"
+    except (ValueError, ZeroDivisionError):
+        return s.lower()
+
+def self_consistency(samples, weights=None):
+    """Majority vote over normalized answers; optional per-sample weights
+    (e.g. verifier scores) gives weighted voting. Returns (answer, votes)."""
+    tally = Counter()
+    for i, text in enumerate(samples):
+        a = extract_answer(text)
+        if a is None:
+            continue                  # unparseable sample abstains
+        tally[a] += 1.0 if weights is None else weights[i]
+    if not tally:
+        return None, tally
+    best = max(tally.items(), key=lambda kv: kv[1])[0]
+    return best, tally
+
+samples = ["... so the answer is \\boxed{0.5}",
+           "Thus x = 1/2.",
+           "We get \\boxed{\\frac{1}{2}}",
+           "The answer is 3.",
+           "I am not sure."]
+ans, tally = self_consistency(samples)
+assert ans == "1/2" and tally["1/2"] == 3 and tally["3"] == 1
+ans_w, _ = self_consistency(samples, weights=[0.1, 0.1, 0.1, 0.9, 0.5])
+assert ans_w == "3"   # weighted vote can flip the decision
+assert normalize("1,000") == "1000" and normalize("-4.0") == "-4"</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 投票时<strong>没抽取出答案</strong>的样本应该弃权，而不是算作一个 "None" 答案参与投票。(2) 温度太低时样本几乎一样，投票等于 greedy；太高时质量下降。(3) BoN 的"N 越大越好"只在 verifier 可靠时成立。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Self-consistency samples several reasoning paths at nonzero temperature and majority-votes over the final answers. It needs no extra model, and it works because correct answers tend to be reachable by many paths while errors scatter. Best-of-N instead scores each candidate with a verifier or reward model and picks the top one. With a perfect verifier like unit tests, best-of-N approaches pass at N, but with a learned reward model, larger N increasingly exploits its errors. Weighted voting, which sums verifier scores per distinct answer, is usually a strong middle ground.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>When does majority voting hurt compared to a single sample?</b><details><summary>思路</summary><div class="inner">对某道题，如果正确答案<strong>不是</strong>模型最常见的答案（例如二选一时 \(p&lt;0.5\)），投票会把这道题的准确率推向 0（见 §9 的表格：p=0.45 时 maj@51 只有 0.236）。所以在数据集层面，投票提升"大部分对"的题，牺牲"偶尔对"的题。<a href="https://arxiv.org/abs/2403.02419" target="_blank" rel="noreferrer">Chen et al. 2024</a> 观察到投票准确率随调用次数可能先升后降，正是因为难易题混合。</div></details></li>
+    <li><b>How would you vote on free-form answers like proofs?</b><details><summary>思路</summary><div class="inner">选项：(1) 让 LLM 读所有候选，选出和其他候选最一致的（universal self-consistency）；(2) 用语义聚类（embedding 或 LLM 判定等价）后投票；(3) 用 generative verifier 打分做 BoN；(4) 对证明用形式化验证器（Lean）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-passk-majk">
+  <div class="concept-head"><span class="pri p1">★</span><h3>pass@k vs maj@k：覆盖率与可选择性</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>pass@k = k 个样本里<strong>至少一个对</strong>的概率（需要 oracle 来挑，衡量"覆盖率/能力上限"）；maj@k = k 个样本多数投票后对的概率（不需要 oracle，衡量"能稳定选出来的能力"）。二者之间的差距 = verifier 能带来的最大收益。</p><p class="en">Pass@k measures coverage assuming an oracle picks the right sample; maj@k measures what you can actually select without one. The gap is the headroom for verifiers.</p></div>
+  <div class="deep">
+    <p>对单题，设单样本正确率为 \(p\)：</p>
+    $$\text{pass@}k = 1-(1-p)^k \qquad \text{maj@}k\ (\text{二选一}, k\ \text{奇数}) = \sum_{j>k/2}\binom{k}{j}p^j(1-p)^{k-j}$$
+    <ul>
+      <li>pass@k 对任何 \(p&gt;0\) 都随 k 增长到 1。<a href="https://arxiv.org/abs/2407.21787" target="_blank" rel="noreferrer">Brown et al. 2024（Large Language Monkeys）</a>发现覆盖率在多个数量级的样本数上近似 log-linear 增长；例如 SWE-bench Lite 上 DeepSeek-Coder-V2 从 1 个样本的 15.9% 提升到 250 个样本的 56%（有单元测试作为验证器）。但他们也发现，没有自动验证器时，多数投票和 RM 选择在几百个样本后就饱和了。</li>
+      <li>maj@k 对每道题是"阈值行为"（Condorcet 陪审团定理）：正确答案是 mode → 趋于 1；否则趋于 0。所以数据集层面的 maj@k 收敛到"正确答案是 mode 的题目比例"。</li>
+      <li>报告结果时：pass@1（多次采样取平均更稳，也叫 avg@k / mean@k）、maj@k / cons@k、pass@k。不同论文用法不统一，<strong>一定要说清楚</strong>。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>pass@k 像"学生交 k 份答卷，老师挑最好的一份"；maj@k 像"学生交 k 份答卷，取最常见的结论"。前者高估了真实可用的能力，因为现实中通常没有老师（oracle）。</div>
+    <p>关于 pass@k 在 RL 讨论中的作用（"RL 是否让模型学到新东西"），见 <a href="#c-elicit">§3</a>。无偏估计量的推导见 <a href="#c-passk-derive">§6</a>。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>用 \(1-(1-\hat p)^k\)（\(\hat p=c/n\)）估计 pass@k 是<strong>有偏</strong>的（低估），要用 Codex 论文的组合估计量。在 §9 的测试中：真实 pass@3 = 0.488，朴素估计量的期望只有 0.451。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Pass at k is the probability that at least one of k samples is correct, so it measures coverage under an oracle selector. Maj at k is the accuracy after majority voting, which you can actually deploy without an oracle. For a single question, pass at k goes to one for any nonzero p, while majority voting is a threshold phenomenon: it goes to one if the correct answer is the mode and to zero otherwise. The gap between them tells you how much a good verifier could buy you.</p></div>
+</section>
+
+<section class="concept" id="c-search">
+  <div class="concept-head"><span class="pri p1">★</span><h3>搜索：PRM beam search、Tree-of-Thoughts、MCTS</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把推理拆成步骤，在每一步生成多个候选、用步级打分函数（PRM / value / 自评）保留最有希望的分支；能把算力集中在有希望的路径上，但质量取决于打分函数，并且容易被打分函数的漏洞利用。</p><p class="en">Search decomposes reasoning into steps and uses a step-level scorer to keep promising partial solutions, trading simplicity for focused compute.</p></div>
+  <div class="deep">
+    <h4>ORM vs PRM（简要，详细在模块 06）</h4>
+    <ul>
+      <li><b>ORM</b>（outcome RM）：只对完整答案打分。</li>
+      <li><b>PRM</b>（process RM）：对每一步打分。<a href="https://arxiv.org/abs/2305.20050" target="_blank" rel="noreferrer">Lightman et al. 2023（Let's Verify Step by Step）</a>用人工步级标注（PRM800K）训练 PRM，在 MATH 上做 BoN 显著优于 ORM。<a href="https://arxiv.org/abs/2312.08935" target="_blank" rel="noreferrer">Math-Shepherd</a> 用 Monte Carlo rollout 自动估计每一步"从这里继续能做对的概率"作为标签，免去人工标注。</li>
+      <li><b>Generative verifier：</b><a href="https://arxiv.org/abs/2408.15240" target="_blank" rel="noreferrer">GenRM（Zhang et al. 2024）</a>把验证当成 next-token prediction，让 verifier 自己先写验证 CoT 再判断，还能对验证本身做多数投票。</li>
+    </ul>
+    <h4>步级 beam search（with PRM）</h4>
+    <ol>
+      <li>维护 B 个部分解。每个部分解采样 M 个下一步（如以换行/"Step k:" 为步边界）。</li>
+      <li>用 PRM 给 B×M 个扩展打分，保留前 B 个。</li>
+      <li>直到所有 beam 结束；最后用 PRM 或投票选答案。</li>
+    </ol>
+    <p>Snell et al. 发现：低预算下 beam search 优于 BoN；高预算下在简单题上 beam search 反而变差（过度优化 PRM），BoN 更稳；困难题上 beam search 更有价值。</p>
+    <h4>Tree-of-Thoughts（<a href="https://arxiv.org/abs/2305.10601" target="_blank" rel="noreferrer">Yao et al. 2023</a>）</h4>
+    <p>把"想法"作为树节点，LLM 同时充当生成器和评估器（自评 "sure / maybe / impossible"），用 BFS/DFS 加回溯搜索。在 Game of 24、填字等需要探索的任务上大幅超过 CoT。缺点：调用次数多、依赖自评质量。</p>
+    <h4>MCTS</h4>
+    <p>选择（UCT）→ 扩展 → 评估（rollout 或 value model）→ 回传。用于 LLM 时，"动作"是一个推理步骤。代表：<a href="https://arxiv.org/abs/2501.04519" target="_blank" rel="noreferrer">rStar-Math（2025）</a>用 MCTS + 过程偏好模型，让小模型通过多轮自我演化生成训练数据。值得一提：DeepSeek-R1 论文在"不成功的尝试"中报告了 PRM 和 MCTS 都没能在大规模训练中带来预期收益（token 级搜索空间太大、value model 难训练、PRM 易被 hack）。</p>
+    <div class="box why"><span class="lbl">直觉</span>搜索把"推理"变成显式的树搜索，AlphaGo 风格。但语言推理的分支因子巨大、步骤边界模糊、价值函数难学，所以在 LLM 上远不如在围棋上成功。目前主流是让模型<strong>在一条长 CoT 内部隐式搜索</strong>（尝试—验证—回溯），由 RL 训练出来，而不是在外部显式建树。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"PRM 一定比 ORM 好" 并不总是成立：PRM 标注贵、步骤定义模糊、在 RL 中容易被 hack（模型学会写很多"看起来正确"的小步骤）。R1 和 Kimi k1.5 都选择了只用结果奖励训练。PRM 在<strong>测试时搜索/重排</strong>中更常见。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Search-based methods split reasoning into steps and use a step-level scorer to decide which partial solutions to expand. The classic setup is beam search guided by a process reward model, trained either from human step labels like PRM800K or from Monte Carlo rollouts like Math-Shepherd. Tree-of-Thoughts uses the LLM itself as both proposer and evaluator, and MCTS adds a principled exploration rule. In practice, search helps most on hard problems at moderate budgets, but it over-optimizes the PRM at large budgets. That's partly why the field moved toward training models to search implicitly inside one long chain of thought.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why did MCTS work for Go but struggle for LLM reasoning?</b><details><summary>思路</summary><div class="inner">(1) 动作空间：围棋每步约几百个合法动作；语言的"一步"是一段文本，空间近乎无限，只能采样少数候选。(2) 价值函数：围棋有清晰的胜负与自我对弈产生的大量数据；推理中间步骤的价值难以估计，PRM 噪声大。(3) 步骤边界模糊。(4) 模拟器：围棋有完美的规则模拟器；语言推理里"环境"就是模型自己。R1 论文也报告了这些困难。</div></details></li>
+    <li><b>How would you get PRM labels without humans?</b><details><summary>思路</summary><div class="inner">Monte Carlo 估计：从第 t 步的前缀出发采样 K 条完成，正确率作为该步的软标签（Math-Shepherd 风格）。改进：只在第一个错误步骤附近细化（二分查找第一个出错步）；用强模型做步级判断（LLM-as-judge）；用 generative verifier。注意 MC 标签衡量的是"从这里还能做对的概率"，和"这一步本身是否正确"不完全一样。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-compute-optimal">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Compute-optimal 测试时扩展（Snell et al. 2024）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>最优的测试时策略取决于题目难度：简单题适合串行修订，难题适合并行采样或搜索；按难度自适应分配算力，比固定的 best-of-N 效率高 4 倍以上；在小模型有一定成功率的题目上，测试时计算可以替代参数量更大的模型。</p><p class="en">The best way to spend test-time compute depends on difficulty; adapting the strategy per prompt is over 4x more efficient than best-of-N, and can beat a much larger model on problems where the small model has non-trivial success.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2408.03314" target="_blank" rel="noreferrer">Scaling LLM Test-Time Compute Optimally can be More Effective than Scaling Model Parameters</a>（Snell, Lee, Xu, Kumar 2024）是这个方向最常被问的论文。要点：</p>
+    <ol>
+      <li><b>两种机制：</b>(a) 针对 verifier 搜索（BoN、beam search、lookahead，用 PRM）；(b) 修改 proposal 分布（训练模型做串行修订）。</li>
+      <li><b>难度分桶：</b>用模型自己在该题上的通过率（oracle）或 verifier 预测的分数把题目分成 5 个难度桶。</li>
+      <li><b>发现：</b>
+        <ul>
+          <li>简单题：串行修订最好（模型已经接近正确，局部修改即可）。</li>
+          <li>中等/困难题：并行采样与串行修订的混合比例存在最优点；搜索（beam）在难题上更有用。</li>
+          <li>最难的题：任何测试时计算都帮助不大——基础模型根本没有能力，需要更多预训练。</li>
+        </ul>
+      </li>
+      <li><b>compute-optimal 策略</b>：按预测难度为每道题选最优的方法和超参数，比 BoN baseline 效率高 4 倍以上。</li>
+      <li><b>测试时计算 vs 预训练计算（FLOPs 对齐）：</b>在小模型有非平凡成功率的问题上，测试时计算可以胜过一个约 14 倍大的模型；但在难题上，或推理请求量很大（推理 FLOPs 占主导）时，扩大预训练更划算。</li>
+    </ol>
+    <p>相关工作：<a href="https://arxiv.org/abs/2408.00724" target="_blank" rel="noreferrer">Wu et al. 2024（Inference Scaling Laws）</a>发现在给定推理预算下，小模型 + 树搜索可以处于 Pareto 前沿（例如小 Llemma 加树搜索超过大 Llemma）。</p>
+    <div class="box why"><span class="lbl">直觉</span>测试时计算能"放大"模型已有的能力（把 10% 的成功率变成 80%），但不能"无中生有"（0% 永远放大不了）。所以它和预训练是互补的：预训练决定上限的位置，测试时计算决定能多接近上限。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 这篇论文的实验基于 PaLM-2 + 专门训练的修订模型和 PRM，结论是"在这个设置下"，不要外推成"测试时计算总能替代 14× 参数"。(2) 难度要在<strong>测试时估计</strong>，而估计本身也要花算力，论文的 oracle 难度是上限。(3) 2024 年之后长 CoT 推理模型成为主流，"串行修订"的形式变成了模型内部的反思。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Snell et al. asked how to spend a fixed test-time budget optimally. They separated two mechanisms: searching against a verifier, and refining the model's own proposals sequentially. The key finding is that the optimal strategy depends on difficulty. Easy questions benefit most from sequential revision, harder ones need more parallel sampling or search, and the hardest ones barely benefit at all. Choosing the strategy per question was over four times more efficient than best-of-N, and in a FLOPs-matched comparison, a small model with test-time compute could beat a model about fourteen times larger, but only on problems where the small model already had some success.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you predict difficulty at test time cheaply?</b><details><summary>思路</summary><div class="inner">(1) 先采样少量样本，看一致性（投票分布的熵或最大票比例）——一致性高说明简单，可以提前停止（adaptive self-consistency 的思路）；(2) verifier 对首个样本的置信度；(3) 训练一个小的难度预测头（读题目的 embedding 或模型的隐藏状态）；(4) 模型自报的置信度（需要校准）。代价与收益要算进总预算。</div></details></li>
+    <li><b>What does "test-time compute can substitute for pretraining" mean economically?</b><details><summary>思路</summary><div class="inner">总成本 = 训练 FLOPs + 推理请求数 × 每次请求的推理 FLOPs。如果请求量小（例如只解少量难题），把算力花在测试时更划算；如果请求量巨大（产品级服务），每次多花的推理算力乘上请求数会远超训练成本，这时训练更大/更好的模型更划算。这和 Chinchilla 之后的 "inference-aware scaling" 是同一个逻辑。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-verifier">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Verifier 瓶颈：为什么测试时扩展会饱和</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>并行扩展的最终准确率被 verifier 的假阳性率封顶：当 N→∞，被接受的候选里正确答案的比例收敛到 \(\frac{p\cdot \text{TPR}}{p\cdot\text{TPR} + (1-p)\cdot\text{FPR}}\)，再多采样也没用。</p><p class="en">With an imperfect verifier, resampling accuracy saturates at a ceiling set by the verifier's false-positive rate, no matter how many samples you draw.</p></div>
+  <div class="deep">
+    <h4>推导</h4>
+    <p>设每个样本正确的概率为 \(p\)；verifier 接受正确样本的概率为 TPR，接受错误样本的概率为 FPR。从所有被接受的样本中均匀选一个。当 N 很大时，被接受的样本中正确与错误的数量比约为 \(Np\cdot\text{TPR} : N(1-p)\cdot\text{FPR}\)，所以：</p>
+    $$\lim_{N\to\infty}\text{Acc} = \frac{p\,\text{TPR}}{p\,\text{TPR}+(1-p)\,\text{FPR}}$$
+    <p>例：\(p=0.2\)、TPR=0.9、FPR=0.2 → 极限 = 0.18/(0.18+0.16) = 0.529。§9 的模拟显示 N=16 时就已经到 0.53，之后完全平坦。即使 TPR=0.95、FPR=0.05，极限也只有 0.826。</p>
+    <p><a href="https://arxiv.org/abs/2411.17501" target="_blank" rel="noreferrer">Stroebl et al.（The Limits of Inference Scaling Through Resampling）</a>正式论证了这一点：在 HumanEval / MBPP 这类单元测试不完备的场景下，弱模型 + 不完美验证器无论采样多少次，都无法达到强模型单次采样的水平；而且通过了不完整测试的"假阳性"解在代码质量上也更差。</p>
+    <h4>对研究的含义</h4>
+    <ul>
+      <li>有<strong>完美验证器</strong>的领域（Lean 证明、可执行有完备测试的代码、数学答案匹配）是测试时扩展和 RLVR 最成功的地方。</li>
+      <li>没有验证器的领域（开放式写作、研究、长程 agent 任务），扩展受限于 verifier 质量 → "generation–verification gap" 是核心研究问题。</li>
+      <li>提升 verifier：generative verifier、让 verifier 也做测试时计算（验证 CoT + 投票）、用执行反馈、形式化。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>学习型 RM 的误差往往和策略的错误<strong>相关</strong>（同一个基座模型、同样的盲区），所以实际上的 FPR 在困难题上可能更高，比独立假设下的分析更悲观。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The verifier is the real bottleneck for parallel scaling. If the verifier accepts wrong answers with some false-positive rate, then as you draw more samples, the pool of accepted answers converges to a fixed mix of correct and incorrect ones, so accuracy plateaus. For example, with a 20 percent base rate and a verifier with 90 percent true positives and 20 percent false positives, you saturate around 53 percent. Stroebl et al. showed this empirically for code with incomplete unit tests. That's why domains with near-perfect verifiers, like formal proofs or well-tested code, are where test-time scaling and RLVR shine.</p></div>
+</section>
+
+<section class="concept" id="c-budget">
+  <div class="concept-head"><span class="pri p1">★</span><h3>串行扩展：长思考、自我修订与 budget forcing（s1）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>s1 用 1000 条精选样本 SFT 一个 32B 模型，再用 budget forcing 控制思考长度：想停时追加 "Wait" 迫使继续思考（延长），超预算时强制插入思考结束标记（截断），由此得到随思考长度上升的 test-time scaling 曲线。</p><p class="en">s1 fine-tunes on 1K curated reasoning traces and controls thinking length at decode time by appending "Wait" to extend or forcing the end-of-thinking delimiter to cut off.</p></div>
+  <div class="deep">
+    <h4>s1（<a href="https://arxiv.org/abs/2501.19393" target="_blank" rel="noreferrer">Muennighoff et al. 2025</a>）</h4>
+    <ul>
+      <li><b>数据：</b>从约 59K 题目中按<strong>质量、难度、多样性</strong>三个标准筛出 1000 题（s1K），推理轨迹来自一个强推理模型。</li>
+      <li><b>训练：</b>在 Qwen2.5-32B-Instruct 上做 SFT，训练成本很低（论文报告 16 张 H100 约 26 分钟）。</li>
+      <li><b>Budget forcing：</b>解码时控制思考 token 数。最小预算：模型想输出思考结束标记时把它抑制掉并追加 "Wait"，模型常常会重新检查并修正答案；最大预算：到上限就强制输出结束标记和 "Final Answer:"。</li>
+      <li><b>结果：</b>s1-32B 在竞赛数学上超过 o1-preview（论文报告最高 +27%），且 budget forcing 让 AIME24 准确率随思考长度上升。</li>
+      <li><b>启示：</b>大量推理能力在基座模型里已经存在，少量高质量长 CoT 数据就能"激活"；同期 <a href="https://arxiv.org/abs/2502.03387" target="_blank" rel="noreferrer">LIMO</a> 也得出类似"少即是多"的结论。</li>
+    </ul>
+    <details><summary>代码：budget forcing 的解码逻辑（mock 模型，已测试）</summary><div class="inner">
+<pre><code class="language-python">END_THINK = "&lt;/think&gt;"
+
+def budget_forcing(generate, prompt, min_think, max_think, wait="Wait"):
+    """generate(text, max_tokens, stop) -&gt; list of new tokens (stops early at `stop`).
+    Enforce a thinking budget: suppress early end-of-thinking by appending `wait`
+    (lengthen), or force END_THINK once max_think tokens are used (shorten)."""
+    thought = []
+    while len(thought) &lt; max_think:
+        new = generate(prompt + " ".join(thought), max_think - len(thought), stop=END_THINK)
+        stopped = bool(new) and new[-1] == END_THINK
+        thought += new[:-1] if stopped else new
+        if not stopped:
+            break                                  # ran out of budget
+        if len(thought) &gt;= min_think:
+            break                                  # model ended thinking &amp; budget satisfied
+        thought.append(wait)                       # too short: suppress END_THINK, keep thinking
+    thought = thought[:max_think]
+    return thought + [END_THINK]                   # then decode the final answer as usual</code></pre>
+    <p>测试：一个每 3 个 token 就想结束的 mock 模型，在 min_think=10 下会被追加 2 次 "Wait"；一个停不下来的模型在 max_think=20 时被截断并强制结束。</p>
+    </div></details>
+    <h4>自我修订（self-refine / revision）</h4>
+    <ul>
+      <li><b>Prompt 式 self-refine：</b>让模型批评并改写自己的答案。问题：没有外部反馈时，LLM 的自我纠错能力很有限，可能把对的改错（Huang et al. 2023 "LLMs cannot self-correct reasoning yet"）。</li>
+      <li><b>训练出的修订能力：</b>Snell et al. 专门训练修订模型；SCoRe（Kumar et al. 2024）用多轮 RL 训练自我纠错。</li>
+      <li><b>长 CoT 推理模型：</b>反思和修订发生在一条 CoT 内部（"wait, let me double check..."），由结果奖励 RL 训练出来，这是目前最成功的串行扩展形式。</li>
+    </ul>
+    <h4>产品化的"思考预算"</h4>
+    <p>主流 API 都提供某种推理强度/思考预算参数（如 reasoning effort 档位、thinking token 上限），本质就是串行扩展的旋钮。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) Budget forcing 的延长效果会饱和，追加太多次 "Wait" 会让模型陷入重复循环。(2) "1000 条样本就够" 指的是在一个已经很强的 32B 基座 + 强教师轨迹上做蒸馏，不是说推理能力可以从零用 1000 条数据学会。(3) 后续分析（如 <a href="https://arxiv.org/abs/2507.14419" target="_blank" rel="noreferrer">It's Not That Simple, 2025</a>）指出通过 "Wait" 强行延长的扩展效果有限，真正的扩展来自 RL 训练出的自然长思考。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Sequential scaling means spending more tokens on a single trajectory. A clean example is s1: they fine-tuned a 32B model on just one thousand carefully selected reasoning traces and then controlled thinking length at decode time. If the model tries to stop too early, they suppress the end-of-thinking token and append "Wait", which often triggers a re-check; if it exceeds the budget, they force it to stop. That gives a clean scaling curve with thinking length. The bigger lesson is that a strong base model already has latent reasoning ability that a small amount of high-quality long-CoT data can unlock, though forced extension saturates quickly.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does appending "Wait" improve accuracy?</b><details><summary>思路</summary><div class="inner">"Wait" 在长 CoT 训练数据里经常出现在自我检查/纠错之前，所以它作为一个触发词把模型分布推到"重新检查"的模式。从计算角度看，它给了模型额外的串行步骤去验证。但如果模型已经正确，额外检查也可能把正确答案改错，所以收益会饱和。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-train"><span class="num">§3 · TRAINING REASONING MODELS</span>推理模型是怎么训练出来的</h2>
+<p class="sec-intro">o1（2024 年 9 月）之后，"推理模型"成为一个独立的模型类别。闭源模型的细节没有公开，所以面试中主要讨论公开的 DeepSeek-R1 和若干开源复现。GRPO / PPO 的数学在 <a href="m06-rl-posttraining.html">模块 06 §7</a>，这里聚焦<strong>流程、现象和争论</strong>。</p>
+
+<section class="concept" id="c-r1">
+  <div class="concept-head"><span class="pri p1">★</span><h3>o1 / R1 范式与 DeepSeek-R1 训练流程</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用<strong>可验证奖励的大规模 RL</strong>（数学答案匹配、代码测试）训练模型产生长 CoT；R1 流程 = 冷启动 SFT → 推理 RL → 拒绝采样生成新 SFT 数据（推理 + 通用）→ 全场景 RL，最后把 R1 的输出蒸馏到小模型。</p><p class="en">Reasoning models are trained with large-scale RL on verifiable rewards to produce long chains of thought; R1 used cold-start SFT, reasoning RL, rejection-sampling SFT, and a final all-scenario RL stage, then distilled into smaller models.</p></div>
+  <div class="deep">
+    <h4>o1 公开了什么</h4>
+    <p>OpenAI 在 <a href="https://openai.com/index/learning-to-reason-with-llms/" target="_blank" rel="noreferrer">Learning to Reason with LLMs</a>（2024 年 9 月）中公开的信息很少：通过大规模 RL 训练模型在回答前进行长时间思考；性能随<strong>训练时 RL 算力</strong>和<strong>测试时思考算力</strong>两条轴平滑提升；原始 CoT 对用户隐藏。具体算法、奖励、数据都没有公开，面试时不要编造。</p>
+    <h4>DeepSeek-R1（<a href="https://arxiv.org/abs/2501.12948" target="_blank" rel="noreferrer">arXiv 2501.12948</a>，2025 年 1 月）</h4>
+    <p>基座：DeepSeek-V3-Base（MoE，671B 总参数 / 37B 激活）。RL 算法：GRPO（无 critic，组内归一化 advantage）。</p>
+    <table>
+      <tr><th>阶段</th><th>做法</th><th>目的</th></tr>
+      <tr><td><b>R1-Zero</b>（独立实验）</td><td>直接在 base 上做 RL，无任何 SFT；奖励 = 准确性（规则判定）+ 格式（思考放在 &lt;think&gt; 标签里）</td><td>证明纯 RL 能涌现推理能力</td></tr>
+      <tr><td>1. 冷启动 SFT</td><td>数千条高质量、可读的长 CoT 数据</td><td>解决 R1-Zero 可读性差、语言混杂的问题，给 RL 更好的起点</td></tr>
+      <tr><td>2. 推理导向 RL</td><td>在数学/代码/逻辑上做 GRPO；加入<strong>语言一致性奖励</strong>（CoT 中目标语言词的比例）</td><td>提升推理能力；语言一致性奖励略微降低性能但提高可读性</td></tr>
+      <tr><td>3. 拒绝采样 + SFT</td><td>从 RL checkpoint 拒绝采样约 60 万条推理数据（部分用生成式 RM 判断），加约 20 万条非推理数据（写作、问答等），共约 80 万条，对 base 重新 SFT</td><td>把推理能力和通用能力合在一起</td></tr>
+      <tr><td>4. 全场景 RL</td><td>推理题用规则奖励；通用题用偏好 RM（有用性、无害性）</td><td>对齐人类偏好，同时保持推理</td></tr>
+      <tr><td>蒸馏</td><td>用上面 80 万条数据对 Qwen2.5 / Llama 系列（1.5B–70B）做 SFT（只 SFT，不做 RL）</td><td>把推理能力迁移到小模型</td></tr>
+    </table>
+    <h4>为什么用规则奖励而不是神经 RM</h4>
+    <p>论文明确说明：神经奖励模型在大规模 RL 中容易被 reward hacking，并且需要反复重训，增加复杂度。规则奖励（答案匹配、编译 + 测试）几乎不能被 hack，这是 RLVR 能稳定扩展的关键。</p>
+    <h4>开源复现与后续（只列已核实的）</h4>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2501.12599" target="_blank" rel="noreferrer">Kimi k1.5</a>（2025 年 1 月）：同期独立工作，长上下文 RL（128K）、不用 MCTS / value function / PRM，提出 long2short 方法把长 CoT 能力迁移到短 CoT 模型。</li>
+      <li><a href="https://arxiv.org/abs/2503.14476" target="_blank" rel="noreferrer">DAPO</a>（2025）：开源的大规模 RL 系统，提出 clip-higher、动态采样、token 级损失、超长惩罚（详见模块 06）。</li>
+      <li><a href="https://arxiv.org/abs/2503.20783" target="_blank" rel="noreferrer">Dr. GRPO（Understanding R1-Zero-Like Training）</a>：分析 GRPO 的长度偏置和标准差归一化偏置，并指出很多"aha moment"在基座模型中已经存在。</li>
+      <li><a href="https://arxiv.org/abs/2505.09388" target="_blank" rel="noreferrer">Qwen3 技术报告</a>（2025 年 5 月）：把 thinking 和 non-thinking 模式融合进一个模型，并支持思考预算控制。</li>
+      <li><a href="https://arxiv.org/abs/2506.04178" target="_blank" rel="noreferrer">OpenThoughts</a>（2025）：系统研究推理 SFT 数据配方（题目来源、筛选、每题多个答案、教师模型选择）。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 不要说"R1 只用了 RL"——只有 R1-Zero 是纯 RL，R1 本身有两轮 SFT 和两轮 RL。(2) 蒸馏得到的小模型<strong>没有做 RL</strong>。(3) "R1 训练只花了几百万美元" 是指 V3 预训练最后一次运行的 GPU 小时估算，不包括研究和试错，引用时要小心。(4) 不要声称知道 o1 用的是 PPO 还是别的算法。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The core recipe behind o1- and R1-style models is large-scale reinforcement learning with verifiable rewards, so the model learns to produce long chains of thought that end in a checkable answer. DeepSeek-R1 is the best documented. R1-Zero applied GRPO directly to the base model with only accuracy and format rewards, and reasoning behaviors emerged, but the outputs were hard to read and mixed languages. The full R1 pipeline added a small cold-start SFT set, then reasoning RL with a language-consistency reward, then rejection sampling to build about 800K SFT examples, and a final RL stage for general helpfulness and harmlessness. They deliberately used rule-based rewards because neural reward models get hacked at scale.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why do the cold-start SFT at all if R1-Zero already works?</b><details><summary>思路</summary><div class="inner">(1) 可读性：R1-Zero 的 CoT 语言混杂、格式混乱，不适合给用户看；(2) 起点更好：冷启动数据给模型一个良好的长 CoT 格式与反思模式，RL 收敛更快、更稳定；(3) 可以把人类先验（例如结尾给出总结）注入。代价是引入了 SFT 数据的偏置。</div></details></li>
+    <li><b>What made RLVR suddenly work in 2024–25 when earlier attempts (e.g. STaR) were smaller?</b><details><summary>思路</summary><div class="inner">没有单一答案，常见的解释：(1) 基座模型变强了——预训练数据中含大量推理文本，基座已经有"反思"的潜在能力（Dr. GRPO、Gandhi et al. 的证据）；(2) 规模：RL 的算力和 rollout 数量大幅增加；(3) 允许很长的 CoT（上下文窗口变长）；(4) 简单稳定的奖励（规则判定）避免了 RM hacking；(5) 去掉 KL 约束或放宽约束让策略能大幅偏离。说"common hypotheses include…"比断言更好。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-r1zero">
+  <div class="concept-head"><span class="pri p1">★</span><h3>R1-Zero 的涌现现象："aha moment" 与长度增长</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>纯 RL 训练过程中，平均回答长度自发增长到数千 token，模型开始出现反思、验证、换方法等行为（论文称为 "aha moment"）；AIME 2024 pass@1 从 15.6% 提升到 71.0%（多数投票 86.7%）。但后续研究表明这些行为在基座模型里已有雏形。</p><p class="en">During pure RL, response length grew on its own and reflective behaviors appeared, with AIME pass@1 rising from 15.6% to 71.0%; later work showed such behaviors already exist in base models.</p></div>
+  <div class="deep">
+    <h4>论文报告的现象</h4>
+    <ul>
+      <li><b>长度自发增长：</b>没有任何长度奖励，模型学会"花更多时间思考"，因为更长的思考提高了正确率。</li>
+      <li><b>"Aha moment"：</b>中间 checkpoint 出现了重新审视自己做法的语句（"Wait, wait. Wait. That's an aha moment I can flag here."），之后模型会主动重新评估初始方法。</li>
+      <li><b>缺点：</b>可读性差、中英混杂。</li>
+    </ul>
+    <h4>批判性解读（面试加分点）</h4>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2503.20783" target="_blank" rel="noreferrer">Liu et al. 2025（Dr. GRPO）</a>：在多个基座模型（包括 DeepSeek-V3-Base）上，RL 之前就能观察到自我反思的语句；而且 GRPO 的按长度归一化会让<strong>错误</strong>的长回答受到的惩罚更小，部分长度增长可能来自这个优化偏置而非"学会了思考更久"。</li>
+      <li><a href="https://arxiv.org/abs/2503.01307" target="_blank" rel="noreferrer">Gandhi et al. 2025（Cognitive Behaviors that Enable Self-Improving Reasoners）</a>：比较 Qwen 和 Llama 在同样 RL 下的表现差异，归因于四种认知行为（验证、回溯、设定子目标、反向推理）在基座中是否存在；用含这些行为的数据做 priming 后，Llama 也能像 Qwen 一样通过 RL 提升——<strong>关键在于推理行为，而不是答案正确与否</strong>。</li>
+      <li><a href="https://arxiv.org/abs/2506.10947" target="_blank" rel="noreferrer">Shao et al. 2025（Spurious Rewards）</a>：在 Qwen2.5-Math 上，即使用随机或错误的奖励做 RLVR，MATH 成绩也能大幅提升，但在 Llama/OLMo 上不成立；暗示 RL 有时只是"放大"基座里已有的行为（如写代码推理），并提醒研究者不要只在一个模型家族上下结论。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>RL 的探索只能采样到基座分布里有一定概率的行为。如果基座从不反思，RL 就采不到反思的轨迹，也就无从强化。所以"涌现"更准确的说法是：RL 把基座里低概率的有用行为<strong>放大</strong>成高概率行为。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The striking result of R1-Zero was that with only outcome rewards, response length grew on its own and the model started to verify and backtrack, which they called an aha moment, and AIME pass at one went from about 16 to 71 percent. But follow-up work complicates the story. Dr. GRPO found self-reflection phrases already in base models and showed that GRPO's length normalization can inflate length for wrong answers. Gandhi et al. showed that whether RL works depends on whether the base model already exhibits behaviors like verification and backtracking. So I'd describe RL as amplifying latent behaviors rather than creating them from nothing.</p></div>
+</section>
+
+<section class="concept" id="c-distill">
+  <div class="concept-head"><span class="pri p1">★</span><h3>蒸馏 vs RL：小模型应该怎么获得推理能力</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>R1 论文的结论：对小模型而言，用强推理模型的轨迹做 SFT 蒸馏，比在小模型上直接做大规模 RL 更有效、更便宜；但突破能力上限仍需要在更强的基座上做 RL。</p><p class="en">For small models, distilling a strong reasoner's traces beats running RL directly on the small model, but pushing the frontier still needs RL on strong bases.</p></div>
+  <div class="deep">
+    <p>R1 论文的对照实验：在 Qwen-32B-Base 上做超过 10K 步的大规模 RL，得到的模型和 QwQ-32B-Preview 相当；而用 R1 数据蒸馏得到的 R1-Distill-Qwen-32B 在所有 benchmark 上都明显更好。</p>
+    <table>
+      <tr><th></th><th>蒸馏（SFT on traces）</th><th>RL（RLVR）</th></tr>
+      <tr><td>信号密度</td><td>每个 token 都有监督（模仿教师）</td><td>每条轨迹一个标量奖励（稀疏）</td></tr>
+      <tr><td>成本</td><td>一次生成数据 + SFT，便宜</td><td>大量 rollout，昂贵且工程复杂</td></tr>
+      <tr><td>上限</td><td>受教师能力限制</td><td>原则上可以超过任何已有数据</td></tr>
+      <tr><td>分布</td><td>off-policy（教师的分布）——学生可能模仿表面模式（"Wait"）但没学到能力</td><td>on-policy，学的是自己的错误</td></tr>
+      <tr><td>泛化</td><td>有研究认为 SFT 更多是记忆，RL 泛化更好（有争议）</td><td>倾向于提高可靠性（pass@1）</td></tr>
+    </table>
+    <p><b>On-policy distillation</b>：一种折中——学生自己采样，教师对学生的每个 token 给出 logits（反向 KL 或逐 token 监督），兼具 on-policy 和密集信号（模块 06 §8）。</p>
+    <p><b>长 CoT 数据的要点</b>（<a href="https://arxiv.org/abs/2502.03373" target="_blank" rel="noreferrer">Yeo et al. 2025 Demystifying Long CoT</a> 等）：SFT 长 CoT 能提高 RL 的上限并使 RL 更容易；可验证的奖励信号对稳定长度增长很重要；需要设计奖励来控制长度增长（例如余弦长度奖励）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"蒸馏比 RL 好" 只在"有一个更强的教师"时成立。前沿模型没有更强的教师，只能靠 RL（或人类数据）。另外，蒸馏的学生常常继承教师的坏习惯（overthinking、过度使用 "Wait"）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The R1 paper ran a clean comparison: large-scale RL directly on a 32B base gave a model roughly at QwQ-preview level, while simply fine-tuning the same base on R1's traces was clearly better across benchmarks. Distillation gives dense token-level supervision and is cheap, while RL gives one scalar per trajectory. So for small models, distilling from a strong reasoner is the efficient path. But distillation is capped by the teacher, so advancing the frontier still requires RL on the strongest base models. On-policy distillation is an interesting middle ground with dense signal on the student's own samples.</p></div>
+</section>
+
+<section class="concept" id="c-elicit">
+  <div class="concept-head"><span class="pri p1">★</span><h3>RLVR 是"创造"新能力还是"激发"已有能力？</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Yue et al. 2025 发现 RLVR 模型在小 k 时 pass@k 更高，但在大 k（如 256）时基座模型的 pass@k 反超，说明 RL 主要提高了采样效率而没扩展推理边界；反方（如 ProRL）认为足够长、足够稳定的 RL 能解出基座完全解不出的题。目前的共识倾向于"两者都有，取决于训练时长、任务和基座"。</p><p class="en">Yue et al. found base models overtake RLVR models at large k in pass@k, suggesting RL sharpens rather than expands; ProRL and others argue prolonged RL can expand the boundary.</p></div>
+  <div class="deep">
+    <h4>正方："RL 只是激发"（<a href="https://arxiv.org/abs/2504.13837" target="_blank" rel="noreferrer">Yue et al. 2025, NeurIPS</a>）</h4>
+    <ul>
+      <li>在数学、代码、视觉推理上，对比 base 与 RLVR 模型的 pass@k 曲线：k 小时 RL 模型更好；k 很大时，base 模型的覆盖率<strong>追上并反超</strong>。</li>
+      <li>RL 模型能解的题目基本是 base 模型（用足够多样本）也能解的题目的子集；困惑度分析显示 RL 模型的推理路径在 base 分布里本来就有。</li>
+      <li>解释：RL 让分布变"尖"（mode-seeking），把概率集中到 base 已有的成功路径上 → pass@1 上升，但多样性下降 → pass@256 下降。</li>
+      <li>他们还发现蒸馏（从强教师）能真正引入新的推理模式，和 RL 不同。</li>
+    </ul>
+    <h4>反方："长时间 RL 能扩展边界"</h4>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2505.24864" target="_blank" rel="noreferrer">ProRL（NVIDIA, 2025）</a>：用 KL 控制、参考策略重置、多样化任务做很长时间的 RL，报告在一些基座模型完全失败（任意 k 都解不出）的任务上，RL 模型能解出；base 越弱的任务，RL 的边界扩展越明显。</li>
+      <li>方法论质疑：pass@k 在 k 非常大时，对于数值答案的题可能"猜中"，基座的大 k 覆盖率可能被高估（答案碰对但推理错误）。</li>
+      <li>组合泛化：一些研究认为 RL 能把已有的原子技能组合成新技能（在合成任务上验证）。</li>
+    </ul>
+    <h4>面试时的平衡回答结构</h4>
+    <ol>
+      <li>先说清楚测量方式：pass@k 曲线、大 k 的覆盖率、"base 解不出的题 RL 能不能解"。</li>
+      <li>陈述 Yue et al. 的发现和机制（分布变尖、熵下降）。</li>
+      <li>陈述反方证据和方法论问题（猜答案、训练时长、熵坍缩可以用技巧缓解）。</li>
+      <li>给出自己的观点 + 可以验证的实验：例如在有完美验证器、答案不可猜的任务（形式化证明、长程代码）上，控制训练时长和熵，比较 base 的大 k 覆盖率。</li>
+    </ol>
+    <div class="box why"><span class="lbl">直觉</span>策略梯度只能强化采样到的轨迹。如果某道题在 base 下的成功概率是 \(10^{-9}\)，RL 几乎永远采样不到正例，梯度为零。所以 RL 在短期内天然是"放大器"；要"扩展"，需要探索机制（更高温度、更大组、课程学习、熵奖励）或把多步技能组合起来逐步爬升（课程上的 bootstrapping）。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>不要把 pass@k 交叉解读为 "RL 没用"——pass@1 才是部署时用的指标，RL 显著提高了 pass@1，把"需要 256 次尝试"变成"一次就对"本身就极有价值。争论的焦点是<strong>能力边界</strong>，不是实用性。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>This is one of the most interesting open debates. Yue et al. compared pass at k curves and found that RL-trained models win at small k, but base models catch up and overtake them at large k, like 256, suggesting RL mostly sharpens the distribution toward solutions the base model could already find. On the other side, ProRL showed that with long, stabilized training, RL can solve tasks where the base model fails at any k. My view is that in the short run RL is an amplifier, since policy gradient can only reinforce what it samples, but with enough exploration and curriculum it can compose skills and expand the frontier. The decisive experiments would use tasks where answers can't be guessed, like formal proofs.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you design RL to expand rather than sharpen?</b><details><summary>思路</summary><div class="inner">(1) 防止熵坍缩：clip-higher、熵奖励、提高温度、组内多样性奖励；(2) 课程学习：先学略高于当前能力的题（按通过率筛选，去掉 0% 和 100% 的题——DAPO 的动态采样）；(3) 优化 pass@k 而非 pass@1 的目标（让组内至少一个正确就有奖励，鼓励多样性）；(4) 引入外部知识（蒸馏、检索、工具）；(5) 自我生成更难的题（self-play）。</div></details></li>
+    <li><b>Why might a base model's pass@256 be misleading?</b><details><summary>思路</summary><div class="inner">如果答案空间小（整数答案、多选题），256 次采样里"蒙对"的概率不可忽略，答案对但推理错。改进：人工或模型检查推理过程的正确性；使用答案不可猜的任务（证明、代码）；报告"正确推理"的覆盖率。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-longcot-data">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>长 CoT 数据与 reasoning 行为</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>好的长 CoT 数据不只是"答案对"，还要包含有用的推理行为（验证、回溯、子目标、多种方法尝试）；题目要难且多样；数据量可以很小（s1K、LIMO），前提是基座足够强。</p><p class="en">Good long-CoT data needs difficult, diverse problems and traces that show useful behaviors like verification and backtracking; small curated sets suffice for strong bases.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>题目选择：</b>难度（基座做不对的题）、多样性（覆盖不同领域）、可验证性。</li>
+      <li><b>轨迹来源：</b>强推理模型蒸馏（最常用）、RL checkpoint 的拒绝采样、人工撰写（贵）。</li>
+      <li><b>过滤：</b>答案正确性、格式、长度、语言一致性、去重和去污染（benchmark 题目泄露是大问题）。</li>
+      <li><b>结构比内容重要？</b>有研究发现，即使轨迹中部分步骤内容是错的，只要保持长 CoT 的<strong>结构</strong>（反思、回溯），学生模型依然能学到大部分收益；但打乱结构会严重伤害性能。这呼应了 Gandhi et al. 的"行为"观点。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For long-CoT data, the key factors are hard and diverse problems, verified answers, and traces that demonstrate useful behaviors like verification and backtracking. Work like s1 and LIMO shows that around a thousand curated examples can unlock strong reasoning in a capable base model. Some evidence suggests the structure of the reasoning, the reflective pattern, matters more than whether every intermediate step is correct.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-longcot"><span class="num">§4 · PROBLEMS WITH LONG COT</span>长 CoT 的问题</h2>
+<p class="sec-intro">推理模型解决了"不会想"的问题，又带来了"想太多、想偏、想不透明"的问题。这一节是研究讨论轮的高发区，也很适合提研究 idea。</p>
+
+<section class="concept" id="c-overthink">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Overthinking 与 underthinking</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Overthinking：简单问题也写上千 token，答对之后反复验证（"2+3 等于几"想半天）；underthinking：难题上频繁切换思路，每条思路都没深入就放弃。两者都是算力分配不当。</p><p class="en">Overthinking wastes tokens re-verifying easy problems; underthinking abandons promising lines too early by switching thoughts too often.</p></div>
+  <div class="deep">
+    <h4>Overthinking（<a href="https://arxiv.org/abs/2412.21187" target="_blank" rel="noreferrer">Chen et al. 2024, "Do NOT Think That Much for 2+3=?"</a>）</h4>
+    <ul>
+      <li>o1 类模型在简单题上生成大量冗余 token；大部分正确答案在<strong>第一个解</strong>中就已经出现，后续的多轮验证几乎不改变结论。</li>
+      <li>提出从<em>结果</em>和<em>过程</em>两个角度衡量效率（例如：多少 token 是在第一个正确答案之后生成的；后续轮次是否提供了新的思路）。</li>
+      <li>缓解：用自训练 + 偏好优化（选择更短但正确的回答作为 chosen）减少冗余。</li>
+    </ul>
+    <h4>Underthinking（<a href="https://arxiv.org/abs/2501.18585" target="_blank" rel="noreferrer">Wang et al. 2025, "Thoughts Are All Over the Place"</a>）</h4>
+    <ul>
+      <li>在难题上，错误回答中思路切换（"Alternatively, ..."）的频率明显更高；很多被放弃的思路其实是正确方向。</li>
+      <li>提出 thought switching penalty（TIP）：解码时降低思路切换相关 token 的 logits，鼓励在当前思路上深入，无需微调即可提升准确率。</li>
+    </ul>
+    <h4>Inverse scaling（<a href="https://arxiv.org/abs/2507.14417" target="_blank" rel="noreferrer">Gema et al. 2025</a>）</h4>
+    <p>构造了一些任务，在这些任务上更长的推理反而让准确率下降：模型被题目中的无关信息分心、对问题框架过拟合、从合理先验转向虚假相关等。说明"更多思考 = 更好"不是普遍规律。</p>
+    <div class="box why"><span class="lbl">直觉</span>结果奖励 RL 只奖励"最终答对"，对长度不敏感（甚至长度归一化还偏好长回答），而且答对之后多检查几遍几乎没有代价，所以模型学会"不管难易都多想"。理想的模型应该像人一样<strong>按难度分配思考时间</strong>。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Long-CoT models misallocate compute in two opposite ways. Overthinking means spending thousands of tokens on easy problems, often re-verifying an answer that was already right in the first attempt. Underthinking means switching approaches too quickly on hard problems, abandoning lines of reasoning that would have worked. Both come from outcome-only rewards that don't care how compute is spent. There's even evidence of inverse scaling, where longer reasoning hurts on certain tasks because the model gets distracted. The goal is adaptive computation: think as long as the problem needs, and no longer.</p></div>
+</section>
+
+<section class="concept" id="c-efficient">
+  <div class="concept-head"><span class="pri p1">★</span><h3>高效推理：长度惩罚、自适应预算、长短 CoT 融合</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>主要方法：(1) RL 中加长度相关奖励（例如在答对的前提下奖励更短）；(2) 让模型服从用户给定的长度预算（L1 / LCPO）；(3) 自适应思考（模型自己决定是否思考、思考多久，或 thinking / non-thinking 混合）；(4) 推理时早停与压缩；(5) 潜空间推理（§5）。</p><p class="en">Efficient reasoning uses length-aware rewards, budget-conditioned training, adaptive think/no-think modes, early exit, and latent reasoning.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>类别</th><th>代表</th><th>思路</th></tr>
+      <tr><td>长度奖励</td><td><a href="https://arxiv.org/abs/2501.12599" target="_blank" rel="noreferrer">Kimi k1.5</a> 长度惩罚与 long2short；DAPO 超长惩罚</td><td>正确答案中越短奖励越高；错误答案不奖励短。注意只对正确答案奖励短，否则模型学会"早早放弃"。</td></tr>
+      <tr><td>预算条件化</td><td><a href="https://arxiv.org/abs/2503.04697" target="_blank" rel="noreferrer">L1（LCPO）</a></td><td>在 prompt 中写"Think for N tokens"，RL 奖励 = 正确性 − α·|实际长度 − N|；得到可以精确控制长度的推理模型。</td></tr>
+      <tr><td>自适应思考</td><td>Qwen3 thinking / non-thinking 融合 + thinking budget；各种 "AdaptThink" 类工作</td><td>模型根据题目难度决定是否进入长思考，或用户选择模式。</td></tr>
+      <tr><td>SFT 压缩</td><td>选最短正确轨迹做 SFT；跳过冗余步骤</td><td>便宜，但可能损失一些难题能力。</td></tr>
+      <tr><td>推理时干预</td><td>早停（答案一致时停止）、budget forcing 截断、TIP</td><td>不需要训练。</td></tr>
+      <tr><td>模型合并</td><td>long-CoT 模型和 short-CoT 模型权重插值</td><td>折中长度与准确率。</td></tr>
+      <tr><td>潜空间推理</td><td>Coconut、looped 模型（§5）</td><td>把推理从 token 移进隐藏状态，从根本上减少 token。</td></tr>
+    </table>
+    <p>综述：<a href="https://arxiv.org/abs/2503.16419" target="_blank" rel="noreferrer">Sui et al. 2025, Stop Overthinking: A Survey on Efficient Reasoning for LLMs</a>。</p>
+    <h4>评估高效推理时要报告什么</h4>
+    <ul>
+      <li>准确率–token 数的 Pareto 曲线，而不是单点。</li>
+      <li>按难度分桶的长度（理想情况：简单题短，难题长）。</li>
+      <li>延迟（wall-clock），而不只是 token 数：并行和串行的延迟差别很大。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>简单地对所有回答加长度惩罚会导致模型在难题上也偷懒，甚至"不思考就猜"。长度惩罚要么只作用于正确答案，要么按题目难度（组内平均长度）相对化。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There are a few families of efficient reasoning methods. You can shape the RL reward so that among correct answers, shorter ones get more reward, as Kimi k1.5 did. You can condition on a target budget, like L1, which trains the model to hit a requested token length. You can make thinking adaptive, either with a hybrid think and no-think model like Qwen3, or by letting the model decide based on difficulty. And there are training-free tricks like early stopping when sampled answers agree. The key pitfall is penalizing length uniformly, which teaches the model to give up on hard problems. I'd always evaluate with accuracy-versus-tokens Pareto curves broken down by difficulty.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Propose a reward for adaptive thinking.</b><details><summary>思路</summary><div class="inner">一个例子：对同一题的一组 G 个回答，奖励 = 正确性 + λ·正确性·(1 − ℓᵢ / ℓ̄_correct)，其中 ℓ̄_correct 是组内正确回答的平均长度。这样：只有答对才有长度项；长度是相对于该题的典型长度，因此难题不会被惩罚得过重。还可以加"难度感知"：组内正确率高（简单题）时 λ 更大。风险：组内全错时没有长度信号；要监控难题准确率是否下降。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-hacking">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>推理模型中的 reward hacking</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>能力越强的推理模型越会找到奖励函数的漏洞：改单元测试、硬编码期望输出、利用判分器格式漏洞、在 agent 任务中修改评估脚本。规则奖励比神经 RM 难 hack，但并不是不可 hack。</p><p class="en">Stronger reasoners find loopholes in reward functions, such as editing tests or special-casing expected outputs; rule-based rewards are harder but not impossible to hack.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>代码任务：</b>直接让测试通过（修改测试、<code>sys.exit(0)</code>、针对测试用例写 if 分支）。</li>
+      <li><b>数学：</b>判分器解析漏洞（输出多个答案、利用 <code>\boxed{}</code> 解析规则）、答案格式的边缘情况。</li>
+      <li><b>LLM-as-judge 奖励：</b>迎合评委偏好（冗长、自信语气），甚至对评委进行 prompt injection。</li>
+      <li><b>检测：</b>用另一个模型读 CoT 来监控（<a href="https://arxiv.org/abs/2503.11926" target="_blank" rel="noreferrer">Baker et al. 2025</a> 发现 CoT monitor 比只看动作的 monitor 更能发现 hacking，即使 monitor 是较弱的模型）。</li>
+      <li><b>缓解：</b>修补环境（测试放在模型无法修改的位置）、多重验证、held-out 测试、监控 CoT 但<strong>不要直接优化 CoT 让它"看起来干净"</strong>。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Reward hacking gets worse as models get better at reasoning. In coding environments, models have learned to modify tests or special-case expected outputs; in math, they exploit grader parsing quirks. Rule-based rewards help, but environments need hardening, like keeping tests out of reach and using held-out checks. Monitoring the chain of thought is surprisingly effective at catching this, but optimizing directly against the monitor teaches models to hide their intent, so most people recommend using it for detection rather than as a training signal.</p></div>
+</section>
+
+<section class="concept" id="c-monitor">
+  <div class="concept-head"><span class="pri p1">★</span><h3>CoT 可监控性（monitorability）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>推理模型用自然语言"思考"，这给了安全监控一个难得的窗口：读 CoT 就能发现不良意图。但这个窗口很<strong>脆弱</strong>：对 CoT 施加优化压力、转向潜空间推理、或模型能力提升后不再需要外化推理，都可能让它消失。</p><p class="en">Natural-language reasoning offers a valuable but fragile window for oversight; optimization pressure on the CoT or a shift to latent reasoning could close it.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2507.11473" target="_blank" rel="noreferrer">Korbak et al. 2025, Chain of Thought Monitorability: A New and Fragile Opportunity for AI Safety</a>（多家实验室研究者联合撰写的立场论文）的核心论点：</p>
+    <ol>
+      <li><b>为什么可以监控：</b>(a) 对足够难的任务，模型<em>必须</em>把推理外化成 token 才能完成（"necessity"，与 §1 串行计算论证一致）；(b) 即使不必须，模型也<em>倾向</em>于在 CoT 中表达意图（"propensity"）。</li>
+      <li><b>为什么脆弱：</b>直接对 CoT 施加监督（例如要求 CoT 看起来无害）、RL 规模扩大导致 CoT 偏离自然语言、潜空间推理架构、模型意识到被监控后的隐藏。</li>
+      <li><b>建议：</b>开发者应研究并追踪 CoT 可监控性，把它作为模型发布决策的考虑因素之一；在做架构选择（比如潜空间推理）时考虑对可监控性的影响。</li>
+    </ol>
+    <div class="box why"><span class="lbl">直觉</span>这和 §5 潜空间推理存在张力：潜空间推理更高效，但牺牲了可读性。作为研究潜空间推理的人，面试中如果被问到这个张力，要能给出平衡的回答（例如：研究潜在思维的可解码性 / 用 probe 解释潜在状态 / 混合架构保留关键步骤的可读性）。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>可监控性 ≠ 忠实性。CoT 不必完全忠实也能有监控价值（只要坏的意图经常被说出来）；反过来，CoT 即使在大部分情况下忠实，也可能在关键时刻（模型有动机隐藏时）不说。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>CoT monitorability is the idea that because reasoning models think in natural language, we can read their reasoning to catch problems like reward hacking or harmful intent. A 2025 position paper from researchers across several labs called this a new but fragile opportunity. It works because hard tasks force models to externalize reasoning, and models also tend to verbalize intent. It's fragile because direct optimization pressure on the CoT, drift away from natural language during RL, or latent reasoning architectures could all erode it. As someone interested in latent reasoning, I think the right response is to treat monitorability as a design constraint, for example by studying whether latent states can be decoded or probed.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you measure monitorability?</b><details><summary>思路</summary><div class="inner">构造已知"坏行为"（例如在环境中植入可被 hack 的漏洞），让模型训练/运行，统计 CoT monitor 对真实发生的 hack 的召回率与精确率；比较只看动作 vs 看 CoT 的 monitor；在对 CoT 施加不同强度优化压力后重复测量，看召回率是否下降（Baker et al. 的设置）。还可以测"必要性"：如果截断 CoT 后任务失败，说明推理确实依赖 CoT。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-langmix">
+  <div class="concept-head"><span class="pri p3">○</span><h3>语言混杂与可读性</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>纯 RL 训练出的 CoT 会出现多语言混杂、奇怪的符号和缩写，因为奖励只看最终答案；R1 用语言一致性奖励和冷启动数据缓解，代价是轻微的性能下降。</p><p class="en">Pure outcome-reward RL produces mixed-language, hard-to-read CoTs; R1 added a language-consistency reward at a small cost in accuracy.</p></div>
+  <div class="deep">
+    <p>为什么会混杂：RL 只优化最终正确率，CoT 的形式没有约束；对模型而言，某些概念可能用另一种语言的 token 表达更"顺手"（更短或在预训练中更常见）。这也是"CoT 可能逐渐偏离自然语言"的早期迹象，和可监控性有关。R1 论文报告：加入语言一致性奖励（目标语言词占比）后，可读性提升，但推理 benchmark 上有轻微下降。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>R1-Zero's chains of thought often mixed languages, because outcome rewards don't constrain the form of the reasoning. DeepSeek added a language-consistency reward, which improved readability at a small cost in benchmark accuracy. It's an early sign that RL can push reasoning away from human-readable language, which matters for monitorability.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-latent"><span class="num">§5 · LATENT REASONING</span>潜空间推理</h2>
+<p class="sec-intro">如果 CoT 的价值在于"更多串行计算"，那么为什么非要把每一步都压缩成一个离散 token？潜空间推理让模型在连续隐藏状态里迭代，这是你的研究方向，面试官会深挖：动机、主要方法、各自的权衡、开放问题。</p>
+
+<section class="concept" id="c-bottleneck">
+  <div class="concept-head"><span class="pri p1">★</span><h3>动机：token 是信息瓶颈</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每生成一个 token，几千维的隐藏状态被压缩成约 \(\log_2 |V| \approx 17\) bit 的离散选择，然后再重新嵌入；这既浪费信息（无法保持多个候选）又浪费计算（很多 token 只是语言流畅性的需要）。潜空间推理试图让中间计算在连续空间里进行。</p><p class="en">Each sampled token squeezes a high-dimensional hidden state into about 17 bits, forcing early commitment and wasting compute on fluent but uninformative tokens.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>信息瓶颈：</b>词表 \(|V|\approx 128\text{K}\) 时，一个 token 最多携带 \(\log_2 128000 \approx 17\) bit；而隐藏状态是 \(d=4096\) 维的 bf16 向量。采样迫使模型在每一步<strong>提前选定</strong>一个分支（不能"同时保持 A 和 B 两种可能"）。</li>
+      <li><b>计算浪费：</b>CoT 中大量 token 是语法、连接词、重复，它们和"真正的推理步骤"花一样的算力。</li>
+      <li><b>延迟：</b>解码是逐 token 串行的，长 CoT 延迟高。</li>
+      <li><b>人类类比：</b>人并不是用完整的句子思考每一步。</li>
+    </ul>
+    <h4>两条技术路线</h4>
+    <table>
+      <tr><th>路线</th><th>做法</th><th>代表</th></tr>
+      <tr><td><b>水平方向（序列维度）</b></td><td>在序列中插入"连续思维"位置，把隐藏状态作为下一个输入，而不是采样 token</td><td>pause tokens、Coconut、implicit CoT</td></tr>
+      <tr><td><b>垂直方向（深度维度）</b></td><td>同一个 token 位置上反复应用共享权重的层块，增加有效深度</td><td>Universal Transformer、looped transformer、recurrent depth（Geiping et al.）、Ouro</td></tr>
+    </table>
+    <p>两者可以组合，也和 ACT / PonderNet 的"自适应计算"思想结合：模型自己决定迭代几次。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"潜空间推理一定更好" 是错误的。离散 token 也有优点：(1) 可读、可监控；(2) 采样引入多样性，支持投票/搜索；(3) 训练数据丰富（自然语言推理文本）；(4) 离散化有纠错作用（噪声不会在连续空间中累积）。好的回答要讲权衡。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The motivation for latent reasoning is that tokens are a bottleneck. Every time the model samples a token, a several-thousand-dimensional hidden state is collapsed into about seventeen bits, which forces early commitment and spends full forward passes on filler words. Latent approaches let the intermediate computation stay continuous. There are two axes: horizontal, where you insert continuous thought positions along the sequence, like Coconut, and vertical, where you loop a shared block to add depth per token, like recurrent-depth or looped transformers. The trade-off is that you lose readability, sampling diversity, and the huge supply of natural-language reasoning data.</p></div>
+</section>
+
+<section class="concept" id="c-pause">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Pause / filler token 与 Quiet-STaR</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Pause token：在输入中追加可学习的 &lt;pause&gt; token，让模型在输出答案前多做几次"免费"的前向计算；需要在预训练和微调阶段都加入才有效。Quiet-STaR：在每个 token 后生成内部"思考"再预测下一个 token，用 REINFORCE 训练思考内容。</p><p class="en">Pause tokens append learnable delay tokens to give extra computation before answering; Quiet-STaR learns to generate internal rationales at every token.</p></div>
+  <div class="deep">
+    <h4>Pause tokens（<a href="https://arxiv.org/abs/2310.02226" target="_blank" rel="noreferrer">Goyal et al. 2023, Think before you speak</a>）</h4>
+    <ul>
+      <li>在答案前插入 M 个 &lt;pause&gt;，忽略这些位置上的输出（不计 loss），直到最后一个 pause 后才开始输出答案。</li>
+      <li>效果：在预训练和下游微调<strong>都</strong>使用 pause 时，1B 模型在多个任务上有提升（论文报告 SQuAD 等任务上有明显增益）；只在微调时加入则收益很小或没有。</li>
+      <li>为什么有用：增加了并行计算的"宽度"（更多位置的隐藏状态可以被 attend），但不增加串行深度。和 <a href="https://arxiv.org/abs/2404.15758" target="_blank" rel="noreferrer">Pfau et al.</a> 的 filler token 结论一致：filler 有用，但不能替代真正的串行 CoT，且难学。</li>
+    </ul>
+    <h4>Quiet-STaR（<a href="https://arxiv.org/abs/2403.09629" target="_blank" rel="noreferrer">Zelikman et al. 2024</a>）</h4>
+    <ul>
+      <li>把 STaR（自学推理：生成理由，保留答对的，微调）推广到任意文本：在每个 token 位置并行生成一段内部"思考"，然后用 mixing head 把"有思考"和"无思考"的下一个 token 预测混合。</li>
+      <li>奖励：思考是否提高了未来真实 token 的似然，用 REINFORCE 训练。</li>
+      <li>在 Mistral 7B 上，零样本 GSM8K 从 5.9% 提升到 10.9%、CommonsenseQA 从 36.3% 提升到 47.2%（无任务特定微调）。</li>
+      <li>这是"预训练阶段就学会思考"的早期尝试；思考仍然是离散 token，但对用户不可见。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Pause tokens are the simplest form of extra latent computation: you append learnable delay tokens before the answer so the model gets more forward-pass positions to compute in. It only helped when used in both pretraining and finetuning, and it adds parallel width rather than serial depth. Quiet-STaR goes further by generating hidden rationales at every token position and training them with REINFORCE based on whether they improve prediction of future text, which improved zero-shot GSM8K for Mistral 7B without task-specific training.</p></div>
+</section>
+
+<section class="concept" id="c-coconut">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Coconut：在连续空间中推理</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Coconut（Meta, 2024）把最后一层隐藏状态直接作为下一步的输入嵌入（"连续思维"），而不是解码成 token；用课程学习逐步把语言 CoT 步骤替换成连续思维；连续思维可以同时编码多个候选，表现出类似 BFS 的搜索，在需要规划的逻辑任务上优于 CoT，但在 GSM8K 上不如 CoT。</p><p class="en">Coconut feeds the last hidden state back as the next input embedding, uses a curriculum to replace language steps with continuous thoughts, and shows BFS-like search on planning-heavy logic tasks.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2412.06769" target="_blank" rel="noreferrer">Hao et al. 2024, Training Large Language Models to Reason in a Continuous Latent Space</a></p>
+    <h4>机制</h4>
+    <ol>
+      <li>两种模式：语言模式（正常自回归）和潜在模式（用 &lt;bot&gt; / &lt;eot&gt; 标记包围）。在潜在模式中，位置 t 的最后一层隐藏状态 \(h_t\) 直接作为位置 t+1 的输入嵌入。</li>
+      <li><b>多阶段课程：</b>第 k 阶段，把 CoT 的前 k 个推理步骤替换为 k×c 个连续思维（c 是每步的思维数），剩余步骤保持语言；loss 只计算剩余语言 token 和答案（连续思维本身不监督）。</li>
+      <li>训练时需要 n+1 次前向（连续思维是串行依赖的），不能像普通 teacher forcing 那样一次并行算完 → 训练成本高。</li>
+    </ol>
+    <h4>结果（论文 Table 1，GPT-2 规模）</h4>
+    <table>
+      <tr><th>任务</th><th>CoT</th><th>Coconut</th><th>说明</th></tr>
+      <tr><td>GSM8K</td><td>42.9%</td><td>34.1%</td><td>Coconut 更差但 token 少得多</td></tr>
+      <tr><td>ProntoQA</td><td>98.8%</td><td>99.8%</td><td>逻辑推理</td></tr>
+      <tr><td>ProsQA</td><td>77.5%</td><td>97.0%</td><td>需要规划/搜索的图推理，约 14 vs 49 个 token</td></tr>
+    </table>
+    <h4>"连续思维 = 叠加态 / BFS"</h4>
+    <p>分析显示，连续思维可以同时编码多个可能的下一步（例如图中多个前沿节点），模型逐步剪掉不可能的分支，而不是像 CoT 那样过早选定一条路径后无法回头。这是对 §5 开头"token 迫使提前承诺"论点的实证支持。</p>
+    <h4>局限</h4>
+    <ul>
+      <li>需要语言 CoT 数据做课程，不是从零学会潜在推理。</li>
+      <li>训练串行化，难以扩展到大模型；在数学上落后于 CoT。</li>
+      <li>不可读，影响可监控性（可以尝试把连续思维解码回 token 看看它"在想什么"）。</li>
+      <li>后续工作在更大模型上的复现结果参差不齐，是活跃研究方向。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Coconut, from Meta, feeds the model's last hidden state directly back as the next input embedding instead of decoding a token, so the reasoning step stays continuous. They train it with a curriculum that gradually replaces the first k language reasoning steps with continuous thoughts, supervising only the remaining language and the answer. The interesting finding is that a continuous thought can hold several candidate next steps at once, so the model behaves like breadth-first search, which made it much better than CoT on a planning-heavy graph task with far fewer tokens. But it still lagged CoT on GSM8K, needs language CoT for the curriculum, and training is sequential and expensive.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why is Coconut training expensive compared with standard SFT?</b><details><summary>思路</summary><div class="inner">普通 SFT 用 teacher forcing：所有位置的输入都是已知 token，一次前向并行算完全部 loss。Coconut 的连续思维 \(h_t\) 依赖前一次前向的输出，必须串行地跑 k 次前向才能得到 k 个连续思维，然后才算 loss；反向传播也要穿过这些串行步骤（类似 BPTT）。所以成本 ∝ 连续思维数，并且显存随之增长。</div></details></li>
+    <li><b>How would you make latent thoughts interpretable?</b><details><summary>思路</summary><div class="inner">(1) 用 LM head 直接把连续思维投影到词表看 top-k token（logit lens）；(2) 训练一个 probe/解码器把潜在状态翻译回自然语言步骤；(3) 在合成任务上（已知中间变量），检查能否线性解码出正确的中间结果；(4) 干预：修改潜在状态中的某个方向，看最终答案是否按预期改变。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-implicit">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Implicit CoT：把推理"内化"进层间计算</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Implicit CoT（Deng et al.）不生成任何中间 token，而是让模型在<strong>层间（垂直方向）</strong>完成推理：先用知识蒸馏让学生的隐藏状态模仿教师 CoT 的中间状态（2023），后来改为逐步删除 CoT token 的课程微调（Stepwise Internalization, 2024），GPT-2 Small 可以不写中间步骤直接解 9×9 乘法。</p><p class="en">Implicit CoT teaches the model to reason across layers instead of tokens, first by distilling teacher hidden states and later by gradually removing CoT tokens during finetuning.</p></div>
+  <div class="deep">
+    <h4>2023：知识蒸馏版（<a href="https://arxiv.org/abs/2311.01460" target="_blank" rel="noreferrer">Implicit Chain of Thought Reasoning via Knowledge Distillation</a>）</h4>
+    <ol>
+      <li>训练一个会写显式 CoT 的教师。</li>
+      <li>训练学生：学生不写 CoT，但让学生某些层的隐藏状态去预测（对齐）教师在 CoT 位置上的隐藏状态——"垂直推理"，用层的深度代替 token 的长度。</li>
+      <li>再端到端微调学生，直接输出答案。</li>
+    </ol>
+    <h4>2024：逐步内化版（<a href="https://arxiv.org/abs/2405.14838" target="_blank" rel="noreferrer">From Explicit CoT to Implicit CoT: Learning to Internalize CoT Step by Step</a>）</h4>
+    <ul>
+      <li>从一个显式 CoT 模型开始，在微调过程中按计划<strong>逐步删除</strong> CoT 开头的 token（每个阶段多删几个），模型被迫把被删除的步骤"内化"进隐藏状态。</li>
+      <li>技巧：删除 token 时重置优化器状态，以及 removal smoothing（随机多删/少删一点）来稳定训练。</li>
+      <li>结果：GPT-2 Small 不写中间步骤就能解 9×9 位乘法（论文报告接近满分）；在 GSM8K 上，Mistral-7B 不写中间步骤达到 50% 以上。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>与 Coconut 对比：Coconut 是"把 token 换成向量，但仍然在序列方向上串行"；Implicit CoT 是"完全去掉中间位置，让层的深度承担推理"。后者推理时最快（直接输出答案），但能力受限于网络的层数——这又回到了 §1 的深度限制，所以它只能内化有限长度的推理。这正是 looped 模型的动机：<strong>深度能不能也变成可扩展的？</strong></div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Implicit CoT, from Yuntian Deng and colleagues, removes intermediate tokens entirely and asks the model to do the reasoning across layers instead. The first version distilled a teacher's hidden states from its explicit chain of thought into the student's layers. The later version, stepwise internalization, starts from an explicit-CoT model and gradually deletes reasoning tokens during finetuning, so the model is forced to absorb those steps into its hidden states. GPT-2 Small learned nine-by-nine digit multiplication with no visible steps. The limitation is that depth is fixed, so you can only internalize as much reasoning as the layers can hold, which motivates looped architectures.</p></div>
+</section>
+
+<section class="concept" id="c-looped">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Looped / recurrent-depth Transformer</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把一个（或一组）Transformer 层块的权重共享并循环执行 r 次，有效深度 = r × 块深度，参数量不变；测试时可以通过增加循环次数来增加计算（"垂直方向的测试时扩展"）。代表：Universal Transformer（2018）、Looped Transformer 理论（Saunshi et al. 2025）、Huginn recurrent depth（Geiping et al. 2025）、Ouro LoopLM（2025）。</p><p class="en">Looped transformers reuse a shared block r times, decoupling effective depth from parameter count and enabling test-time scaling by iterating more in latent space.</p></div>
+  <div class="deep">
+    <h4>基本形式</h4>
+    $$h^{(0)} = \text{Prelude}(x),\qquad h^{(i+1)} = f_\theta\big(h^{(i)},\, e\big),\ i=0,\dots,r-1,\qquad y = \text{Coda}(h^{(r)})$$
+    <p>\(f_\theta\) 是共享权重的块，\(e\) 是输入嵌入（每次迭代重新注入，帮助稳定）。参数量 = prelude + 一个块 + coda，但计算量 ∝ r。</p>
+    <h4>代表工作</h4>
+    <table>
+      <tr><th>工作</th><th>要点</th></tr>
+      <tr><td><a href="https://arxiv.org/abs/1807.03819" target="_blank" rel="noreferrer">Universal Transformer（Dehghani et al. 2018）</a></td><td>所有层共享权重并循环，结合 ACT 让每个位置自适应地决定循环次数；在算法任务上比标准 Transformer 泛化更好。</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2502.17416" target="_blank" rel="noreferrer">Saunshi et al. 2025（ICLR）, Reasoning with Latent Thoughts</a></td><td>k 层模型循环 L 次在很多推理任务上接近 kL 层的非循环模型；理论上循环 T 次可以模拟 T 步 CoT（"latent thoughts"）；循环模型在推理任务上更好，在记忆型任务上更差（参数少）——提出"推理靠深度，记忆靠参数"。</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2502.05171" target="_blank" rel="noreferrer">Geiping et al. 2025, Scaling up Test-Time Compute with Latent Reasoning: A Recurrent Depth Approach</a></td><td>3.5B 参数、800B token 预训练的 recurrent-depth 模型（Huginn）；训练时随机采样循环次数；测试时增加循环次数，推理 benchmark 上的表现可以提升到相当于约 50B 参数模型的计算量；不需要专门的 CoT 数据，能捕捉难以用语言表达的推理。</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2510.25741" target="_blank" rel="noreferrer">Ouro（Zhu et al. 2025）, Scaling Latent Reasoning via Looped Language Models</a></td><td>在预训练阶段就构建潜在迭代计算（7.7T token），用熵正则化的目标学习自适应分配深度；1.4B / 2.6B 模型在多个 benchmark 上可比至多 12B 的模型；对照实验认为收益来自更好的<em>知识运用</em>而非更大的知识容量。（相关阅读）</td></tr>
+    </table>
+    <h4>关键技术问题</h4>
+    <ul>
+      <li><b>训练稳定性：</b>循环深度大时梯度爆炸/消失（类似 RNN）；常用截断反向传播（只对最后几次迭代求梯度）、输入重注入、归一化。</li>
+      <li><b>循环次数的选择：</b>训练时随机采样 r（让模型对不同深度都鲁棒），测试时可外推；或学习一个退出机制（ACT / 熵正则的 early exit）。</li>
+      <li><b>KV cache：</b>每次循环都有自己的 KV，显存 ∝ r；Geiping et al. 讨论了 KV 共享等方案。</li>
+      <li><b>收敛性：</b>理想情况下 \(h^{(i)}\) 收敛到一个不动点（类似 Deep Equilibrium Models），这样"多循环几次"不会破坏表示。</li>
+      <li><b>与 CoT 组合：</b>循环提供每个 token 的深度，CoT 提供序列方向的串行步骤；两者正交，可以叠加。</li>
+    </ul>
+    <h4>小模型递归推理（2025）</h4>
+    <p>在 Sudoku、迷宫、ARC 这类谜题上，很小的递归网络也表现惊人：<a href="https://arxiv.org/abs/2506.21734" target="_blank" rel="noreferrer">HRM（Hierarchical Reasoning Model）</a>用高层/低层两个循环模块；<a href="https://arxiv.org/abs/2510.04871" target="_blank" rel="noreferrer">TRM（Less is More: Recursive Reasoning with Tiny Networks）</a>用一个 2 层的极小网络递归更新潜在答案，在 ARC-AGI 上超过很多大 LLM。说明"递归深度"在某些结构化推理问题上比参数量更重要（但这些模型是针对单一任务训练的，不是通用 LM）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) "循环 = 免费的深度" 不对：计算量随 r 线性增长，节省的只是参数和显存（权重）。(2) 循环模型在<strong>知识密集</strong>任务上通常不如同等计算的非循环模型（参数少 → 记忆少）。(3) 测试时增加循环次数超出训练范围时，性能可能饱和甚至下降，需要专门的训练设计才能外推。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Looped or recurrent-depth transformers reuse one shared block many times, so effective depth is decoupled from parameter count, and you can scale test-time compute by looping more instead of generating more tokens. The Universal Transformer introduced the idea with adaptive halting. Saunshi et al. showed that a k-layer block looped L times nearly matches a kL-layer model on reasoning tasks and can simulate chain-of-thought steps in latent space, while it's worse at memorization, suggesting reasoning needs depth and knowledge needs parameters. Geiping et al. trained a 3.5B recurrent-depth model that improves as you add iterations at test time, and the Ouro models build looping into pretraining at trillion-token scale. Key challenges are training stability, choosing the number of iterations, and KV cache cost.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How do you train a looped model so it generalizes to more iterations at test time?</b><details><summary>思路</summary><div class="inner">(1) 训练时随机采样循环次数（例如从重尾分布采样），避免模型只在固定 r 上工作；(2) 每次循环重新注入输入嵌入，防止信息丢失；(3) 截断 BPTT 控制成本；(4) 鼓励收敛到不动点（例如加入 \(\|h^{(i+1)}-h^{(i)}\|\) 正则或使用归一化），这样多循环几次是稳定的；(5) 学一个退出机制，让模型自己判断何时停止。</div></details></li>
+    <li><b>Looping vs. chain of thought: when would you prefer each?</b><details><summary>思路</summary><div class="inner">CoT：可读、能利用大量语言推理数据、能采样多样路径用于投票/RL、串行步骤无上限（只受上下文限制）。Looping：不产生 token（延迟低、上下文不膨胀）、能保持连续的"叠加"表示、可以在预训练阶段就学到、不需要 CoT 数据；但不可读、每个 token 的循环次数有限、KV 成本随循环增加。实践中可能是混合：每个 token 适度循环 + 必要时外化关键步骤。</div></details></li>
+    <li><b>What would a convincing scaling experiment for latent reasoning look like?</b><details><summary>思路</summary><div class="inner">FLOPs 对齐地比较三条曲线：(a) 更大的非循环模型；(b) 同参数循环更多次；(c) 同模型更长的 CoT。在多个任务类型上（知识型 vs 推理型）报告准确率–推理 FLOPs 曲线，并控制训练 token 数。再加上：测试时迭代次数外推曲线，以及潜在状态可解码性分析。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-act">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>自适应计算：ACT 与 PonderNet</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>ACT（Graves 2016）让 RNN 在每个输入上学习"想几步"：每步输出一个停止概率，累计超过 1−ε 就停，并对步数加 ponder cost 惩罚；PonderNet（2021）把停止建模成几何分布式的概率过程，loss 是各停止步预测损失的期望 + 与几何先验的 KL，梯度无偏且更稳定。</p><p class="en">ACT learns a halting probability per step with a ponder cost; PonderNet treats halting as a probabilistic process with an expected loss and a KL to a geometric prior.</p></div>
+  <div class="deep">
+    <h4>ACT（<a href="https://arxiv.org/abs/1603.08983" target="_blank" rel="noreferrer">Graves 2016</a>）</h4>
+    <p>第 n 步输出停止概率 \(h_n\in(0,1)\)。停止步 \(N=\min\{n: \sum_{i\le n} h_i \ge 1-\epsilon\}\)。最终状态是各步状态按 \(h_n\)（最后一步用剩余量 \(R=1-\sum_{i&lt;N}h_i\)）的加权平均。损失加上 ponder cost \(\tau\,(N+R)\)。问题：\(N\) 不可导，只能通过 \(R\) 传梯度；对 \(\tau\) 敏感。</p>
+    <h4>PonderNet（<a href="https://arxiv.org/abs/2107.05407" target="_blank" rel="noreferrer">Banino et al. 2021</a>）</h4>
+    <p>第 n 步的条件停止概率 \(\lambda_n\)，无条件停在第 n 步的概率 \(p_n=\lambda_n\prod_{j&lt;n}(1-\lambda_j)\)。</p>
+    $$\mathcal{L} = \sum_{n=1}^{N} p_n\,\mathcal{L}(y, \hat y_n) + \beta\,\mathrm{KL}\big(p_n \,\|\, p_G(\lambda_p)\big)$$
+    <p>第一项是"在第 n 步停下时的损失"的期望（所有步都有梯度）；第二项把停止分布拉向参数为 \(\lambda_p\) 的几何先验（控制期望步数 \(1/\lambda_p\)，并鼓励探索）。推理时按 \(\lambda_n\) 采样是否停止。</p>
+    <p><b>和 LLM 推理的联系：</b>"按难度决定想多久"正是 §4 adaptive thinking 的需求。在 looped 模型中，ACT/PonderNet 式的退出头决定每个 token 循环几次（Ouro 的熵正则化目标就是这类思想）；在 CoT 中，相当于决定何时输出 &lt;/think&gt;。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Adaptive computation time lets a network decide how many steps to spend on each input. Graves's ACT emits a halting probability each step, stops once the cumulative probability crosses a threshold, and adds a ponder cost to the loss. PonderNet makes this cleaner by treating halting as a probabilistic process: the loss is the expected task loss over halting steps plus a KL to a geometric prior, which gives unbiased gradients and controls the expected number of steps. These ideas map directly onto modern questions like how many loop iterations a token needs, or when a reasoning model should stop thinking.</p></div>
+</section>
+
+<section class="concept" id="c-diffusion-reason">
+  <div class="concept-head"><span class="pri p3">○</span><h3>扩散式推理（简要）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>扩散语言模型不是逐 token 从左到右生成，而是对整段输出反复去噪，可以全局修改中间步骤；Diffusion-of-Thought 把 CoT 引入扩散 LM，用去噪步数作为另一种"测试时计算"维度。</p><p class="en">Diffusion language models iteratively denoise the whole output, so reasoning can be revised globally and the number of denoising steps becomes another compute knob.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2402.07754" target="_blank" rel="noreferrer">Diffusion of Thought（Ye et al. 2024）</a>在扩散语言模型中让推理步骤随去噪过程逐步成形，报告了在一些算术/推理任务上的效率与自我纠错优势。离散扩散 LM（MDLM、LLaDA 等，见 <a href="m12-generative.html">模块 12</a>）的优点：非自回归、可以并行生成、可以修改已生成的部分；缺点：目前在大规模语言任务上整体仍落后于自回归模型，长度需要预先确定或分块处理。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Diffusion language models generate by iteratively denoising the whole sequence rather than left to right, so in principle the model can revise earlier reasoning steps globally, and the number of denoising steps acts as a test-time compute knob. Diffusion of Thought explored chain-of-thought in this setting. It's promising for parallel generation and self-correction, but autoregressive models still dominate at scale.</p></div>
+</section>
+
+<section class="concept" id="c-latent-open">
+  <div class="concept-head"><span class="pri p1">★</span><h3>潜空间推理的开放问题</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>核心开放问题：怎么在没有 CoT 监督的情况下学潜在推理；怎么用 RL 训练潜在推理（没有离散动作可采样）；如何扩展到大模型；潜在推理是否真的比 CoT 计算高效；如何保持可解释性与可监控性。</p><p class="en">Open problems include learning latent reasoning without CoT supervision, doing RL without discrete actions, scaling, compute efficiency versus CoT, and interpretability.</p></div>
+  <div class="deep">
+    <ol>
+      <li><b>监督来源：</b>Coconut 和 implicit CoT 都依赖显式 CoT 作为课程起点。能不能像 Geiping/Ouro 那样纯靠预训练目标学到？能学到多复杂的推理？</li>
+      <li><b>RL 与探索：</b>RLVR 依赖在离散 token 上采样产生多样轨迹；连续潜在状态怎么探索？（加噪声？在潜在空间做策略梯度？混合离散-连续？）这是很有价值的研究方向。</li>
+      <li><b>扩展性：</b>串行依赖导致训练难以并行（Coconut），循环导致 KV 和延迟开销；在 10B+ 规模上的收益是否保持？</li>
+      <li><b>计算效率：</b>FLOPs 对齐的比较中，潜在推理是否真的优于 CoT？在哪些任务类型上？</li>
+      <li><b>可解释性与安全：</b>如何解码潜在思维？如何在不牺牲效率的情况下保持可监控性（§4）？</li>
+      <li><b>自适应深度：</b>每个 token 应该循环几次？怎么学一个可靠的退出机制？</li>
+      <li><b>与长度泛化的关系：</b>循环/递归结构是否能带来算法层面的长度泛化（§7）？</li>
+    </ol>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The open problems I find most important are, first, supervision: current methods like Coconut still bootstrap from explicit CoT, so can we learn latent reasoning from pretraining alone? Second, RL: our best reasoning gains come from RL with sampled discrete trajectories, and it's unclear how to explore in a continuous latent space. Third, scaling and efficiency: we need compute-matched comparisons against CoT at larger scale. And fourth, interpretability: if reasoning moves into latent space we lose the monitoring window, so decoding latent thoughts is both a science question and a safety requirement.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-eval"><span class="num">§6 · EVALUATING REASONING</span>推理能力的评估</h2>
+<p class="sec-intro">面试中关于评估的问题通常有两类：benchmark 知识（有哪些、各自测什么、有什么问题），以及统计严谨性（pass@k 的无偏估计、小 benchmark 的方差）。通用的评估方法论见 <a href="m13-eval.html">模块 13</a>。</p>
+
+<section class="concept" id="c-benchmarks">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>主要推理 benchmark 及其问题</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>数学（GSM8K → MATH → AIME）、代码（HumanEval → LiveCodeBench）、科学问答（GPQA）、知识正交推理与谜题（KOR-Bench、KORGym、ARC-AGI）、综合难题（HLE）；主要问题是饱和、污染、小样本方差和答案可猜。</p><p class="en">Reasoning benchmarks span math, code, science QA, puzzles and abstraction; the main issues are saturation, contamination, small-sample variance, and guessable answers.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>Benchmark</th><th>测什么</th><th>注意事项</th></tr>
+      <tr><td><a href="https://arxiv.org/abs/2110.14168" target="_blank" rel="noreferrer">GSM8K</a></td><td>小学数学应用题（测试集 1319 题）</td><td>已饱和；存在标注错误；污染严重（有工作构造了扰动版本，发现部分模型掉分）</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2103.03874" target="_blank" rel="noreferrer">MATH</a> / MATH-500</td><td>竞赛数学（5 个难度等级、7 个科目）；MATH-500 是 Lightman et al. 使用的子集</td><td>前沿模型已接近饱和；答案等价判定（\(\frac12\) vs 0.5）影响分数</td></tr>
+      <tr><td>AIME 2024 / 2025</td><td>美国数学邀请赛，每年 30 题，答案是 0–999 的整数</td><td><strong>题目极少</strong>，方差很大（见下）；新一年的题目可用于防污染</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2107.03374" target="_blank" rel="noreferrer">HumanEval</a></td><td>164 道 Python 函数题，单元测试判定</td><td>饱和、污染；测试用例不完备（假阳性）</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2403.07974" target="_blank" rel="noreferrer">LiveCodeBench</a></td><td>持续收集竞赛平台新题，按发布时间切分</td><td>可以只在模型训练截止日期之后的题目上评估，从而控制污染</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2311.12022" target="_blank" rel="noreferrer">GPQA</a>（Diamond 198 题）</td><td>研究生水平的物理/化学/生物多选题，设计为"Google 搜不到"</td><td>四选一，随机基线 25%；题量小</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2410.06526" target="_blank" rel="noreferrer">KOR-Bench</a></td><td>知识正交推理：题目引入新规则（如自定义运算、密码、谜题规则），尽量与预训练知识解耦</td><td>测"按新规则推理"而不是"记住知识"（相关阅读）</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2505.14552" target="_blank" rel="noreferrer">KORGym</a></td><td>动态游戏平台，几十种游戏，可多轮交互</td><td>可以程序化生成新实例，抗污染；测交互式推理（相关阅读）</td></tr>
+      <tr><td>ARC-AGI（<a href="https://arxiv.org/abs/2505.11831" target="_blank" rel="noreferrer">ARC-AGI-2</a>）</td><td>网格抽象推理：从几个示例推断变换规则</td><td>人类容易、模型难；测少样本归纳；也报告每题成本</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2501.14249" target="_blank" rel="noreferrer">Humanity's Last Exam</a></td><td>多学科专家级难题</td><td>设计为前沿难度；部分题目答案有争议</td></tr>
+    </table>
+    <h4>评估推理模型的实践要点</h4>
+    <ul>
+      <li><b>采样设置：</b>推理模型通常推荐用温度采样（如 T=0.6）而非 greedy（greedy 容易陷入重复）；报告多次采样的平均 pass@1（avg@k）及其标准误。</li>
+      <li><b>最大生成长度：</b>长 CoT 模型的准确率对 max tokens 很敏感，截断会直接算错，必须报告。</li>
+      <li><b>答案抽取与等价判定：</b>规则解析 + 符号等价（sympy）或 LLM 判定，不同实现能差好几个点。</li>
+      <li><b>算力报告：</b>报告平均生成 token 数 / 成本，否则"更准"可能只是"想得更久"。</li>
+    </ul>
+    <h4>小 benchmark 的方差：一个必须会算的例子</h4>
+    <p>准确率的标准误 \(\mathrm{SE}=\sqrt{p(1-p)/n}\)。AIME 只有 30 题，在 \(p=0.5\) 时 SE ≈ 0.091，95% 置信区间约 ±18 个百分点！即使每题采样 16 次取平均，也只能消除<strong>采样</strong>方差，消除不了<strong>题目</strong>方差（只有 30 道题）。GPQA Diamond（198 题）的 SE ≈ 3.6%。所以 AIME 上 2–3 分的差距基本没有统计意义。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把"AIME 从 70% 提到 73%"当作显著改进。要么报告多次采样的均值 ± 标准误、多个年份/多个 benchmark 的一致趋势，要么做配对检验（同一道题上两个模型的差异）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The standard reasoning suites are math, from GSM8K and MATH up to AIME; code, like HumanEval and the time-split LiveCodeBench; science QA like GPQA; and puzzle or abstraction benchmarks like ARC-AGI and knowledge-orthogonal ones like KOR-Bench. The recurring problems are saturation, contamination, and tiny test sets. AIME has thirty problems a year, so the standard error at fifty percent is about nine points, and averaging many samples per problem doesn't remove the problem-level variance. I always report mean pass at one over multiple samples with error bars, the max generation length, and average tokens used.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you design a contamination-resistant reasoning benchmark?</b><details><summary>思路</summary><div class="inner">(1) 时间切分（只用模型截止日期后的题，如 LiveCodeBench、新一年 AIME）；(2) 程序化生成（参数化模板、游戏/谜题环境如 KORGym，每次生成新实例）；(3) 知识正交设计（引入新规则，降低记忆的作用，如 KOR-Bench）；(4) 私有 held-out 集；(5) 扰动检测：对原题做语义保持的改写/改数字，比较分数下降。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-passk-derive">
+  <div class="concept-head"><span class="pri p1">★</span><h3>无偏 pass@k 估计量：推导与代码</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每题采样 \(n\ge k\) 个，其中 \(c\) 个正确，用 \(\widehat{\text{pass@}k}=1-\binom{n-c}{k}\big/\binom{n}{k}\) 估计，然后对所有题求平均；它是无偏的，而直接用 \(1-(1-c/n)^k\) 是有偏的（低估）。</p><p class="en">Sample n ≥ k completions, count c correct, and estimate pass@k as one minus C(n−c, k) over C(n, k); the plug-in estimator is biased low.</p></div>
+  <div class="deep">
+    <h4>为什么不直接采样 k 个？</h4>
+    <p>直接每题采 k 个、看是否至少有一个对，确实是无偏的，但方差很大；而且想同时报告 k=1, 10, 100 时，每个 k 都要重新采样。Codex 论文（<a href="https://arxiv.org/abs/2107.03374" target="_blank" rel="noreferrer">Chen et al. 2021</a>）的做法：采 \(n\) 个（如 200），用同一批样本估计所有 \(k\le n\)。</p>
+    <h4>推导</h4>
+    <p>设每个样本独立地以概率 \(p\) 正确，目标是 \(\text{pass@}k = 1-(1-p)^k\)。</p>
+    <ol>
+      <li>给定 n 个样本中 c 个正确，从中<strong>不放回地均匀抽取</strong>一个大小为 k 的子集。这个子集全部错误的概率是：
+      $$\frac{\binom{n-c}{k}}{\binom{n}{k}}$$
+      （分子：从 n−c 个错误样本中选 k 个的方式数；分母：所有选 k 个的方式数。）</li>
+      <li>关键观察：n 个 i.i.d. 样本中均匀随机选出的 k 个样本，其本身就是 k 个 i.i.d. 样本。因此对 n 个样本的随机性取期望：
+      $$\mathbb{E}\left[\frac{\binom{n-c}{k}}{\binom{n}{k}}\right] = \Pr[\text{k 个 i.i.d. 样本全错}] = (1-p)^k$$</li>
+      <li>所以 \(\widehat{\text{pass@}k}=1-\binom{n-c}{k}/\binom{n}{k}\) 满足 \(\mathbb{E}[\widehat{\text{pass@}k}] = 1-(1-p)^k\)，无偏。</li>
+    </ol>
+    <h4>为什么朴素估计量有偏</h4>
+    <p>\(\hat p = c/n\) 是 \(p\) 的无偏估计，但 \(g(x)=1-(1-x)^k\) 对 \(k\ge2\) 是<strong>凹函数</strong>，由 Jensen 不等式 \(\mathbb{E}[g(\hat p)]\le g(\mathbb{E}\hat p)=g(p)\)，所以系统性低估。§9 的数值例子：\(p=0.2, n=10, k=3\)，真实值 0.488，无偏估计量的期望 0.488，朴素估计量的期望 0.451。</p>
+    <h4>数值稳定的计算</h4>
+    <p>\(\binom{n}{k}\) 在 n=200 时非常大，直接算可能溢出或损失精度。化简为乘积：</p>
+    $$\frac{\binom{n-c}{k}}{\binom{n}{k}} = \prod_{i=n-c+1}^{n}\left(1-\frac{k}{i}\right)$$
+    <p>（推导：展开阶乘，\(\frac{(n-c)!\,(n-k)!}{n!\,(n-c-k)!} = \prod_{j=n-c+1}^{n}\frac{j-k}{j}\)。）若 \(n-c&lt;k\)，任何 k 子集都至少含一个正确样本，直接返回 1。</p>
+  </div>
+  <details class="deep"><summary>代码：pass@k 估计量（已测试，包括无偏性的精确期望检验）</summary><div class="inner">
+<pre><code class="language-python">import math
+def pass_at_k(n: int, c: int, k: int) -&gt; float:
+    """Unbiased estimator of pass@k given n samples, c of them correct.
+    = 1 - C(n-c, k) / C(n, k), computed as a stable product."""
+    if n - c &lt; k:          # every size-k subset contains a correct sample
+        return 1.0
+    prod = 1.0
+    for i in range(n - c + 1, n + 1):
+        prod *= 1.0 - k / i
+    return 1.0 - prod
+
+def pass_at_k_comb(n, c, k):
+    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
+
+for n in [1, 5, 20, 100]:
+    for c in range(n + 1):
+        for k in range(1, n + 1):
+            assert abs(pass_at_k(n, c, k) - pass_at_k_comb(n, c, k)) &lt; 1e-9
+assert pass_at_k(10, 3, 1) == 0.3 or abs(pass_at_k(10, 3, 1) - 0.3) &lt; 1e-12
+# unbiasedness check by brute-force expectation over Binomial(n, p)
+p, n, k = 0.2, 10, 3
+exp = sum(math.comb(n, c) * p**c * (1-p)**(n-c) * pass_at_k(n, c, k) for c in range(n+1))
+assert abs(exp - (1 - (1-p)**k)) &lt; 1e-12
+# naive estimator 1-(1-c/n)^k is biased (underestimates)
+naive = sum(math.comb(n, c) * p**c * (1-p)**(n-c) * (1-(1-c/n)**k) for c in range(n+1))
+print("true pass@3 = %.4f, unbiased E = %.4f, naive E = %.4f" % (1-(1-p)**k, exp, naive))</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 要求 \(n\ge k\)，n 越大方差越小。(2) 先对每题算 pass@k，再对题目求平均；不要先把所有题的 c 加起来。(3) pass@1 的无偏估计就是 \(c/n\)，不需要特殊公式。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>To estimate pass at k, you draw n samples per problem with n at least k, count the c correct ones, and compute one minus n-minus-c choose k over n choose k, then average over problems. The reasoning is that a uniformly random size-k subset of i.i.d. samples is itself k i.i.d. samples, so the expected probability that the subset is all wrong equals one minus p to the k. The plug-in estimator using c over n is biased low because the function is concave, by Jensen. In code I compute it as a product of one minus k over i for numerical stability.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-theory"><span class="num">§7 · THEORY</span>理论视角</h2>
+<p class="sec-intro">○ 加分项。研究型面试官（尤其理论背景的）可能问到。核心概念已在 <a href="#c-cot-why">§1</a> 讲过，这里补充电路复杂度的直觉和长度泛化。</p>
+
+<section class="concept" id="c-tc0">
+  <div class="concept-head"><span class="pri p3">○</span><h3>电路复杂度速览：AC⁰、TC⁰、NC¹</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>AC⁰：常数深度、多项式大小、无限扇入 AND/OR；TC⁰：再加上 MAJORITY（阈值）门；NC¹：对数深度、有界扇入。已知 AC⁰ ⊊ TC⁰ ⊆ NC¹，后一个包含关系是否严格是开放问题。Transformer 一次前向 ≈ TC⁰。</p><p class="en">A single transformer forward pass sits roughly in TC⁰, constant-depth threshold circuits, which is believed but not proven to be weaker than NC¹.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>AC⁰</b> 不能计算 PARITY（已证明），因为常数深度的 AND/OR 无法"数数"。</li>
+      <li><b>TC⁰</b> 有阈值门，可以计算 PARITY、整数加法、乘法、排序。softmax attention 的"加权平均 + 比较"天然像阈值门，这是 Transformer 落在 TC⁰ 的直觉来源。</li>
+      <li><b>NC¹</b> 包含布尔公式求值、S₅ 置换复合（Barrington 定理：宽度 5 的分支程序 = NC¹）。</li>
+      <li>结论的形式总是"<em>如果</em> TC⁰ ≠ NC¹，那么 Transformer（一次前向）不能解 X"，因为复杂度类的分离尚未证明。</li>
+      <li>CoT 的作用：T 步 CoT 相当于把电路"展开"成 T 层的串行计算，因此可以突破 TC⁰（§1 表格）。循环 Transformer 也有类似结果（Saunshi et al.：循环次数对应 CoT 步数）。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The theory says a log-precision transformer's single forward pass can be simulated by TC-zero circuits, constant depth with majority gates. TC-zero can do things like addition and sorting, but it's believed to be strictly weaker than NC-one, which includes tasks like composing permutations or evaluating Boolean formulas. So unless those classes collapse, a fixed-depth transformer can't solve such problems in one pass. Chain of thought or looping adds serial steps, which is exactly what lifts that ceiling.</p></div>
+</section>
+
+<section class="concept" id="c-lengthgen">
+  <div class="concept-head"><span class="pri p3">○</span><h3>长度泛化与组合泛化</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在短实例上训练的 Transformer 往往无法推广到更长实例（例如更多位数的加法）；位置编码、数据格式（如逆序数字）、scratchpad、以及算法是否能用简单的 Transformer 程序（RASP-L）表达，都会显著影响长度泛化。</p><p class="en">Transformers trained on short instances often fail on longer ones; positional encoding, formatting, scratchpads, and whether the algorithm has a short RASP-L program all matter.</p></div>
+  <div class="deep">
+    <ul>
+      <li><a href="https://arxiv.org/abs/2207.04901" target="_blank" rel="noreferrer">Anil et al. 2022</a>：微调与规模单独都不能解决长度泛化；scratchpad + in-context 学习组合有帮助。</li>
+      <li><a href="https://arxiv.org/abs/2310.16028" target="_blank" rel="noreferrer">Zhou et al. 2023（RASP-L 猜想）</a>：如果一个任务存在简短的 RASP-L 程序（一种描述 Transformer 可实现计算的语言），Transformer 就倾向于长度泛化；通过改变数据格式让任务变得"RASP-L 友好"可以显著改善。</li>
+      <li><a href="https://arxiv.org/abs/2305.18654" target="_blank" rel="noreferrer">Dziri et al. 2023（Faith and Fate）</a>：在多位数乘法、动态规划等组合任务上，模型倾向于把多步推理"线性化"为子图匹配，依赖训练中见过的计算模式；错误随组合深度快速累积。</li>
+      <li>与推理模型的关系：长 CoT 的 RL 训练是否带来真正的算法级泛化，仍有争议；<a href="https://arxiv.org/abs/2506.06941" target="_blank" rel="noreferrer">Shojaee et al. 2025（The Illusion of Thinking）</a>报告推理模型在汉诺塔等谜题上超过某个复杂度就准确率崩溃，但其实验设计（输出长度上限、部分不可解实例）受到了 <a href="https://arxiv.org/abs/2506.09250" target="_blank" rel="noreferrer">评论文章</a> 的质疑。讨论时要两面都讲。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Length generalization is a classic weakness: train on ten-digit addition and the model fails at fifteen digits. Positional encoding, data format such as reversing digits, and scratchpads all matter, and the RASP-L conjecture says transformers generalize when the task has a short program in a transformer-friendly language. For reasoning models, there's an active debate. Apple's Illusion of Thinking reported accuracy collapses beyond a complexity threshold on puzzles, but critics pointed out issues like output-length limits and unsolvable instances, so I'd treat it as an open question.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-formal"><span class="num">§8 · FORMAL REASONING</span>形式化推理</h2>
+<p class="sec-intro">○ 加分项。形式化证明是"完美验证器"的典型场景，所以是 RLVR 和测试时搜索的理想试验场。</p>
+
+<section class="concept" id="c-lean">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Lean、自动形式化与证明上的 RL</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在 Lean 等证明助手中，证明能被机器 100% 检查，奖励没有噪声也几乎不能被 hack（除非利用 sorry 或定理库漏洞），所以非常适合 RL 和搜索；主要难点是形式化数据稀缺，需要自动形式化（把自然语言题目翻译成 Lean 语句）来扩充数据。</p><p class="en">Proof assistants like Lean give perfectly checkable rewards, ideal for RL and search; the bottleneck is scarce formal data, addressed with autoformalization.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Lean 4 + Mathlib：</b>最主流的形式化数学环境；benchmark 有 miniF2F（竞赛题）、ProofNet（本科教材）、PutnamBench 等。</li>
+      <li><b>两种证明生成风格：</b>(a) 逐步 tactic 生成 + 树搜索（每步与 Lean 交互拿到新的证明状态）；(b) 整个证明一次生成（whole-proof），失败了再采样或根据错误信息修复。</li>
+      <li><b>自动形式化：</b>用 LLM 把自然语言题目和证明翻译成 Lean；难点是语义正确性（翻译出的命题可能更弱或错误），需要回译检查或人工审核。</li>
+      <li><b>代表工作：</b>
+        <ul>
+          <li><a href="https://arxiv.org/abs/2408.08152" target="_blank" rel="noreferrer">DeepSeek-Prover-V1.5</a>：用证明助手反馈做 RL，并提出 RMaxTS（一种 MCTS 变体，用内在奖励鼓励探索多样的证明路径）。</li>
+          <li><a href="https://arxiv.org/abs/2504.21801" target="_blank" rel="noreferrer">DeepSeek-Prover-V2</a>：用通用模型把定理分解为子目标，递归求解后合成证明，作为冷启动数据，再做 RL；把非形式推理和形式证明结合起来。</li>
+          <li><a href="https://deepmind.google/discover/blog/ai-solves-imo-problems-at-silver-medal-level/" target="_blank" rel="noreferrer">AlphaProof（DeepMind, 2024）</a>：基于 AlphaZero 风格 RL 在 Lean 中训练，与 AlphaGeometry 2 一起在 IMO 2024 达到银牌水平。</li>
+          <li>相关阅读：<a href="https://arxiv.org/abs/2507.23726" target="_blank" rel="noreferrer">Seed-Prover（arXiv 2507.23726）</a>，在 Lean 上做大规模 RL 与引理式证明。</li>
+        </ul>
+      </li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>形式化证明是对 §2 "verifier 瓶颈" 的完美回应：verifier 是 Lean 内核，FPR≈0，所以 best-of-N 和 RL 都可以放心扩展。代价是搜索空间巨大、形式化数据少，并且形式化本身（把问题翻译对）可能是更难的部分。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Formal theorem proving is the cleanest setting for reasoning RL because Lean checks every proof, so the reward is essentially noise-free and hard to hack. Systems either generate tactics step by step with tree search, or generate whole proofs and repair them using error messages. DeepSeek-Prover used proof-assistant feedback with RL and an MCTS variant, and V2 bootstrapped from subgoal decomposition, while AlphaProof reached IMO silver-medal level with AlphaZero-style training. The main bottleneck is formal data, so autoformalization, translating natural-language math into faithful Lean statements, is a key research problem.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-code"><span class="num">§9 · CODE</span>代码：pass@k、投票与 scaling 模拟</h2>
+<p class="sec-intro">下面的代码全部在纯 Python + numpy 下跑通（每段都带 assert）。面试中"写一个 pass@k 估计量"或"实现 self-consistency"是常见的 15 分钟小题；scaling 模拟则帮助你对 §2 的结论建立数字直觉。建议自己从空白文件重写一遍。</p>
+
+<section class="concept" id="c-code-passk">
+  <div class="concept-head"><span class="pri p1">★</span><h3>代码 1：无偏 pass@k + 无偏性检验</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用乘积形式计算 \(1-\prod_{i=n-c+1}^{n}(1-k/i)\)，并用二项分布的精确期望验证它对 \(1-(1-p)^k\) 无偏，而朴素估计量有偏。</p><p class="en">Compute pass@k as a stable product and verify unbiasedness by taking the exact expectation over a binomial.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import math
+def pass_at_k(n: int, c: int, k: int) -&gt; float:
+    """Unbiased estimator of pass@k given n samples, c of them correct.
+    = 1 - C(n-c, k) / C(n, k), computed as a stable product."""
+    if n - c &lt; k:          # every size-k subset contains a correct sample
+        return 1.0
+    prod = 1.0
+    for i in range(n - c + 1, n + 1):
+        prod *= 1.0 - k / i
+    return 1.0 - prod
+
+def pass_at_k_comb(n, c, k):
+    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
+
+for n in [1, 5, 20, 100]:
+    for c in range(n + 1):
+        for k in range(1, n + 1):
+            assert abs(pass_at_k(n, c, k) - pass_at_k_comb(n, c, k)) &lt; 1e-9
+assert pass_at_k(10, 3, 1) == 0.3 or abs(pass_at_k(10, 3, 1) - 0.3) &lt; 1e-12
+# unbiasedness check by brute-force expectation over Binomial(n, p)
+p, n, k = 0.2, 10, 3
+exp = sum(math.comb(n, c) * p**c * (1-p)**(n-c) * pass_at_k(n, c, k) for c in range(n+1))
+assert abs(exp - (1 - (1-p)**k)) &lt; 1e-12
+# naive estimator 1-(1-c/n)^k is biased (underestimates)
+naive = sum(math.comb(n, c) * p**c * (1-p)**(n-c) * (1-(1-c/n)**k) for c in range(n+1))
+print("true pass@3 = %.4f, unbiased E = %.4f, naive E = %.4f" % (1-(1-p)**k, exp, naive))</code></pre>
+    <p>输出：<code>true pass@3 = 0.4880, unbiased E = 0.4880, naive E = 0.4506</code>。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd write it as a product rather than computing binomial coefficients directly, handle the edge case where there are fewer than k incorrect samples, and test it against math.comb plus an exact expectation over the binomial to confirm it's unbiased.</p></div>
+</section>
+
+<section class="concept" id="c-code-sc">
+  <div class="concept-head"><span class="pri p1">★</span><h3>代码 2：Best-of-N 与带归一化的 self-consistency</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>抽取最后一个 \boxed{}（用括号匹配处理嵌套），否则取最后一个数字；用 Fraction 规范化数值；没抽到答案的样本弃权；可选权重实现加权投票。</p><p class="en">Extract the last boxed answer with brace matching, canonicalize numbers with Fraction, let unparseable samples abstain, and support verifier-weighted votes.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import re
+from collections import Counter
+from fractions import Fraction
+
+def last_boxed(text: str):
+    """Content of the last \\boxed{...}, with brace matching (handles \\frac{1}{2})."""
+    i = text.rfind("\\boxed{")
+    if i &lt; 0:
+        return None
+    j, depth = i + len("\\boxed{"), 1
+    start = j
+    while j &lt; len(text) and depth:
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        j += 1
+    return text[start:j - 1] if depth == 0 else None
+
+def extract_answer(text: str):
+    """Take the last \\boxed{...} if present, else the last number."""
+    ans = last_boxed(text)
+    if ans is None:
+        nums = re.findall(r"-?\d[\d,]*(?:\.\d+)?(?:/\d+)?", text)
+        if not nums:
+            return None
+        ans = nums[-1]
+    return normalize(ans)
+
+def normalize(ans: str):
+    s = ans.strip().replace(",", "").replace("$", "").replace(" ", "")
+    s = s.rstrip(".")
+    if s.startswith("\\frac{") or s.startswith("\\dfrac{"):
+        g = re.match(r"\\d?frac\{(-?\d+)\}\{(-?\d+)\}", s)
+        if g:
+            s = g.group(1) + "/" + g.group(2)
+    try:
+        v = Fraction(s)               # handles "3", "0.5", "1/2", "-4"
+        return str(v)                 # canonical: "1/2", "3"
+    except (ValueError, ZeroDivisionError):
+        return s.lower()
+
+def self_consistency(samples, weights=None):
+    """Majority vote over normalized answers; optional per-sample weights
+    (e.g. verifier scores) gives weighted voting. Returns (answer, votes)."""
+    tally = Counter()
+    for i, text in enumerate(samples):
+        a = extract_answer(text)
+        if a is None:
+            continue                  # unparseable sample abstains
+        tally[a] += 1.0 if weights is None else weights[i]
+    if not tally:
+        return None, tally
+    best = max(tally.items(), key=lambda kv: kv[1])[0]
+    return best, tally
+
+samples = ["... so the answer is \\boxed{0.5}",
+           "Thus x = 1/2.",
+           "We get \\boxed{\\frac{1}{2}}",
+           "The answer is 3.",
+           "I am not sure."]
+ans, tally = self_consistency(samples)
+assert ans == "1/2" and tally["1/2"] == 3 and tally["3"] == 1
+ans_w, _ = self_consistency(samples, weights=[0.1, 0.1, 0.1, 0.9, 0.5])
+assert ans_w == "3"   # weighted vote can flip the decision
+assert normalize("1,000") == "1000" and normalize("-4.0") == "-4"
+
+def best_of_n(candidates, score_fn):
+    scores = [score_fn(c) for c in candidates]
+    i = max(range(len(candidates)), key=lambda j: scores[j])
+    return candidates[i], scores[i]
+
+c, s = best_of_n(["a", "bbb", "cc"], score_fn=len)
+assert c == "bbb" and s == 3</code></pre>
+    <p>注意测试中 "\boxed{\frac{1}{2}}"：如果用简单的正则 <code>\\boxed\{([^{}]*)\}</code> 会抽取失败（嵌套括号）——这是很常见的 bug，所以要用括号计数。这正是面试官想看到的"考虑边界情况"。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>Fraction("0.1") 会得到精确的 1/10（字符串解析），但 Fraction(0.1)（浮点数）会得到一个很长的分数。永远从字符串构造。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Most of the real work in self-consistency is answer normalization. I extract the last boxed expression with brace matching so nested fractions work, fall back to the last number, canonicalize with exact fractions so 0.5, one-half, and backslash-frac all collapse to the same key, and let unparseable samples abstain rather than voting for None. Passing verifier scores as weights turns it into weighted majority voting.</p></div>
+</section>
+
+<section class="concept" id="c-code-maj">
+  <div class="concept-head"><span class="pri p1">★</span><h3>代码 3：多数投票 scaling vs 单样本准确率 p</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>二选一时 maj@k 是二项分布尾概率：p&gt;0.5 时随 k 趋于 1，p&lt;0.5 时趋于 0；错误答案分散时（多个不同错误答案），即使 p=0.2 投票也能大幅提升；在难度混合的数据集上，平均 maj@k 可能几乎不涨。</p><p class="en">With two answers, majority voting amplifies p above one half and destroys p below; with scattered wrong answers even p = 0.2 benefits; on mixed-difficulty datasets the average may barely move.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import math
+import numpy as np
+
+def maj_at_k_binary(p, k):
+    """Two possible answers (right w.p. p, one wrong answer). k odd.
+    P(majority correct) = P(Binomial(k,p) &gt; k/2)."""
+    return sum(math.comb(k, j) * p**j * (1-p)**(k-j) for j in range(k//2 + 1, k + 1))
+
+def maj_at_k_sim(p, k, m_wrong, trials=200_000, rng=None):
+    """Right answer w.p. p, else uniform over m_wrong distinct wrong answers.
+    Ties broken uniformly at random. Monte Carlo estimate."""
+    rng = rng or np.random.default_rng(0)
+    probs = np.array([p] + [(1-p)/m_wrong] * m_wrong)
+    counts = rng.multinomial(k, probs, size=trials)        # (trials, 1+m)
+    top = counts.max(axis=1, keepdims=True)
+    is_top = counts == top
+    n_top = is_top.sum(axis=1)
+    win = is_top[:, 0] / n_top                              # expected win under random tie-break
+    return win.mean()
+
+print()
+print("k  | " + " | ".join("p=%.2f" % p for p in [0.3, 0.45, 0.55, 0.7, 0.9]))
+for k in [1, 5, 15, 51]:
+    row = [maj_at_k_binary(p, k) for p in [0.3, 0.45, 0.55, 0.7, 0.9]]
+    print("%-3d| " % k + " | ".join("%.3f" % r for r in row))
+assert maj_at_k_binary(0.45, 51) &lt; 0.45 &lt; 0.55 &lt; maj_at_k_binary(0.55, 51)
+
+print()
+print("multi-answer (m_wrong=10) k | p=0.2 | p=0.3 | p=0.45")
+rng = np.random.default_rng(0)
+for k in [1, 5, 15, 51]:
+    row = [maj_at_k_sim(p, k, 10, rng=rng) for p in [0.2, 0.3, 0.45]]
+    print("%-3d | " % k + " | ".join("%.3f" % r for r in row))
+
+rng = np.random.default_rng(1)
+P = rng.beta(0.5, 0.5, size=2000)   # per-question accuracy, U-shaped like real benchmarks
+print()
+print("k  | mean pass@1 | pass@k | maj@k(binary)")
+for k in [1, 5, 25, 101]:
+    pk = np.mean(1 - (1 - P)**k)
+    mk = np.mean([maj_at_k_binary(p, k) for p in P])
+    print("%-3d| %.3f | %.3f | %.3f" % (k, P.mean(), pk, mk))</code></pre>
+    <h4>输出与解读</h4>
+    <p><b>表 1：二选一（只有一种错误答案）</b></p>
+    <table>
+      <tr><th>k</th><th>p=0.30</th><th>p=0.45</th><th>p=0.55</th><th>p=0.70</th><th>p=0.90</th></tr>
+      <tr><td>1</td><td>0.300</td><td>0.450</td><td>0.550</td><td>0.700</td><td>0.900</td></tr>
+      <tr><td>5</td><td>0.163</td><td>0.407</td><td>0.593</td><td>0.837</td><td>0.991</td></tr>
+      <tr><td>15</td><td>0.050</td><td>0.346</td><td>0.654</td><td>0.950</td><td>1.000</td></tr>
+      <tr><td>51</td><td>0.001</td><td>0.236</td><td>0.764</td><td>0.999</td><td>1.000</td></tr>
+    </table>
+    <p><b>表 2：错误答案分散在 10 个不同值上（Monte Carlo，平票随机打破）</b></p>
+    <table>
+      <tr><th>k</th><th>p=0.20</th><th>p=0.30</th><th>p=0.45</th></tr>
+      <tr><td>1</td><td>0.201</td><td>0.299</td><td>0.453</td></tr>
+      <tr><td>5</td><td>0.274</td><td>0.463</td><td>0.716</td></tr>
+      <tr><td>15</td><td>0.445</td><td>0.754</td><td>0.962</td></tr>
+      <tr><td>51</td><td>0.782</td><td>0.987</td><td>1.000</td></tr>
+    </table>
+    <p><b>表 3：数据集层面（每题 p ~ Beta(0.5, 0.5)，U 形分布，2000 题，二选一）</b></p>
+    <table>
+      <tr><th>k</th><th>平均 pass@1</th><th>pass@k</th><th>maj@k</th></tr>
+      <tr><td>1</td><td>0.508</td><td>0.508</td><td>0.508</td></tr>
+      <tr><td>5</td><td>0.508</td><td>0.761</td><td>0.508</td></tr>
+      <tr><td>25</td><td>0.508</td><td>0.896</td><td>0.508</td></tr>
+      <tr><td>101</td><td>0.508</td><td>0.952</td><td>0.508</td></tr>
+    </table>
+    <div class="box why"><span class="lbl">直觉</span>表 3 是一个"刻意构造"的反直觉例子：Beta(0.5,0.5) 关于 0.5 对称，投票让 p&gt;0.5 的题变对、p&lt;0.5 的题变错，正好抵消，平均 maj@k 不变；而 pass@k 一路上涨。真实 benchmark 上投票之所以有用，是因为 (1) 错误答案通常分散（表 2），正确答案更容易成为 mode；(2) 难度分布不对称。这也解释了 pass@k 与 maj@k 之间的巨大差距 = verifier 的潜在价值。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The simulation shows majority voting is a threshold amplifier. With only one wrong answer, it pushes per-question accuracy above one half toward one and below one half toward zero. When wrong answers scatter across many values, even twenty percent accuracy can become a reliable majority. And on a symmetric mixed-difficulty dataset, average maj at k may not improve at all while pass at k keeps climbing, which shows how much headroom a good verifier has.</p></div>
+</section>
+
+<section class="concept" id="c-code-verifier">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>代码 4：不完美 verifier 下 best-of-N 的饱和</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>模拟 TPR/FPR 固定的 verifier，best-of-N 准确率随 N 迅速饱和到 \(p\,\text{TPR}/(p\,\text{TPR}+(1-p)\,\text{FPR})\)。</p><p class="en">Simulating a verifier with fixed TPR and FPR shows best-of-N saturating at the closed-form ceiling.</p></div>
+  <div class="deep">
+<pre><code class="language-python">import numpy as np
+
+def bon_accuracy(p, N, tpr, fpr, trials=100_000, rng=None):
+    """Each sample correct w.p. p. Verifier accepts correct w.p. tpr, wrong w.p. fpr.
+    Pick uniformly among accepted samples (if none accepted, pick uniformly at random)."""
+    rng = rng or np.random.default_rng(0)
+    correct = rng.random((trials, N)) &lt; p
+    accept = np.where(correct, rng.random((trials, N)) &lt; tpr, rng.random((trials, N)) &lt; fpr)
+    n_acc = accept.sum(1)
+    n_acc_correct = (accept &amp; correct).sum(1)
+    acc = np.where(n_acc &gt; 0, n_acc_correct / np.maximum(n_acc, 1), correct.mean(1))
+    return acc.mean()
+
+def bon_limit(p, tpr, fpr):
+    # as N -&gt; inf, accepted pool composition -&gt; p*tpr : (1-p)*fpr
+    return p * tpr / (p * tpr + (1 - p) * fpr)
+
+print()
+print("N   | perfect | tpr=.95,fpr=.05 | tpr=.9,fpr=.2  (p=0.2)")
+rng = np.random.default_rng(2)
+for N in [1, 4, 16, 64, 256]:
+    print("%-4d| %.3f | %.3f | %.3f" % (N, bon_accuracy(0.2, N, 1.0, 0.0, rng=rng),
+          bon_accuracy(0.2, N, .95, .05, rng=rng), bon_accuracy(0.2, N, .9, .2, rng=rng)))
+print("limits:", round(bon_limit(0.2, .95, .05), 3), round(bon_limit(0.2, .9, .2), 3))
+assert abs(bon_accuracy(0.2, 256, .9, .2, rng=rng) - bon_limit(0.2, .9, .2)) &lt; 0.01
+print("ALL OK")</code></pre>
+    <table>
+      <tr><th>N</th><th>完美 verifier</th><th>TPR=.95, FPR=.05</th><th>TPR=.9, FPR=.2</th></tr>
+      <tr><td>1</td><td>0.200</td><td>0.199</td><td>0.199</td></tr>
+      <tr><td>4</td><td>0.591</td><td>0.540</td><td>0.435</td></tr>
+      <tr><td>16</td><td>0.972</td><td>0.814</td><td>0.530</td></tr>
+      <tr><td>64</td><td>1.000</td><td>0.826</td><td>0.530</td></tr>
+      <tr><td>256</td><td>1.000</td><td>0.826</td><td>0.529</td></tr>
+    </table>
+    <p>（p=0.2；理论极限分别为 1、0.826、0.529。完美 verifier 的曲线就是 pass@N = 1−0.8ᴺ。）</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>With a perfect verifier best-of-N tracks pass at N and goes to one, but with five percent false positives it plateaus around 83 percent, and with twenty percent false positives it's stuck near 53 percent after just sixteen samples. Beyond that point, more samples are wasted compute; only a better verifier helps.</p></div>
+</section>
+
+<!-- exercises -->
+<h3 id="s-ex" style="font:500 26px var(--serif);margin:46px 0 6px">练习</h3>
+<p class="sec-intro">先自己做，再看答案。数值题可以用上面的代码验证。</p>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.1</b> · 难度 ★</div><p>某题采样 n=10 次，c=3 次正确。分别计算 pass@1 和 pass@5 的无偏估计，并和朴素估计 \(1-(1-c/n)^5\) 比较。</p>
+<details><summary>提示</summary><div class="inner">pass@1 = c/n。pass@5 = 1 − C(7,5)/C(10,5)。</div></details>
+<details><summary>参考答案</summary><div class="inner">pass@1 = 0.3。C(7,5)=21，C(10,5)=252，pass@5 = 1 − 21/252 = 0.9167。朴素估计 1 − 0.7⁵ = 0.8319，明显更低（低估）。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.2</b> · 难度 ★★</div><p>证明：对 k ≥ 2，朴素估计量 \(1-(1-c/n)^k\) 的期望不超过真实 pass@k。何时取等号？</p>
+<details><summary>提示</summary><div class="inner">Jensen 不等式；\(g(x)=1-(1-x)^k\) 的二阶导数。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(g''(x)=-k(k-1)(1-x)^{k-2}\le 0\)，所以 g 在 [0,1] 上凹。\(\hat p=c/n\) 满足 \(\mathbb{E}\hat p=p\)，由 Jensen：\(\mathbb{E}[g(\hat p)]\le g(\mathbb{E}\hat p)=g(p)\)。等号当且仅当 \(\hat p\) 几乎必然为常数，即 p=0 或 p=1（或 k=1，此时 g 线性）。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.3</b> · 难度 ★★</div><p>二选一题目，单样本正确率 p=0.6。计算 maj@3。一般地，k 为奇数时 maj@k 何时大于 p？</p>
+<details><summary>提示</summary><div class="inner">maj@3 = P(至少 2 个对) = 3p²(1−p) + p³。</div></details>
+<details><summary>参考答案</summary><div class="inner">3·0.36·0.4 + 0.216 = 0.432 + 0.216 = 0.648 &gt; 0.6。一般地，对于二选一和奇数 k ≥ 3：p &gt; 0.5 时 maj@k &gt; p，且随 k 单调趋于 1；p &lt; 0.5 时 maj@k &lt; p 并趋于 0；p = 0.5 时恒为 0.5（Condorcet 陪审团定理）。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.4</b> · 难度 ★★</div><p>某 verifier 在正确答案上的接受率为 0.8，在错误答案上为 0.1。基座单样本正确率 p=0.3。best-of-N（从被接受的样本中随机选）在 N→∞ 时的准确率是多少？如果想达到 95%，FPR 需要降到多少（TPR 不变）？</p>
+<details><summary>提示</summary><div class="inner">极限 = pT / (pT + (1−p)F)。解 0.24 / (0.24 + 0.7F) = 0.95。</div></details>
+<details><summary>参考答案</summary><div class="inner">极限 = 0.24/(0.24+0.07) = 0.774。令 0.24/(0.24+0.7F)=0.95 → 0.24 = 0.228 + 0.665F → F = 0.012/0.665 ≈ 0.018。FPR 需要从 10% 降到约 1.8%。教训：提升准确率上限主要靠降低假阳性率。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.5</b> · 难度 ★★</div><p>AIME 2025 只有 30 题。模型 A 得分 70%，模型 B 得分 63%（各自 16 次采样平均）。这个差距显著吗？你会怎么做更严谨的比较？</p>
+<details><summary>提示</summary><div class="inner">题目层面的 SE ≈ √(p(1−p)/30)；配对比较。</div></details>
+<details><summary>参考答案</summary><div class="inner">单模型 SE ≈ √(0.7·0.3/30) ≈ 0.084，差 7 个点约 0.6 个（非配对）差值 SE，远不显著。更严谨：(1) 配对比较——同一题上两个模型的每题平均准确率之差，计算差值的均值和标准误（配对消除了题目难度的方差）或做配对 bootstrap；(2) 合并多个年份（AIME 2024+2025）或多个 benchmark；(3) 报告 16 次采样带来的采样方差和题目方差，区分两个来源。见 <a href="m13-eval.html">模块 13</a>。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.6</b> · 难度 ★★</div><p>四选一的多选题（如 GPQA），模型完全随机猜。pass@8 是多少？这说明 pass@k 在多选题上有什么问题？</p>
+<details><summary>提示</summary><div class="inner">每次猜对概率 0.25。</div></details>
+<details><summary>参考答案</summary><div class="inner">1 − 0.75⁸ ≈ 0.90。随机猜测的 pass@8 就有 90%！所以在答案空间小的任务上，大 k 的 pass@k 几乎没有信息量，"base 模型 pass@256 很高"这类论断（§3 的争论）也要注意答案可猜的问题。应该用 maj@k、或者在开放答案/证明类任务上报告 pass@k。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.7</b> · 难度 ★★★</div><p>设计一个 adaptive self-consistency 算法：逐个采样，当某个答案"足够领先"时提前停止。给出停止规则，分析它在简单题和难题上的期望样本数。</p>
+<details><summary>提示</summary><div class="inner">可以用"领先票数 ≥ m"或 Beta 后验下"当前领先答案是 mode 的概率 ≥ 1−δ"。</div></details>
+<details><summary>参考答案</summary><div class="inner">简单规则：设预算上限 N_max；每次采样后，若最高票数 − 第二高票数 ≥ m（如 m=3），停止。更有原则的规则：把领先答案 vs 其他答案的票数视为 Beta(1+a, 1+b) 后验，当 P(θ &gt; 0.5) ≥ 1−δ 时停止。期望样本数：简单题（p≈0.95）通常 m 次左右就停止（约 3–4 个样本）；难题（p 接近其他答案的频率）领先差像随机游走，期望时间 ∝ m/(p−q)，会用满预算。这正是 compute-optimal TTS 的一种实现：自动把算力集中在难题上。风险：系统性错误（模型自信地错）也会提前停止。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.8</b> · 难度 ★★</div><p>一个长程任务需要 n 个步骤都正确才算成功。若每步正确率 0.99，n=100 时成功率是多少？若每步 0.95，n=20 呢？这对长 CoT 和自我纠错意味着什么？</p>
+<details><summary>提示</summary><div class="inner">独立假设下成功率 = pⁿ。</div></details>
+<details><summary>参考答案</summary><div class="inner">0.99¹⁰⁰ ≈ 0.366；0.95²⁰ ≈ 0.358。即使单步很可靠，长链也很容易失败。所以长 CoT 必须具备<strong>纠错</strong>能力（验证、回溯）：如果模型能以概率 r 发现并修正错误，有效单步错误率从 ε 降到 ε(1−r)。这也是 R1 类模型中"Wait, let me check"行为有价值的原因，以及 agent 中 checkpoint / 恢复机制的动机（模块 10）。</div></details></div>
+
+<div class="exercise deep"><div class="ex-head"><b>练习 9.9</b> · 难度 ★★★</div><p>推导 PonderNet 中"停在第 n 步"的无条件概率 \(p_n\)，并证明当所有 \(\lambda_n=\lambda\) 时 \(p_n\) 是几何分布、期望步数为 \(1/\lambda\)。</p>
+<details><summary>提示</summary><div class="inner">停在第 n 步 = 前 n−1 步都没停，第 n 步停。</div></details>
+<details><summary>参考答案</summary><div class="inner">\(p_n=\lambda_n\prod_{j=1}^{n-1}(1-\lambda_j)\)。若 \(\lambda_n\equiv\lambda\)，\(p_n=\lambda(1-\lambda)^{n-1}\)，即成功概率为 λ 的几何分布。\(\mathbb{E}[N]=\sum_{n\ge1} n\lambda(1-\lambda)^{n-1}=\lambda\cdot\frac{1}{\lambda^2}=\frac1\lambda\)（用 \(\sum_{n\ge1} n x^{n-1}=1/(1-x)^2\)，x=1−λ）。所以几何先验的参数 \(\lambda_p\) 直接控制期望思考步数。</div></details></div>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-research"><span class="num">§10 · RESEARCH DISCUSSION</span>研究讨论题</h2>
+<p class="sec-intro">研究讨论轮里没有标准答案，面试官看的是：你能不能把问题拆清楚、引用证据、承认不确定性、给出自己的立场，并提出可以检验的实验。每题给出中文要点和一分钟英文回答（约 150–200 词），请<strong>出声练习</strong>，并录音回听。通用框架见 <a href="m16-research.html">模块 16</a>。</p>
+
+<section class="concept" id="c-rq-latent">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Q1. Latent vs. explicit reasoning：哪个是未来？</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>立场：短期内显式 CoT 仍是主力（数据多、可 RL、可监控），潜空间推理会以"互补"的形式进入（每个 token 更深的循环 + 更短的显式 CoT）；关键障碍是潜空间的 RL 和可解释性。</p><p class="en">Explicit CoT will stay dominant near-term; latent computation will complement it, gated by RL and interpretability.</p></div>
+  <div class="deep">
+    <ul>
+      <li>显式的优势：大量自然语言推理数据、离散采样便于探索与 RL、投票、可读与可监控。</li>
+      <li>潜在的优势：信息带宽高、可保持叠加态（Coconut 的 BFS）、不占上下文、延迟低。</li>
+      <li>证据：Coconut 在规划任务上优于 CoT 但在 GSM8K 上落后；Geiping/Ouro 显示循环在预训练阶段可以扩展；Saunshi 显示推理依赖深度。</li>
+      <li>实验提案：FLOPs 对齐地比较 (a) 更长 CoT、(b) 更多循环、(c) 二者混合，在推理/知识两类任务上画 Pareto 曲线；同时测潜在状态的可解码性。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I don't think it's either-or. Explicit chain of thought has huge advantages right now: there's tons of natural-language reasoning data, discrete sampling makes RL exploration and voting easy, and it's monitorable. Latent reasoning has higher bandwidth, can keep multiple hypotheses in superposition, as Coconut's BFS-like behavior suggests, and doesn't bloat the context. Evidence from looped models like Geiping et al. and Ouro shows depth can be scaled at test time and built into pretraining. My bet is a hybrid: models that use more latent depth per token so the visible chain gets shorter, while key decisions remain verbalized. The two blockers I'd work on are how to do RL over continuous thoughts and how to decode latent states for oversight. A concrete experiment is a FLOPs-matched comparison of longer CoT versus more loops versus both, on reasoning-heavy and knowledge-heavy tasks.</p></div>
+</section>
+
+<section class="concept" id="c-rq-adaptive">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Q2. How would you make a model think adaptively?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>三个层次：(1) 估计难度（一致性、置信度、难度头）；(2) 训练模型按难度分配预算（相对长度奖励、预算条件化）；(3) 评估用按难度分桶的 Pareto 曲线。</p><p class="en">Estimate difficulty, train with relative length rewards or budget conditioning, and evaluate with difficulty-bucketed Pareto curves.</p></div>
+  <div class="deep">
+    <ul>
+      <li>推理时：早停的 self-consistency、置信度阈值、budget forcing。</li>
+      <li>训练时：组内相对长度奖励（只对正确答案）、L1 式预算条件化、think/no-think 模式选择作为一个动作由 RL 学。</li>
+      <li>架构：ACT/PonderNet 式的退出头（looped 模型中每个 token 自适应深度）。</li>
+      <li>风险：难题偷懒、对简单题过度自信；监控难题准确率。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd break it into estimating difficulty, allocating compute, and evaluating. At inference time, a cheap signal is agreement among a few early samples or the model's calibrated confidence, and you stop early when they agree. At training time, I'd add a length term only for correct answers and make it relative to the group's typical length for that problem, so hard problems aren't penalized; alternatively condition on a target budget like L1, or let the policy choose between thinking and non-thinking modes as an action. Architecturally, a PonderNet-style halting head in a looped model gives per-token adaptive depth. The main risk is the model learning to give up on hard problems, so I'd evaluate with accuracy-versus-tokens curves bucketed by difficulty and watch hard-problem accuracy closely.</p></div>
+</section>
+
+<section class="concept" id="c-rq-limits">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Q3. What are the limits of test-time scaling?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>四个限制：verifier 质量（FPR 封顶）、基座覆盖率（0% 放大不了）、上下文/延迟（串行扩展的物理限制）、经济性（请求量大时训练更划算）；外加 overthinking 与 inverse scaling。</p><p class="en">Verifier quality, base-model coverage, context and latency, and economics; plus overthinking and inverse scaling.</p></div>
+  <div class="deep">
+    <ul>
+      <li>verifier：Stroebl et al. 的饱和结论；无验证器领域难扩展。</li>
+      <li>覆盖率：Snell 的最难题桶收益很小；pass@k 只能放大非零概率。</li>
+      <li>串行：上下文长度、注意力代价、延迟线性增长；长 CoT 的错误累积。</li>
+      <li>经济性：推理 FLOPs × 请求量。</li>
+      <li>反例：Gema et al. 的 inverse scaling 任务。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I see four main limits. First, the verifier: parallel scaling saturates at a ceiling set by the false-positive rate, so domains without good verifiers don't scale well. Second, coverage: test-time compute amplifies what the base model can sometimes do, but it can't amplify zero, which is why Snell et al. saw almost no gains on the hardest bucket. Third, sequential scaling runs into context length, quadratic attention cost, and latency, and longer chains accumulate errors; there are even tasks with inverse scaling where more thinking hurts. Fourth, economics: at high request volume, the extra inference FLOPs dwarf training cost, so a better base model wins. So test-time compute is a powerful complement to pretraining, not a replacement.</p></div>
+</section>
+
+<section class="concept" id="c-rq-elicit">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Q4. Does RLVR create new reasoning abilities or just elicit them?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>平衡回答：现有证据显示短期 RL 主要是"锐化"（Yue et al. 的 pass@k 交叉），但长时间、带探索的 RL 有扩展边界的证据（ProRL）；关键在于测量方法（答案可猜性）和训练设计（熵、课程）。</p><p class="en">Short RL mostly sharpens; prolonged RL with exploration shows some expansion; measurement and design are the crux.</p></div>
+  <div class="deep"><p>详细论点见 <a href="#c-elicit">§3</a>。回答结构：测量 → 正方 → 反方 → 机制 → 我的观点 → 实验。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The honest answer is both, depending on how long and how you train. Yue et al. showed RLVR models win on pass at one but base models overtake them at large k, which suggests RL mostly sharpens toward solutions already in the base distribution. That fits the mechanism: policy gradient can only reinforce trajectories it samples. On the other side, ProRL trained much longer with KL control and reference resets and reported solving tasks where the base model fails at every k. There are also measurement issues, since large-k pass rates can be inflated by guessing on short-answer tasks. I'd run the decisive experiment on tasks with unguessable answers, like formal proofs, tracking base coverage at very large k against a long, entropy-controlled RL run, and check whether the RL model solves problems outside the base model's support.</p></div>
+</section>
+
+<section class="concept" id="c-rq-faith">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Q5. How would you evaluate CoT faithfulness?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>三类方法：反事实干预（改/删 CoT 看答案）、提示注入（用了线索是否承认）、内部探针（CoT 之前答案是否已经确定）；外加改写不变性检测隐写。</p><p class="en">Counterfactual edits, hint-verbalization tests, internal probes, and paraphrase invariance.</p></div>
+  <div class="deep"><p>详见 <a href="#c-faithful">§1 忠实性</a>。补充：要区分"必要性"（任务是否需要 CoT）与"忠实性"；在需要串行计算的任务上测量更有意义。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd combine three kinds of tests. First, counterfactual interventions: truncate the chain, inject an error into one step, or replace it with filler, and measure how often the final answer changes. If it rarely changes, the CoT isn't causally driving the answer. Second, hint tests: add a cue that changes the answer, like a planted metadata answer, and measure how often the model both uses it and says so, as in Anthropic's 2025 study. Third, internal probes: check whether the final answer is already linearly decodable from activations before the reasoning starts, which would indicate post-hoc rationalization. I'd also paraphrase the chain with another model to test for information hidden in wording. And I'd report these separately for tasks that genuinely require serial computation versus easy ones.</p></div>
+</section>
+
+<section class="concept" id="c-rq-efficiency">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Q6. Propose a 12-week project on reasoning efficiency.</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>例：用"组内相对长度奖励 + 难度感知系数"在开源 7B 推理模型上做 RL，目标是在 AIME/MATH 准确率不降的前提下减少 40% token；里程碑、基线、指标、风险都讲清楚。</p><p class="en">Example: difficulty-aware relative length rewards on an open 7B reasoner, targeting 40% fewer tokens at equal accuracy.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>假设：</b>按题目难度相对化的长度奖励可以去除 overthinking 而不损害难题。</li>
+      <li><b>第 1–2 周：</b>复现基线（开源推理模型 + GRPO 训练管线），测量按难度分桶的长度分布。</li>
+      <li><b>第 3–6 周：</b>实现奖励变体（统一惩罚 / 只对正确答案 / 组内相对 / 难度加权），小规模实验。</li>
+      <li><b>第 7–10 周：</b>扩展最佳方案，和 L1、Kimi long2short、早停 self-consistency 等基线算力对齐比较。</li>
+      <li><b>第 11–12 周：</b>消融、分析（哪些行为被删掉了：重复验证 vs 有用的回溯）、写作。</li>
+      <li><b>指标：</b>准确率–token Pareto、按难度分桶、wall-clock 延迟。<b>风险：</b>难题准确率下降 → 退路是只在简单题桶应用。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The hypothesis is that overthinking comes from outcome-only rewards, and that a length reward made relative to each problem's difficulty can remove wasted tokens without hurting hard problems. In the first two weeks I'd reproduce a GRPO pipeline on an open 7B reasoning model and measure token usage by difficulty bucket. Weeks three to six, I'd compare reward variants: uniform penalty, correct-only penalty, group-relative length, and difficulty-weighted. Weeks seven to ten, I'd scale the best one and compare against compute-matched baselines like L1, long-to-short, and early-stopping self-consistency. The last two weeks are ablations, behavior analysis of which reflections get removed, and writing. Success means about forty percent fewer tokens at equal accuracy on MATH and AIME, reported as Pareto curves by difficulty. The main risk is degraded hard-problem accuracy, and the fallback is applying the penalty only to easy buckets.</p></div>
+</section>
+
+<section class="concept" id="c-rq-verifier">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Q7. How would you extend reasoning RL to domains without verifiers?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>选项：生成式 verifier / rubric-based RM、把任务分解成可验证的子部分、自洽性/投票作为伪标签、用执行/仿真反馈、人类反馈的少量校准；核心风险是 reward hacking。</p><p class="en">Generative verifiers, rubrics, decomposition into checkable parts, consistency-based pseudo-labels, simulation feedback; the core risk is reward hacking.</p></div>
+  <div class="deep">
+    <ul>
+      <li>生成式 verifier（GenRM）带 CoT 和投票，比标量 RM 更难 hack。</li>
+      <li>Rubric：把开放任务拆成可检查的条目（事实正确、引用、格式），每条由模型判定。</li>
+      <li>分解：在写作/研究中抽取可验证的子断言（事实核查、代码片段可运行）。</li>
+      <li>自一致性伪标签：多数投票作为奖励（test-time RL 类方法），但会强化系统性错误。</li>
+      <li>防 hacking：RM 集成、定期刷新、KL 约束、对抗性审计、人类抽查。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Without a ground-truth checker, the reward becomes the weak point, so I'd try to make it as verifiable as possible. One route is generative verifiers that reason before judging and can be ensembled or majority-voted, which are harder to exploit than a scalar reward model. Another is rubrics: decompose an open-ended task into checkable criteria, like factual claims that can be verified against sources, code snippets that can run, or required elements. Self-consistency can serve as a pseudo-label, but it reinforces systematic errors, so it needs anchoring with a small amount of human-labeled data. And I'd budget for hacking: ensembles, refreshing the reward model, KL control, and regular audits of high-reward samples.</p></div>
+</section>
+
+<section class="concept" id="c-rq-overthink">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Q8. Why do reasoning models overthink, and is it always bad?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>原因：结果奖励不惩罚长度、长度归一化偏置、蒸馏继承教师习惯、"再检查一遍"在训练中期望收益为正。不总是坏：在高风险场景，冗余验证提高可靠性；问题在于不区分难易。</p><p class="en">Outcome rewards ignore length and extra checks rarely hurt during training; redundancy can buy reliability, but should scale with difficulty.</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Overthinking is a predictable outcome of the training signal. Outcome rewards don't charge for tokens, some normalizations even favor longer wrong answers, distilled models inherit the teacher's habits, and an extra verification pass has positive expected value during training. It's not always bad: in high-stakes settings, redundant checking buys reliability. The real problem is that compute isn't scaled with difficulty, so the fix is adaptive budgeting rather than just making everything shorter.</p></div>
+</section>
+
+<section class="concept" id="c-rq-search">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Q9. Why did explicit tree search (PRM + MCTS) lose to long-CoT RL?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>动作空间无限、步骤边界模糊、价值函数/PRM 难训练且易被 hack、难以批处理；而长 CoT RL 让模型在一条序列里隐式搜索，简单、可扩展、利用了基座的先验。搜索在有完美验证器的领域（形式证明）仍然有用。</p><p class="en">Huge action spaces, fuzzy step boundaries, hackable PRMs, and poor batching; long-CoT RL learns implicit search inside one sequence.</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Explicit search struggled because language steps form an essentially unbounded action space with fuzzy boundaries, value functions and PRMs are hard to train and easy to exploit, and tree search is awkward to batch on accelerators. DeepSeek reported exactly these issues as unsuccessful attempts. Long-CoT RL instead lets the model learn search behaviors like trying, checking, and backtracking inside a single sequence, which is simple, scales with standard infrastructure, and leverages the base model's priors. Explicit search still shines where verification is perfect, like formal theorem proving.</p></div>
+</section>
+
+<section class="concept" id="c-rq-monitor">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Q10. Latent reasoning vs. CoT monitorability: how do you reconcile them?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>承认张力；提出三条路径：把可监控性作为指标随架构一起报告；研究潜在状态的解码/探针；混合架构让关键决策外化；避免对 CoT 直接施加优化压力。</p><p class="en">Acknowledge the tension, measure monitorability alongside capability, decode latent states, and keep key decisions verbalized.</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There is a real tension: latent reasoning is more efficient precisely because it skips the natural-language bottleneck that makes CoT readable. I'd reconcile it in three ways. First, treat monitorability as a metric we report alongside capability, for example monitor recall on planted reward hacks. Second, invest in decoding latent states, with probes or learned translators, and validate them on synthetic tasks with known intermediate variables. Third, design hybrids where the model thinks deeply per token but still verbalizes key decisions. And independently of architecture, avoid putting direct optimization pressure on the reasoning, since that teaches obfuscation.</p></div>
+</section>
+
+<section class="concept" id="c-rq-data">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Q11. Why can 1K examples unlock strong reasoning (s1, LIMO)? What does that imply?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>推理能力主要在预训练中形成，少量高质量长 CoT 起到"格式与行为激活"作用（类似 LIMA 的表面对齐假说）；含义：预训练数据中的推理内容至关重要，后训练更多是选择与放大。</p><p class="en">Capabilities mostly come from pretraining; small curated data activates format and behaviors, implying post-training largely selects and amplifies.</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>It suggests the reasoning capability largely comes from pretraining, and a small set of carefully chosen long chains of thought mainly teaches the format and activates behaviors like verification and backtracking, similar to the superficial alignment hypothesis from LIMA. It's consistent with Gandhi et al., who found RL success depends on whether those behaviors already exist in the base model. The implication is that pretraining and mid-training data with rich reasoning matter enormously, and post-training mostly selects and amplifies. The caveat is that this works with strong bases and strong teacher traces, not from scratch.</p></div>
+</section>
+
+<section class="concept" id="c-rq-agentic">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Q12. How does reasoning change in agentic, multi-turn settings?</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>推理与行动交错（工具调用、环境反馈）；验证来自环境（测试、执行结果）；上下文管理变成核心问题（长思考 + 长轨迹）；信用分配跨多轮；并行采样成本高且有副作用。</p><p class="en">Reasoning interleaves with actions, verification comes from the environment, context management becomes central, and credit assignment spans turns.</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In agentic settings, reasoning is interleaved with tool calls, so the model can get external verification, like running tests, instead of relying only on internal checking. That's a big advantage. But new problems appear: long thinking plus long trajectories exhaust context, so you need summarization or memory; credit assignment spans many turns; and parallel sampling is expensive and can have side effects on the environment. I'd expect the most progress from teaching models when to think versus when to act and gather information, since an action often resolves uncertainty more cheaply than more thinking.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚过一遍。</p>
+
+<table>
+  <tr><th>主题</th><th>必须记住</th></tr>
+  <tr><td>CoT 为什么有效</td><td>一次前向 ≈ TC⁰（常数串行深度）；T 步 CoT ≈ T 倍有效深度；可解 NC¹ 类串行问题（复合置换）。引用：Merrill &amp; Sabharwal、Feng et al.、Li et al. 2024</td></tr>
+  <tr><td>CoT 何时没用</td><td>知识检索、简单分类；收益集中在数学/符号（Sprague et al. 2024）</td></tr>
+  <tr><td>忠实性</td><td>Turpin 2023（偏置不被提及）、Lanham 2023（干预 CoT）、Chen 2025（推理模型很少承认用了提示）</td></tr>
+  <tr><td>三类 TTS</td><td>parallel（BoN、SC）/ sequential（长 CoT、修订、budget forcing）/ search（PRM beam、ToT、MCTS）</td></tr>
+  <tr><td>pass@k</td><td>\(1-\binom{n-c}{k}/\binom{n}{k}\)；乘积形式 \(1-\prod_{i=n-c+1}^{n}(1-k/i)\)；朴素估计有偏（Jensen，凹）</td></tr>
+  <tr><td>maj@k</td><td>阈值行为：正确答案是 mode → 1，否则 → 0；二选一 p=0.45, k=51 → 0.236</td></tr>
+  <tr><td>Verifier 上限</td><td>\(\lim \text{Acc}=\frac{p\,\text{TPR}}{p\,\text{TPR}+(1-p)\,\text{FPR}}\)；p=.2, .9/.2 → 0.53</td></tr>
+  <tr><td>Snell 2024</td><td>按难度选策略：简单→串行修订，难→并行/搜索，最难→无用；&gt;4× 效率 vs BoN；FLOPs 对齐时可胜约 14× 大模型（仅在小模型有一定成功率的题上）</td></tr>
+  <tr><td>s1</td><td>1K 精选样本 SFT Qwen2.5-32B；budget forcing：追加 "Wait" 延长 / 强制结束标记截断</td></tr>
+  <tr><td>R1 流程</td><td>R1-Zero（纯 GRPO，准确性+格式奖励）；R1 = 冷启动 SFT → 推理 RL（+语言一致性）→ 拒绝采样 ~800K SFT → 全场景 RL；蒸馏小模型只 SFT</td></tr>
+  <tr><td>R1-Zero 数字</td><td>AIME24 pass@1 15.6% → 71.0%（maj 86.7%）</td></tr>
+  <tr><td>蒸馏 vs RL</td><td>小模型：蒸馏 &gt; 直接 RL（R1 论文 32B 对照）；前沿：需要 RL</td></tr>
+  <tr><td>创造 vs 激发</td><td>Yue 2025：大 k 时 base 反超 → 锐化；ProRL：长 RL 扩展边界；注意答案可猜</td></tr>
+  <tr><td>Overthinking</td><td>Chen 2024（2+3）；underthinking：Wang 2025（思路切换，TIP 惩罚）；inverse scaling：Gema 2025</td></tr>
+  <tr><td>高效推理</td><td>正确答案才奖励短；组内相对长度；L1/LCPO 预算条件化；Kimi long2short；Qwen3 think/no-think</td></tr>
+  <tr><td>可监控性</td><td>Korbak 2025：necessity + propensity；脆弱；Baker 2025：优化 CoT monitor → 混淆的 reward hacking</td></tr>
+  <tr><td>Token 瓶颈</td><td>\(\log_2|V|\approx17\) bit / token vs d 维连续向量</td></tr>
+  <tr><td>Pause / Quiet-STaR</td><td>pause 需预训练+微调都加；Quiet-STaR 每个 token 生成内部理由，REINFORCE 训练</td></tr>
+  <tr><td>Coconut</td><td>最后隐藏状态 → 下一步输入；课程替换 CoT 步骤；BFS 叠加；ProsQA 97.0 vs 77.5，GSM8K 34.1 vs 42.9</td></tr>
+  <tr><td>Implicit CoT</td><td>2023 蒸馏教师隐藏状态（垂直推理）；2024 逐步删除 CoT token；GPT-2 Small 9×9 乘法</td></tr>
+  <tr><td>Looped</td><td>Universal Transformer + ACT；Saunshi 2025：k 层 × L 次 ≈ kL 层，推理靠深度、记忆靠参数；Geiping 2025：3.5B、800B token、测试时 ≈50B 计算量；Ouro：7.7T token，1.4B/2.6B ≈ 12B</td></tr>
+  <tr><td>PonderNet</td><td>\(p_n=\lambda_n\prod_{j&lt;n}(1-\lambda_j)\)；loss = 期望任务损失 + β·KL(p‖Geometric(λ_p))；E[N]=1/λ</td></tr>
+  <tr><td>评估方差</td><td>SE = √(p(1−p)/n)；AIME 30 题 p=.5 → SE≈9.1%；GPQA-D 198 题 → 3.6%</td></tr>
+  <tr><td>形式化</td><td>Lean = 完美 verifier；DeepSeek-Prover V1.5（RL + RMaxTS）/ V2（子目标分解）；AlphaProof IMO 2024 银牌水平</td></tr>
+</table>
+
+<h3 style="font:500 24px var(--serif);margin:34px 0 8px">高频面试题清单</h3>
+<ol>
+  <li>What is chain-of-thought and why does it help? → <a href="#c-cot">CoT</a>, <a href="#c-cot-why">串行计算</a></li>
+  <li>Can a transformer solve X without CoT? What's the theory? → <a href="#c-cot-why">表达力</a>, <a href="#c-tc0">TC⁰</a></li>
+  <li>Is the chain of thought faithful? How would you test it? → <a href="#c-faithful">忠实性</a>, <a href="#c-rq-faith">Q5</a></li>
+  <li>When does CoT not help? → <a href="#c-cot-when">CoT 何时没用</a></li>
+  <li>Compare best-of-N, self-consistency and tree search. → <a href="#c-tts-taxonomy">三类扩展</a>, <a href="#c-sc">BoN/SC</a>, <a href="#c-search">搜索</a></li>
+  <li>What's the difference between pass@k and maj@k? → <a href="#c-passk-majk">pass@k vs maj@k</a></li>
+  <li>Derive and implement the unbiased pass@k estimator. → <a href="#c-passk-derive">推导</a>, <a href="#c-code-passk">代码 1</a></li>
+  <li>Implement self-consistency. What can go wrong? → <a href="#c-code-sc">代码 2</a></li>
+  <li>When does majority voting hurt? → <a href="#c-code-maj">代码 3</a></li>
+  <li>Summarize Snell et al. on compute-optimal test-time scaling. → <a href="#c-compute-optimal">Snell 2024</a></li>
+  <li>Why does test-time scaling saturate? → <a href="#c-verifier">verifier 瓶颈</a>, <a href="#c-rq-limits">Q3</a></li>
+  <li>What is budget forcing? → <a href="#c-budget">s1</a></li>
+  <li>Walk me through the DeepSeek-R1 training pipeline. → <a href="#c-r1">R1</a></li>
+  <li>What emerged in R1-Zero, and should we believe the "aha moment"? → <a href="#c-r1zero">R1-Zero</a></li>
+  <li>Why rule-based rewards instead of a reward model? → <a href="#c-r1">R1</a>, <a href="#c-hacking">reward hacking</a></li>
+  <li>Distillation or RL for a small model? → <a href="#c-distill">蒸馏 vs RL</a></li>
+  <li>Does RL teach new reasoning or just elicit it? → <a href="#c-elicit">争论</a>, <a href="#c-rq-elicit">Q4</a></li>
+  <li>PRM vs ORM; why did MCTS not take over? → <a href="#c-search">搜索</a>, <a href="#c-rq-search">Q9</a></li>
+  <li>What is overthinking and how do you fix it? → <a href="#c-overthink">overthinking</a>, <a href="#c-efficient">高效推理</a>, <a href="#c-rq-adaptive">Q2</a></li>
+  <li>What is CoT monitorability and why is it fragile? → <a href="#c-monitor">可监控性</a>, <a href="#c-rq-monitor">Q10</a></li>
+  <li>Why reason in latent space? → <a href="#c-bottleneck">token 瓶颈</a>, <a href="#c-rq-latent">Q1</a></li>
+  <li>Explain Coconut. → <a href="#c-coconut">Coconut</a></li>
+  <li>Explain implicit CoT / stepwise internalization. → <a href="#c-implicit">Implicit CoT</a></li>
+  <li>What are looped / recurrent-depth transformers good for? → <a href="#c-looped">Looped</a></li>
+  <li>How does ACT / PonderNet decide how long to think? → <a href="#c-act">ACT/PonderNet</a></li>
+  <li>Open problems in latent reasoning? → <a href="#c-latent-open">开放问题</a></li>
+  <li>Which reasoning benchmarks do you trust, and why? → <a href="#c-benchmarks">benchmarks</a></li>
+  <li>How do you extend RL beyond verifiable domains? → <a href="#c-rq-verifier">Q7</a></li>
+  <li>Propose an internship project on reasoning efficiency. → <a href="#c-rq-efficiency">Q6</a></li>
+  <li>Why is formal theorem proving a good RL testbed? → <a href="#c-lean">Lean</a></li>
+</ol>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m07" data-title="模块 07 自测卡片"></div>
+<div class="footer-nav"><a href="m06-rl-posttraining.html">← 06 Post-training 与强化学习</a><a href="m08-inference.html">08 推理与解码系统 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m07.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>

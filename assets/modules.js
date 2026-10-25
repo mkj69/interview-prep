@@ -35,7 +35,7 @@ window.MODULES = [
     title: 'Post-training 与强化学习',
     desc: '主线方向，准备得最深。从 RL 基础到 RLHF、DPO 推导、GRPO 与可验证奖励 RL。',
     topics: '策略梯度推导 · baseline · GAE · PPO clip · Bradley-Terry · DPO 推导 · GRPO/DAPO · PRM vs ORM · pass@k 争论' },
-  { id: 'm07', num: '07', phase: 'p2', pri: 1, status: 'planned', file: 'modules/m07-reasoning.html',
+  { id: 'm07', num: '07', phase: 'p2', pri: 1, status: 'ready', file: 'modules/m07-reasoning.html',
     title: '推理能力与测试时计算',
     desc: 'CoT 为什么有效、测试时计算的扩展方式、推理模型训练流程、隐式推理。',
     topics: 'CoT 理论 · self-consistency · best-of-N · 树搜索 · 串行 vs 并行扩展 · overthinking · latent reasoning' },
