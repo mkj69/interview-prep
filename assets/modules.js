@@ -47,7 +47,7 @@ window.MODULES = [
     title: '分布式训练与效率',
     desc: '显存构成和估算、各种并行方式、ZeRO/FSDP、激活重计算、通信原语、MFU。',
     topics: '16 字节/参数 · DP/TP/PP/SP/EP · ZeRO-1/2/3 · gradient checkpointing · all-reduce · MFU' },
-  { id: 'm10', num: '10', phase: 'p2', pri: 2, status: 'planned', file: 'modules/m10-agents.html',
+  { id: 'm10', num: '10', phase: 'p2', pri: 2, status: 'ready', file: 'modules/m10-agents.html',
     title: 'Agents',
     desc: '工具调用、规划、记忆、多智能体、长程任务失败原因、agent RL 和评估。',
     topics: 'ReAct · function calling · Reflexion · 多智能体协调 · long-horizon · 多轮 RL · SWE-bench' },

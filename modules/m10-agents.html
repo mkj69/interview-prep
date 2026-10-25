@@ -1,0 +1,1304 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 · Agents · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m10">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 10 · Phase 2 · LLM 核心知识</div>
+<h1 class="title">Agents：从工具调用到<em>长程自主</em></h1>
+<p class="lede">Agent = LLM 在一个循环里调用工具、读取环境反馈、维护状态，直到完成任务。面试里这块考三类东西：(1) 基本构件和设计取舍（ReAct、function calling、记忆、规划、多智能体）；(2) 为什么 agent 在长任务上会失败、怎么量化（复合误差、METR time horizon、pass^k）；(3) 怎么训练和评估 agent（多轮 RL 的 credit assignment、tool-output masking、SWE-bench 的坑）。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完后你应该能：① 用 2 分钟讲清 agent 和 workflow 的区别，以及"harness 和 model 各负责什么"；② 在白板上写出一个最小 ReAct 循环（解析 → 分发 → observation → 步数上限 → 错误回传）；③ 给出 \(p^n\) 复合误差的数字，并解释为什么 verifier / 重试能把它拉回来；④ 讲清多轮 agent RL 和单轮 RLVR 的不同（稀疏奖励、turn vs token advantage、工具输出 mask、异步 rollout、reward hacking）；⑤ 对 SWE-bench Verified、τ-bench、OSWorld 等 benchmark 给出"测什么、坑在哪"；⑥ 对"多智能体到底有没有用"给出有引用、有条件的回答。<br><br>
+<b>建议顺序：</b>§1 → §2 → §7（长程，最常被追问）→ §8（训练，和你的 RL 主线最相关）→ §9 → §6 → §4 → 其余。代码在 §11，先读懂再合上页面自己重写一遍。<br>
+<b>和其他模块的关系：</b>多轮 RL 的数学基础（policy gradient、GRPO、PPO）在 <a href="m06-rl-posttraining.html">06 Post-training 与 RL</a>；best-of-N / verifier / test-time compute 在 <a href="m07-reasoning.html">07 推理</a>；KV cache 与长上下文成本在 <a href="m08-inference.html">08 推理系统</a>；benchmark 方法论（污染、置信区间）在 <a href="m13-eval.html">13 评估</a>。<br>
+<b>延伸阅读：</b><a href="https://mkj69.github.io/long-horizon-agents/" target="_blank" rel="noreferrer">Long-Horizon Agents — Research Map</a>（长程 agent 的八个子问题、benchmark 图谱）；<a href="https://mkj69.github.io/multi-agent-scaling/" target="_blank" rel="noreferrer">Beyond More Agents — Multi-Agent Scaling Atlas</a>（多智能体什么时候有用、等预算对比）。</div>
+
+<!-- ============================ §1 ============================ -->
+<h2 class="sec" id="s-what"><span class="num">§1 · WHAT IS AN AGENT</span>什么是 agent</h2>
+<p class="sec-intro">先把词说准。面试官问 "What is an agent?" 时，想听到的是一个可操作的定义 + 一个设计判断（什么时候不该用 agent）。</p>
+
+<section class="concept" id="c-def">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Agent 的定义：LLM + 工具 + 记忆 + 循环</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Agent 是一个让 LLM 在循环里自己决定下一步动作（调用哪个工具、传什么参数、何时停止），并根据环境返回的 observation 继续决策的系统。</p><p class="en">An agent is an LLM running in a loop that chooses actions, observes the environment's response, and decides when it is done.</p></div>
+  <div class="deep">
+    <p><b>四个构件</b>：</p>
+    <table>
+      <tr><th>构件</th><th>作用</th><th>典型实现</th></tr>
+      <tr><td>LLM（policy）</td><td>根据当前上下文输出下一步：思考、工具调用或最终答案</td><td>任何 instruction-tuned / reasoning 模型</td></tr>
+      <tr><td>Tools（action space）</td><td>让模型能"做事"：搜索、执行代码、读写文件、调用 API、点击网页</td><td>function calling、MCP server、shell、浏览器</td></tr>
+      <tr><td>Memory / state</td><td>记住已经做过什么：短期在上下文里，长期在外部存储</td><td>消息历史、scratchpad 文件、向量库、TODO 列表</td></tr>
+      <tr><td>Loop（control）</td><td>反复执行 "生成 → 执行 → 观察"，直到停止条件</td><td>while 循环 + 步数/预算上限 + 停止判断</td></tr>
+    </table>
+    <p><b>用 RL 的语言说</b>：agent 就是一个 POMDP 里的 policy。状态 \(s_t\) 是环境的真实状态（文件系统、网页、数据库），模型看到的只是 observation 历史 \(h_t = (o_0, a_0, o_1, \dots, o_t)\)；动作 \(a_t\) 是一段文本（其中可能包含一个结构化的工具调用）；环境转移 \(s_{t+1} \sim P(\cdot \mid s_t, a_t)\) 由工具执行决定；奖励通常只在结尾给（任务是否完成）。这个视角在 §8 讲训练时非常重要：<b>agent 的难点几乎都来自"多步 + 部分可观测 + 稀疏奖励"</b>。</p>
+    <div class="box why"><span class="lbl">直觉</span>普通 chat 是"一问一答"，模型输出就是终点。Agent 把模型输出变成了<b>动作</b>，动作改变世界，世界的反馈又回到模型。这个闭环带来两件事：能力上限更高（可以查资料、跑代码验证、试错），但错误也会累积（一步错，后面全建立在错误状态上）。</div>
+    <p><b>"Agentic" 是一个光谱，不是二元的</b>：从"单次调用一个工具"到"固定流程串联多次调用"到"模型自己决定流程、跑几百步"，自主程度逐渐升高。面试时可以说 "autonomy is a spectrum"，然后给出你会在哪个点上停下来的理由。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把"用了 LangChain / 调用了一个工具"就叫 agent。关键区别是<b>控制流由谁决定</b>：如果每一步做什么是代码写死的，那是 workflow；只有模型自己决定下一步（包括决定何时停止）才是 agent。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd define an agent as an LLM running in a loop: at each step it looks at the history, decides on an action — usually a tool call — the environment executes it and returns an observation, and the model decides what to do next, including when to stop. So the four pieces are the model as the policy, the tools as the action space, some form of memory or state, and the control loop. Formally it looks like a partially observable MDP with a mostly sparse, terminal reward. That framing explains both why agents are powerful — they can gather information and verify their own work — and why they're fragile, because errors compound over many steps.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why is it a POMDP rather than an MDP?</b><details><summary>思路</summary><div class="inner">模型看不到环境的完整状态（比如整个代码库、网站后端、用户真实意图），只能看到工具返回的局部 observation；而且上下文有限，早期 observation 可能被截断或总结掉。所以 policy 只能依赖历史 \(h_t\)，这就是部分可观测。实际含义：agent 需要主动"探索/查看"（ls、grep、读文件）来减少不确定性，记忆管理也变成了核心问题。</div></details></li>
+    <li><b>What's the difference between a chatbot with tools and an agent?</b><details><summary>思路</summary><div class="inner">程度差别。单轮"调用一个工具然后回答"是最弱的 agentic 行为；agent 的特点是<b>多步、模型自主决定控制流、根据反馈修正</b>。可以回答："A chatbot with one tool call is the low-autonomy end of the spectrum; what makes something an agent is that the model owns the control flow across many steps."</div></details></li>
+    <li><b>When should you NOT build an agent?</b><details><summary>思路</summary><div class="inner">当任务流程可预先确定、对延迟/成本敏感、对可预测性要求高、或错误代价大时，用 workflow 或单次调用更好。Agent 用更多 token 和延迟换灵活性，只在"步骤数和路径事先无法确定"的开放任务上值得（见下一个概念）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-workflow">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Agent vs Workflow（Anthropic "Building effective agents"）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Workflow：LLM 和工具按<b>预先写好的代码路径</b>编排；Agent：LLM <b>自己动态决定</b>流程和工具使用。先用最简单的方案，只有当复杂度能带来可测量的提升时才增加。</p><p class="en">Workflows orchestrate LLMs through predefined code paths; agents let the LLM direct its own process. Start simple and add autonomy only when it measurably helps.</p></div>
+  <div class="deep">
+    <p>这是 Anthropic 在 2024 年 12 月发布的工程博客 <a href="https://www.anthropic.com/engineering/building-effective-agents" target="_blank" rel="noreferrer">Building effective agents</a> 里的划分，两者统称 "agentic systems"。它的基本构件叫 <b>augmented LLM</b>：一个配备了检索、工具和记忆的 LLM。在此基础上列出了 5 种常见 workflow 模式：</p>
+    <table>
+      <tr><th>模式</th><th>做法</th><th>适用</th></tr>
+      <tr><td>Prompt chaining</td><td>把任务拆成固定的几步，每步处理上一步输出，中间可加程序化检查（gate）</td><td>步骤清晰可分解，比如"写大纲 → 检查 → 写正文"</td></tr>
+      <tr><td>Routing</td><td>先分类输入，再分发到专门的下游 prompt/模型</td><td>输入类别差异大，比如客服问题分类；简单问题路由给小模型省钱</td></tr>
+      <tr><td>Parallelization</td><td>sectioning（拆成独立子任务并行）或 voting（同一任务跑多次投票）</td><td>子任务独立，或需要多样性/置信度</td></tr>
+      <tr><td>Orchestrator-workers</td><td>中心 LLM 动态拆任务、分给 worker、汇总结果</td><td>子任务事先无法确定，比如改动涉及多少个文件不确定</td></tr>
+      <tr><td>Evaluator-optimizer</td><td>一个 LLM 生成，另一个评估并给反馈，循环</td><td>有清晰评价标准、迭代能明显改进的任务（翻译、搜索）</td></tr>
+    </table>
+    <p>而<b>真正的 agent</b> 适用于开放问题：无法预测需要多少步、无法写死路径。它需要你对模型的决策有一定信任，并且要在一个可控的环境（沙箱）里，配合停止条件（最大步数）和必要的人工检查点。</p>
+    <p><b>博客里的三条核心建议</b>（面试时能说出来很加分）：</p>
+    <ol>
+      <li><b>Simplicity</b>：先直接用 LLM API，别一上来就用重框架；框架的抽象层会掩盖 prompt 和响应，让调试变难。</li>
+      <li><b>Transparency</b>：让 agent 的规划步骤显式可见。</li>
+      <li><b>Agent-computer interface (ACI)</b>：像设计人机界面（HCI）一样认真设计工具：清楚的描述、示例、边界情况；用 <b>poka-yoke</b>（防错设计）改参数让错误更难发生——他们在 SWE-bench agent 里发现模型用相对路径容易出错，于是要求工具只接受绝对路径，这类错误就消失了。</li>
+    </ol>
+    <div class="box why"><span class="lbl">直觉</span>Workflow 是"把人的知识写进控制流"，agent 是"把控制流交给模型"。模型越强，交出去的越多越划算；但每交出去一层，都要付出可预测性、成本、延迟和调试难度的代价。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>认为 agent 总是比 workflow "高级"。实际上在生产环境里大量成功的系统是 workflow 或"workflow + 局部 agent"。面试回答要体现<b>工程判断</b>：用评估数据决定是否增加自主性。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Anthropic draws a useful line between workflows and agents. In a workflow, the LLM calls are orchestrated by predefined code paths — prompt chaining, routing, parallelization, orchestrator-workers, evaluator-optimizer. In an agent, the model itself decides the control flow and which tools to call. My default is to start with the simplest thing that works — often a single call with retrieval — and only move toward autonomy when evals show it pays for the extra cost, latency and unpredictability. And when you do build an agent, most of the leverage is in the tool interface: clear descriptions, good error messages, and arguments designed so the model can't easily misuse them.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Give an example where orchestrator-workers beats a fixed parallelization workflow.</b><details><summary>思路</summary><div class="inner">代码修改任务：要改哪些文件、改几个，事先不知道，必须由 orchestrator 读代码后动态决定；而 parallelization 要求子任务预先定义好。另一个例子：深度研究，要查哪些子问题取决于前面搜到什么。</div></details></li>
+    <li><b>What does "poka-yoke your tools" mean concretely?</b><details><summary>思路</summary><div class="inner">改变工具接口，让错误用法根本不可能或很难发生：只接受绝对路径；用枚举代替自由字符串；编辑工具要求提供被替换的原文（old_str 必须唯一出现）以防止改错位置；危险操作需要额外确认参数；错误信息里直接告诉模型合法取值。核心思想：与其在 prompt 里叮嘱"不要做 X"，不如让 X 做不了。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-harness">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Harness vs Model：能力到底在哪一层</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Harness（脚手架）是包住模型的所有代码：prompt、工具定义、循环、上下文管理、重试、沙箱。同一个模型换 harness，benchmark 分数可以差很多，所以"agent 能力"永远是 model × harness 的联合属性。</p><p class="en">The harness is everything around the model — prompts, tools, loop, context management, sandbox. Agent performance is a property of model × harness, not the model alone.</p></div>
+  <div class="deep">
+    <p><b>Harness 包括</b>：系统提示词；工具集合与它们的描述、参数 schema、返回格式；循环逻辑（最大步数、停止条件、并行调用）；上下文管理（截断、总结、外部笔记）；错误处理与重试；执行环境（Docker 沙箱、浏览器）；权限与人工确认；以及子 agent 编排。</p>
+    <p><b>为什么重要</b>：</p>
+    <ul>
+      <li><b>评估层面</b>：SWE-agent 论文（<a href="https://arxiv.org/abs/2405.15793" target="_blank" rel="noreferrer">Yang et al., 2024</a>）的核心论点就是 ACI 设计本身显著提升了同一模型的成功率（专门的文件查看/编辑/搜索命令、带 linter 的编辑、简洁的反馈）。所以比较两个模型时必须固定 harness，否则你比较的是工程而不是模型（§9 的 harness sensitivity）。</li>
+      <li><b>研究层面</b>：一个常见争论是"某个能力应该放进模型（通过训练）还是放进 harness（通过工程）"。例如记忆管理：可以用 harness 做 compaction，也可以训练模型自己写笔记。趋势是：随着模型变强，越来越多 harness 逻辑被"吸收"进模型（模型自己规划、自己决定何时总结），harness 变薄。</li>
+      <li><b>训练层面</b>：如果用 RL 训练 agent，模型会学到对<b>训练时的 harness</b> 过拟合（工具名、输出格式、步数预算）。换 harness 部署时可能掉点，这是 agent 的一种分布偏移。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>把模型想成一个聪明但只能通过一个小窗口看世界、只能通过几个按钮行动的人。Harness 决定窗口里显示什么、有哪些按钮、按钮上的标签写得清不清楚。人再聪明，按钮标签写错了也会犯错。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只报告 "模型 X 在 SWE-bench 上得 Y 分" 而不说 harness、步数上限、尝试次数和成本。同一模型在不同 scaffold 下的差距可能比相邻两代模型的差距还大。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I think of agent capability as a joint property of the model and the harness. The harness is the system prompt, the tool definitions and their output format, the loop and stopping rules, context management, retries and the sandbox. SWE-agent showed that just redesigning the agent-computer interface substantially changes success rates with the same model. So when I compare models I fix the harness, and when I report results I report the harness, the step budget and the cost. There's also an interesting research question about which capabilities should live in the harness versus be trained into the model — the trend is that stronger models absorb more of the scaffolding.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If you RL-train a model inside one harness, how would you check it generalizes to other harnesses?</b><details><summary>思路</summary><div class="inner">设计 held-out harness 评估：换工具名和描述（同义改写）、换输出格式、改变步数预算、加入/去掉某些工具、换系统提示。报告在训练 harness 和 held-out harness 上的分数差。也可以在训练时做 harness 随机化（类似 domain randomization），提高鲁棒性。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ §2 ============================ -->
+<h2 class="sec" id="s-act"><span class="num">§2 · REASONING &amp; ACTING</span>推理与行动：ReAct、function calling、MCP、CodeAct</h2>
+<p class="sec-intro">这一节是"agent 怎么说话"：模型如何把思考和动作交织在一起，动作用什么格式表达，工具怎么接入，出错怎么办。</p>
+
+<section class="concept" id="c-react">
+  <div class="concept-head"><span class="pri p1">★</span><h3>ReAct：Thought → Action → Observation</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>ReAct 让模型交替输出推理（Thought）和动作（Action），环境返回 Observation 后接着推理；推理帮助规划和处理异常，动作带来外部信息，减少纯 CoT 的幻觉。</p><p class="en">ReAct interleaves reasoning traces with actions, so reasoning guides what to do and observations ground the reasoning.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2210.03629" target="_blank" rel="noreferrer">ReAct (Yao et al., 2022; ICLR 2023)</a> 的格式非常简单：</p>
+<pre><code class="language-text">Question: Which city has more people, Austin or Dallas, and by how much?
+Thought: I need both populations. Look up Austin first.
+Action: lookup[population_austin]
+Observation: 979882
+Thought: Now Dallas.
+Action: lookup[population_dallas]
+Observation: 1302868
+Thought: Dallas is larger; difference = 1302868 - 979882.
+Action: calculator[1302868 - 979882]
+Observation: 322986
+Thought: I have the answer.
+Action: finish[Dallas, by 322986]</code></pre>
+    <p><b>为什么有效</b>：</p>
+    <ul>
+      <li><b>相对纯 CoT（只推理）</b>：CoT 只能用模型内部知识，容易幻觉事实；ReAct 能查外部信息，推理被 observation "接地"（grounding）。</li>
+      <li><b>相对纯 Act（只行动，不写 Thought）</b>：没有推理，模型不擅长分解目标、跟踪进度、在出错时调整计划。Thought 起到"工作记忆 + 计划"的作用。</li>
+      <li>论文在 HotpotQA/FEVER（知识问答，用 Wikipedia API）和 ALFWorld/WebShop（交互决策）上做了实验；在知识任务上 ReAct 与 CoT 结合（CoT-SC 和 ReAct 互相回退）效果最好。</li>
+    </ul>
+    <p><b>今天的 ReAct</b>：现代 API 里，Thought 变成了模型的自由文本或隐藏的 reasoning tokens，Action 变成了结构化的 function call（JSON），Observation 变成 tool result 消息。但<b>结构没变</b>：这依然是几乎所有 coding agent / research agent 的骨架。</p>
+    <div class="box why"><span class="lbl">直觉</span>人做事也是"想一下 → 做一下 → 看结果 → 再想"。只想不做（CoT）会空想；只做不想（Act）会乱做。ReAct 把这两者在同一条文本流里交织，让 LLM 的推理能力和工具的真实性互补。</div>
+  </div>
+  <details class="deep"><summary>ReAct 的局限与改进方向</summary><div class="inner">
+    <ul>
+      <li><b>贪心、单路径</b>：每步只选一个动作，一旦走错没有回溯 → 树搜索（LATS，§3）、反思（Reflexion，§5）。</li>
+      <li><b>上下文膨胀</b>：每个 observation 都追加到历史里，长任务上下文爆炸 → 截断/总结/外部记忆（§4）。</li>
+      <li><b>Thought 可能和 Action 不一致</b>：模型说要做 A，实际调用了 B；或者 Thought 只是事后合理化（faithfulness 问题，见 <a href="m11-interp.html">11 可解释性</a>）。</li>
+      <li><b>格式脆弱</b>：文本格式解析容易失败 → 结构化 function calling / constrained decoding。</li>
+    </ul>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为 ReAct 是"一种训练方法"。原始 ReAct 是 <b>prompting</b>（few-shot 示例），论文里也做了少量 fine-tuning 实验；它的价值在于定义了"推理-行动交织"这个范式，后续的 agent SFT/RL 都是在这个格式上训练。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>ReAct is the basic pattern behind most agents: the model alternates between a reasoning step, an action like a tool call, and the observation that comes back. Compared with pure chain-of-thought, actions let the model fetch real information, so it hallucinates less. Compared with acting without reasoning, the thoughts act as a working memory — they help the model decompose the goal, track progress and recover from errors. In modern APIs the thought might be hidden reasoning tokens and the action is a structured function call, but the loop is the same. Its main weaknesses are that it's greedy with no backtracking, and the context grows with every observation.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you handle a model that keeps calling the same tool with the same arguments?</b><details><summary>思路</summary><div class="inner">检测循环：对 (tool, args) 做哈希计数，重复超过阈值时在 observation 里提示 "You already called X with these arguments and got Y; try a different approach"；或强制要求重新规划；仍不行就终止并报告。根本原因往往是 observation 信息不足（比如错误信息太模糊），所以也要改进工具反馈。训练层面可以在 RL 里对重复调用加小惩罚（但要小心 reward shaping 带来的偏差）。</div></details></li>
+    <li><b>Do reasoning models still need the explicit Thought step?</b><details><summary>思路</summary><div class="inner">推理模型会在调用工具前产生内部推理（有的 API 支持 interleaved thinking，即在工具调用之间继续思考），所以显式的 "Thought:" 文本模板不再需要，但"先推理再行动"的结构仍然存在。工程上要注意：多轮之间是否保留之前的推理内容，会影响模型的连贯性和上下文成本。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-fc">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Function calling：JSON Schema、并行调用、tool result</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Function calling 是把工具用 JSON Schema 描述给模型，模型输出结构化的调用（工具名 + JSON 参数），由<b>应用代码</b>执行，再把结果作为 tool 消息喂回去；模型本身从不直接执行任何东西。</p><p class="en">Tools are declared with JSON Schema; the model emits a structured call; your code executes it and returns the result as a tool message.</p></div>
+  <div class="deep">
+    <p><b>一次完整的往返</b>（各家 API 字段名不同，结构相同）：</p>
+<pre><code class="language-json">// 1) 请求里声明工具
+"tools": [{
+  "name": "get_weather",
+  "description": "Get current weather for a city. Use for any weather question.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "city": {"type": "string", "description": "City name, e.g. 'Austin'"},
+      "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+    },
+    "required": ["city"]
+  }
+}]
+// 2) 模型返回一个（或多个）tool call，带唯一 id
+{"type": "tool_use", "id": "call_01", "name": "get_weather", "input": {"city": "Austin", "unit": "celsius"}}
+// 3) 应用执行后，把结果用同一个 id 回传
+{"type": "tool_result", "tool_use_id": "call_01", "content": "31C, sunny"}
+// 4) 模型继续：要么再调用工具，要么给最终回答</code></pre>
+    <p><b>关键细节</b>：</p>
+    <ul>
+      <li><b>模型怎么"学会"的</b>：工具定义被序列化进 prompt（通常在 system 部分，以特殊格式/token 包裹），模型在 post-training 中被训练成在合适时机输出特定格式的调用。所以 function calling 本质上仍是<b>文本生成</b>，只是格式被训练得很稳定。</li>
+      <li><b>结构化输出保证</b>：一些 API 提供 strict / structured outputs 模式，用 <b>constrained decoding</b>（按 JSON Schema 构造语法，解码时屏蔽不合法 token）保证输出一定符合 schema。代价：限制 schema 的表达能力，且语法约束可能轻微影响质量。</li>
+      <li><b>并行调用（parallel tool calls）</b>：模型在一轮里输出多个相互独立的调用（比如同时查三个城市天气），应用并发执行后一起回传，每个结果用 id 对应。好处：减少轮数和延迟；风险：调用之间有依赖时并行会出错（需要模型判断独立性）。</li>
+      <li><b>tool_choice</b>：auto（模型决定）/ required 或 any（必须调用某个工具）/ 指定某个工具 / none。</li>
+      <li><b>工具描述就是 prompt</b>：描述写得好坏直接决定调用准确率。写清：什么时候用、什么时候不用、参数格式示例、返回什么、边界情况。</li>
+      <li><b>工具数量</b>：工具太多（几十上百个）时，选择准确率下降，工具定义本身占大量上下文 → 做工具检索（按需加载工具定义）或分层（先选类别）。</li>
+    </ul>
+  </div>
+  <details class="deep"><summary>工具结果怎么设计（ACI 细节）</summary><div class="inner">
+    <ul>
+      <li><b>返回对模型有用的信息，而不是原始 dump</b>：比如搜索结果返回标题+摘要+id，而不是整个 HTML；需要细节时再用 id 取。</li>
+      <li><b>长度控制</b>：截断并明确告诉模型被截断了（"showing 50 of 1,203 lines; use offset to see more"），否则模型会以为看到的是全部。</li>
+      <li><b>可操作的错误信息</b>：不要只返回 "Error 400"，而是 "city 'Austn' not found; did you mean 'Austin'?"。好的错误信息能让模型自我修复，坏的会让它陷入循环。</li>
+      <li><b>用自然语言标识符而不是 UUID</b>：模型对有语义的名字更不容易记错。</li>
+      <li><b>幂等与副作用</b>：读操作可以随便重试；写操作（发邮件、转账、git push）要考虑重复执行的后果，必要时加确认。</li>
+    </ul>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>① 以为模型"调用了 API"——实际执行的是你的代码，安全责任在应用侧（参数校验、权限）。② 忘了 tool result 也是不可信输入（可能包含 prompt injection，§10）。③ 并行调用时结果顺序和 id 对不上。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>With function calling, you describe each tool with a name, a natural-language description and a JSON Schema for its arguments. The model doesn't execute anything — it emits a structured call with an id, your application runs it, and you send the result back as a tool message tied to that id. Under the hood it's still text generation; the model was post-trained to produce that format reliably, and some APIs add constrained decoding so the arguments are guaranteed to match the schema. Models can also emit several independent calls in one turn, which cuts latency. In practice the quality of the tool descriptions and the error messages matters as much as the model.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How does constrained decoding guarantee valid JSON, and what's the cost?</b><details><summary>思路</summary><div class="inner">把 JSON Schema 编译成一个语法（有限状态机或下推自动机），解码每一步只允许那些能让前缀保持合法的 token（其余 logits 设为 \(-\infty\)）。代价：(1) 编译和每步 mask 计算的开销；(2) tokenizer 的 token 和语法符号不对齐，需要处理 token 跨越边界的情况；(3) 强行约束可能把模型推到它本来不会选的低概率路径，轻微影响语义质量；(4) 只保证语法合法，不保证语义正确（参数值可能是错的）。</div></details></li>
+    <li><b>You have 300 tools. How do you design the system?</b><details><summary>思路</summary><div class="inner">不要全部塞进上下文：(1) 工具检索：对工具描述做 embedding，按当前任务检索 top-k 工具动态加载；(2) 分层：先给一个"选择工具类别/搜索工具"的元工具；(3) 合并相似工具，减少重叠（重叠描述最容易让模型选错）；(4) 用 eval 集测量选择准确率，针对混淆对改描述。也可以让 agent 写代码调用一个 SDK（CodeAct 思路），用代码组合代替逐个调用。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-mcp">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>MCP（Model Context Protocol）简述</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>MCP 是一个开放协议，用统一的 client-server 接口把工具、数据和 prompt 模板接入 LLM 应用，把 "M 个应用 × N 个工具" 的集成问题变成 "M + N"。</p><p class="en">MCP is an open protocol that standardizes how LLM applications connect to tools and data, turning an M×N integration problem into M+N.</p></div>
+  <div class="deep">
+    <p>由 Anthropic 在 2024 年 11 月开源；2025 年 12 月 Anthropic 把 MCP 捐给了 Linux Foundation 下新成立的 <b>Agentic AI Foundation (AAIF)</b>，与 Block、OpenAI 共同发起（<a href="https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation" target="_blank" rel="noreferrer">公告</a>）。截至该公告，已被 ChatGPT、Cursor、Gemini、Microsoft Copilot、VS Code 等采用。</p>
+    <p><b>架构</b>（参考 <a href="https://modelcontextprotocol.io/specification/2025-06-18/basic" target="_blank" rel="noreferrer">规范</a>）：</p>
+    <ul>
+      <li><b>Host</b>：LLM 应用（如 IDE、聊天客户端）；内含一个或多个 <b>client</b>，每个 client 连接一个 <b>server</b>。</li>
+      <li><b>消息格式</b>：JSON-RPC 2.0（request / response / notification）。</li>
+      <li><b>传输</b>：本地用 stdio（子进程标准输入输出）；远程用基于 HTTP 的传输（Streamable HTTP）；HTTP 传输有配套的授权规范（基于 OAuth）。</li>
+      <li><b>Server 提供的原语</b>：<b>tools</b>（模型可调用的函数）、<b>resources</b>（可读取的数据，如文件、数据库记录）、<b>prompts</b>（模板）。</li>
+      <li><b>Client 提供的原语</b>：如 <b>sampling</b>（server 请求 host 的 LLM 生成内容）、<b>roots</b>（告诉 server 可访问的目录范围）等。</li>
+      <li><b>生命周期</b>：初始化时做能力协商（capability negotiation），之后可以 list_tools / call_tool 等。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>类比 USB 或 LSP（Language Server Protocol）：LSP 让任何编辑器都能接任何语言的补全服务；MCP 让任何 LLM 应用都能接任何工具服务。对模型而言，MCP 工具最终还是被转换成 function calling 的工具定义——MCP 解决的是<b>集成和分发</b>，不是模型能力。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为 MCP 让模型"更会用工具"。它只是协议。安全方面要特别注意：第三方 MCP server 的工具描述和返回内容都进入模型上下文，是 prompt injection 的入口（例如在工具描述里藏指令，所谓 tool poisoning）；安装 server 等于给它相应的权限。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>MCP is an open protocol for connecting LLM applications to external tools and data. A host application runs clients that talk to MCP servers over JSON-RPC, either locally over stdio or remotely over HTTP. Servers expose tools, resources and prompt templates. The value is standardization — instead of every app writing a custom integration for every service, you write one server and every MCP-compatible client can use it. It doesn't make the model better at tool use by itself, and it widens the attack surface, since tool descriptions and outputs from third-party servers go straight into the context.</p></div>
+</section>
+
+<section class="concept" id="c-codeact">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>CodeAct：用可执行代码作为动作</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>CodeAct 让模型直接写 Python 代码作为动作，在解释器里执行；代码天然支持循环、条件、变量和组合多个工具，比一次一个 JSON 调用更有表达力，也更贴近模型的预训练数据。</p><p class="en">CodeAct uses executable Python as the action space, which gives control flow and composition for free and matches pretraining data.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2402.01030" target="_blank" rel="noreferrer">Executable Code Actions Elicit Better LLM Agents (Wang et al., 2024)</a>。对比 JSON 调用：</p>
+    <div class="vs"><div><div class="side-lbl">JSON TOOL CALLS（多轮）</div><pre>call search(q="GPU price A")
+ → obs
+call search(q="GPU price B")
+ → obs
+call calculator("a - b")
+ → obs</pre></div><div><div class="side-lbl">CODE ACTION（一轮）</div><pre>prices = {g: search(f"GPU price {g}")
+          for g in ["A", "B"]}
+diff = prices["A"] - prices["B"]
+print(diff)</pre></div></div>
+    <ul>
+      <li><b>优势</b>：(1) 一个动作完成多个工具调用 + 数据处理，轮数更少；(2) 可以用现成的库；(3) 执行错误（traceback）是信息丰富的反馈，便于自我调试；(4) 模型在预训练中见过海量代码，写代码比写特定 JSON 格式更"自然"。</li>
+      <li><b>代价</b>：必须有安全的沙箱（任意代码执行）；输出更难审计和限权；对弱模型来说代码出错率更高。</li>
+      <li>延伸：coding agent 用 shell 命令作为动作（bash 本身就是"代码动作"）；也有框架让 agent 以代码形式调用 MCP 工具，以减少把大量中间结果塞进上下文。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>CodeAct replaces JSON tool calls with executable Python as the action. One code action can call several tools, loop, branch and post-process results, so you need fewer turns, and the traceback on failure is a rich signal for self-debugging. It also plays to what models saw in pretraining. The cost is that you need a solid sandbox, because you're executing arbitrary code, and it's harder to audit or restrict than a fixed set of typed tools.</p></div>
+</section>
+
+<section class="concept" id="c-toolformer">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Toolformer：自监督学会何时调用工具</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Toolformer 让模型自己在文本中插入候选 API 调用，只保留那些"插入调用结果后能降低后续 token 预测 loss"的调用，再用这些数据微调，从而自监督地学会何时、如何调用工具。</p><p class="en">Toolformer self-annotates text with API calls and keeps only those whose results reduce the LM loss on future tokens, then fine-tunes on them.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2302.04761" target="_blank" rel="noreferrer">Schick et al., 2023</a>。工具包括计算器、QA 系统、搜索、翻译、日历。过滤标准：设 \(L^+\) 为"插入调用和结果"后后续 token 的加权 loss，\(L^-\) 为不调用（或只插入调用不插入结果）中较小的那个，保留满足 \(L^- - L^+ \ge \tau\) 的调用。</p>
+    <p><b>历史意义</b>：早期展示"工具使用可以从语言建模目标中自监督地学出来"。今天主流做法改成了 SFT（人写/模型合成的调用轨迹）+ RL（以任务成功为奖励），但"用对下游的有用性筛选工具调用"这一思想在 agent 数据合成中仍常见。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Toolformer was an early demonstration that tool use can be learned in a self-supervised way. The model samples candidate API calls inside ordinary text, executes them, and keeps a call only if inserting its result lowers the language-modeling loss on the following tokens. Fine-tuning on that filtered data teaches the model when a calculator or search call actually helps. Today we mostly use SFT on trajectories plus RL on task success, but the "filter by downstream usefulness" idea is still common in data synthesis.</p></div>
+</section>
+
+<section class="concept" id="c-errors">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>错误处理与重试</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Agent 的错误分三层：格式错误（解析失败）、工具错误（参数错、超时、权限）、语义错误（调用成功但方向错）。前两层由 harness 捕获并<b>以 observation 形式回传</b>让模型自己修；第三层需要验证、反思或人工介入。</p><p class="en">Catch parse and tool errors in the harness and feed them back as observations; semantic errors need verification or a human.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>错误类型</th><th>例子</th><th>处理</th></tr>
+      <tr><td>格式/解析</td><td>JSON 不合法、工具名拼错</td><td>回传 "Could not parse…; valid tools are…"；用 constrained decoding 预防</td></tr>
+      <tr><td>工具执行</td><td>参数越界、文件不存在、API 超时、限流</td><td>try/except 包裹，返回可操作的错误信息；瞬时错误（超时、429）在 harness 层指数退避重试，不必惊动模型</td></tr>
+      <tr><td>语义</td><td>改错了文件、搜索方向错、误解任务</td><td>运行测试/verifier、要求模型检查结果、反思、checkpoint 回滚、人工确认</td></tr>
+      <tr><td>循环/停滞</td><td>重复相同调用，没有进展</td><td>重复检测、步数和预算上限、强制重规划</td></tr>
+      <tr><td>上下文溢出</td><td>observation 太长</td><td>截断 + 提示、总结、把大结果写文件只返回路径</td></tr>
+    </table>
+    <p><b>原则</b>：(1) <b>永远不要让工具异常杀死循环</b>——异常是信息，应该进入上下文；(2) 区分<b>可重试</b>（网络抖动）和<b>不可重试</b>（参数错，重试一样错）；(3) 有副作用的操作重试前要确认幂等性；(4) 设置硬性上限（步数、token、钱、时间），到达上限要优雅退出并报告状态。§11 的代码演示了这些。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I separate errors into three layers. Format errors and tool errors should be caught by the harness and returned to the model as observations with an actionable message — the model is usually good at fixing them if you tell it what went wrong and what the valid options are. Transient failures like timeouts or rate limits I'd retry with backoff at the harness level. Semantic errors — the call succeeded but it was the wrong thing to do — are the hard part; you need a verifier like tests, a checkpoint to roll back to, or a human. And there should always be hard budgets on steps, tokens and time.</p></div>
+</section>
+
+<!-- ============================ §3 ============================ -->
+<h2 class="sec" id="s-plan"><span class="num">§3 · PLANNING</span>规划：分解、先计划后执行、搜索、重规划</h2>
+<p class="sec-intro">ReAct 是"边走边想"的贪心策略。当任务很长或很容易走错时，需要更显式的规划。面试中这部分一般问"你会怎么让 agent 处理一个 50 步的任务"。</p>
+
+<section class="concept" id="c-decomp">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>任务分解与 Plan-and-Execute</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>先让模型生成一个高层计划（子目标列表），再逐个执行；执行中根据 observation 检查计划是否仍然成立，不成立就重规划。好处是全局视野和进度可追踪，坏处是计划可能基于错误假设。</p><p class="en">Plan first, execute step by step, and replan when observations contradict the plan.</p></div>
+  <div class="deep">
+    <p><b>几种做法</b>：</p>
+    <ul>
+      <li><b>Plan-and-Solve 提示</b>（<a href="https://arxiv.org/abs/2305.04091" target="_blank" rel="noreferrer">Wang et al., 2023</a>）：零样本提示"先理解问题、制定计划，再一步步执行"，减少 CoT 的漏步错误。</li>
+      <li><b>Plan-and-Execute 架构</b>：planner（可以是强模型）输出步骤列表 → executor（可以是便宜模型或 ReAct 子 agent）执行每一步 → 结果回到 planner 决定继续、修改还是结束。好处：planner 不必看到所有细节，上下文更干净；executor 职责单一。</li>
+      <li><b>显式 TODO 列表</b>：今天很多 coding agent 让模型维护一个 TODO/计划文件或工具（写入、勾选），这既是规划也是<b>外部化的状态</b>（§7）：上下文被压缩后，计划仍然在。</li>
+      <li><b>层次化（hierarchical）</b>：高层目标 → 子目标 → 原子动作。每层用不同粒度的上下文；高层出错代价大，可以在高层加人工确认或更强的验证。和 RL 里的 options / HRL 思想类似。</li>
+    </ul>
+    <p><b>重规划（replanning）的触发</b>：工具返回意外结果、子任务失败多次、发现新信息使原假设失效、预算消耗超预期。实践中最常见的失败不是"不会规划"，而是<b>不肯放弃一个已经失效的计划</b>（plan persistence）或反过来<b>频繁推翻计划导致没有进展</b>。</p>
+    <div class="box why"><span class="lbl">直觉</span>先计划后执行相当于"开环 + 定期闭环"。纯开环（一次计划执行到底）对环境变化太脆弱；纯闭环（ReAct 每步重新决定）缺少全局结构，容易在局部打转。实际最好的是"有计划，但计划是可修改的"。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>以为计划越详细越好。在部分可观测的环境里，过早的细节计划基于还没看到的信息，大概率要推翻，浪费 token 还会造成"锚定"。好的计划是<b>粗粒度、可验证的里程碑</b>，细节在执行中再定。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For longer tasks I'd add explicit planning on top of ReAct: the model first writes a coarse plan — a list of verifiable milestones — and then executes them one by one, checking after each step whether the plan still holds and replanning when an observation contradicts it. Keeping the plan in an external TODO file also makes it robust to context compaction. The two classic failure modes are sticking to a plan that's clearly broken and the opposite, replanning so often that nothing gets finished, so I'd make the replanning triggers explicit — repeated failures, surprising observations, or budget overruns.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Should the planner and the executor be the same model?</b><details><summary>思路</summary><div class="inner">不一定。用强模型规划、弱模型执行可以省钱（规划 token 少，执行 token 多）；但两者能力差距太大时，executor 可能无法完成 planner 设想的步骤，或 planner 不了解 executor 的能力边界。同一个模型的好处是隐含知识一致。可以通过评估"每个子任务的完成率"来决定。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-search">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>搜索式规划：Tree of Thoughts 与 LATS</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>把推理/行动看成树：在每个节点采样多个候选、用模型或环境评估、保留有希望的分支并允许回溯。ToT 用于纯推理，LATS 把 MCTS 带到有环境反馈的 agent 任务上。代价是成倍的计算量，并且需要可回退的环境。</p><p class="en">Treat reasoning or acting as tree search: branch, evaluate, backtrack. ToT does it for thoughts, LATS applies MCTS to agent tasks.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Tree of Thoughts</b>（<a href="https://arxiv.org/abs/2305.10601" target="_blank" rel="noreferrer">Yao et al., 2023</a>）：把中间"思路"作为节点，模型生成多个候选思路，再用模型自评（打分或投票）评估状态，用 BFS/DFS 搜索。在 Game of 24 这类需要试错的题上远超 CoT。</li>
+      <li><b>LATS (Language Agent Tree Search)</b>（<a href="https://arxiv.org/abs/2310.04406" target="_blank" rel="noreferrer">Zhou et al., 2023</a>）：用 MCTS 统一推理、行动和规划。节点是 agent 状态，扩展时采样多个动作，价值由 LM 打分 + 自一致性估计，环境的真实反馈（如测试是否通过）参与评估，失败轨迹会生成反思（类似 Reflexion）指导后续搜索。</li>
+    </ul>
+    <p><b>关键限制：环境能否回退</b>。在纯推理或可模拟的环境（代码可以在新沙箱重跑、网页可以重新加载）里可以回溯；但对有真实副作用的环境（发了邮件、下了订单）无法"撤销"，树搜索只能在模拟器或 dry-run 模式中做。</p>
+    <p><b>和 test-time compute 的关系</b>：搜索是一种并行 + 串行混合的测试时计算扩展（见 <a href="m07-reasoning.html">07 推理</a>）。它的效果上限取决于<b>价值估计/verifier 的质量</b>：verifier 不可靠时，搜索越深越容易被"看起来好"的错误分支吸引（§11 的模拟展示了这一点）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Search-based planning treats the trajectory as a tree. Tree of Thoughts branches over intermediate reasoning steps and uses the model itself to evaluate states, with BFS or DFS. LATS brings Monte Carlo tree search to agents, combining LM value estimates with real environment feedback and reflections from failed rollouts. It can help a lot on tasks that need trial and error, but it multiplies compute, it needs an environment you can reset or simulate, and it's only as good as the value function — with a weak evaluator, deeper search can just find more convincing wrong answers.</p></div>
+</section>
+
+<!-- ============================ §4 ============================ -->
+<h2 class="sec" id="s-mem"><span class="num">§4 · MEMORY &amp; CONTEXT</span>记忆与上下文工程</h2>
+<p class="sec-intro">长任务里，"模型此刻看到什么"几乎决定了一切。这一节从记忆分类讲到 RAG、压缩、context engineering 和 MemGPT。</p>
+
+<section class="concept" id="c-memtypes">
+  <div class="concept-head"><span class="pri p1">★</span><h3>短期记忆 vs 长期记忆</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>短期记忆 = 当前上下文窗口里的内容（消息历史、工具结果），容量有限、全部"可见"；长期记忆 = 外部存储（文件、数据库、向量库），容量大，但需要显式地写入和检索才能用。</p><p class="en">Short-term memory is the context window; long-term memory is external storage that must be explicitly written and retrieved.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th></th><th>短期（in-context）</th><th>长期（external）</th></tr>
+      <tr><td>位置</td><td>prompt / 消息历史 / KV cache</td><td>文件、SQL、向量库、知识图谱</td></tr>
+      <tr><td>容量</td><td>受上下文长度限制；越长越贵越慢，且质量下降（context rot）</td><td>几乎无限</td></tr>
+      <tr><td>访问</td><td>注意力自动"读取"</td><td>需要工具调用：写入（何时存、存什么）+ 检索（何时查、查什么）</td></tr>
+      <tr><td>失败模式</td><td>溢出、被截断、关键信息被淹没</td><td>没存、存错、检索不到、检索到过时信息</td></tr>
+    </table>
+    <p>也有借用认知科学的分法：<b>working memory</b>（当前上下文）、<b>episodic</b>（过去发生的经历/轨迹）、<b>semantic</b>（事实与知识）、<b>procedural</b>（技能，如 Voyager 的代码技能库，或者模型权重里的能力）。Generative Agents（<a href="https://arxiv.org/abs/2304.03442" target="_blank" rel="noreferrer">Park et al., 2023</a>）是经典例子：记忆流 + 按 recency / importance / relevance 打分检索 + 周期性"反思"把具体记忆抽象成高层结论。</p>
+    <p><b>第三种"记忆"：权重</b>。fine-tuning 把经验写进参数；它最持久，但更新慢、不可精确删除、可能遗忘。研究问题："什么该放上下文、什么该放外部存储、什么该训练进权重" 是 agent 记忆设计的核心取舍。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Short-term memory is just what's in the context window — the message history and tool outputs. It's automatically accessible through attention, but it's limited, expensive, and quality degrades as it gets long. Long-term memory lives outside the model — files, a database, a vector store — so it's effectively unlimited, but the agent has to decide what to write and when to retrieve, and both of those decisions can fail. A third option is to write experience into the weights through fine-tuning. A lot of agent design is deciding which information belongs in which of those three places.</p></div>
+</section>
+
+<section class="concept" id="c-rag">
+  <div class="concept-head"><span class="pri p1">★</span><h3>RAG 基础：dense retrieval、chunking、reranking</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RAG = 先检索相关文档片段，再把它们放进上下文让模型生成。标准流水线：切块（chunking）→ 向量化（embedding）→ 近似最近邻检索（往往混合 BM25）→ 重排序（cross-encoder reranker）→ 拼进 prompt。</p><p class="en">Retrieve relevant chunks, then generate conditioned on them: chunk, embed, retrieve (often hybrid with BM25), rerank, and stuff into the prompt.</p></div>
+  <div class="deep">
+    <p><b>起源</b>：<a href="https://arxiv.org/abs/2005.11401" target="_blank" rel="noreferrer">RAG (Lewis et al., 2020)</a> 把 DPR 检索器和 seq2seq 生成器端到端结合；<a href="https://arxiv.org/abs/2004.04906" target="_blank" rel="noreferrer">DPR (Karpukhin et al., 2020)</a> 是 dense retrieval 的代表：双塔（bi-encoder）分别编码 query 和 passage，相似度用内积：</p>
+    $$ s(q, d) = E_Q(q)^\top E_P(d) $$
+    <p>训练用对比损失（in-batch negatives + hard negatives）：</p>
+    $$ \mathcal{L} = -\log \frac{\exp(s(q, d^+))}{\exp(s(q, d^+)) + \sum_{j} \exp(s(q, d^-_j))} $$
+    <p><b>流水线每一步的要点</b>：</p>
+    <ul>
+      <li><b>Chunking</b>：块太大 → 检索粒度粗、嵌入被稀释、浪费上下文；块太小 → 丢失上下文、指代断裂。常见做法：按结构（标题、段落、代码函数）切，几百 token 一块，相邻块有重叠；给每块加上文档标题/章节等元信息（有时用 LLM 为块生成一句上下文说明再嵌入）。</li>
+      <li><b>Embedding + ANN</b>：文档离线编码存进向量索引（HNSW、IVF-PQ 等近似最近邻），查询时只编码 query，所以检索很快。</li>
+      <li><b>Hybrid</b>：dense 擅长语义相似，BM25（稀疏、词匹配）擅长精确关键词、罕见实体、代码标识符；两者结合（如 reciprocal rank fusion）通常更稳。</li>
+      <li><b>Reranking</b>：bi-encoder 召回 top-50/100 → cross-encoder（query 和文档拼在一起过一个 Transformer，输出相关性分数）精排到 top-5。cross-encoder 更准但不能预计算，所以只用在少量候选上。这是经典的"召回 + 精排"两阶段。</li>
+      <li><b>生成</b>：把片段按相关性放进 prompt，要求引用来源。注意 "lost in the middle"（<a href="https://arxiv.org/abs/2307.03172" target="_blank" rel="noreferrer">Liu et al., 2023</a>）：模型对长上下文中间位置的信息利用更差。</li>
+    </ul>
+    <p><b>Agentic RAG</b>：不是固定"检索一次"，而是让 agent 自己决定是否检索、改写 query、多跳检索、判断结果是否够用。搜索本身是一个工具（例如 Search-R1 用 RL 训练模型在推理中调用搜索，<a href="https://arxiv.org/abs/2503.09516" target="_blank" rel="noreferrer">Jin et al., 2025</a>）。coding agent 常常不用向量库，直接用 grep / glob / 读文件做"just-in-time"检索。</p>
+  </div>
+  <details class="deep"><summary>RAG 评估与常见故障</summary><div class="inner">
+    <ul>
+      <li>分开评估<b>检索</b>（recall@k、MRR、nDCG：正确片段在不在 top-k）和<b>生成</b>（答案正确性、是否忠于检索内容 faithfulness、引用是否正确）。先确认检索 recall 够高，否则调生成没意义。</li>
+      <li>故障：query 和文档用词不同（用 query 改写 / HyDE）；多跳问题一次检索不够；检索到的内容与模型参数知识冲突时模型可能忽略检索结果；文档过时；检索内容里包含 prompt injection。</li>
+    </ul>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>"有了长上下文就不需要 RAG"。长上下文贵、慢、有 context rot，且知识库可能远大于任何上下文窗口；RAG 和长上下文是互补的：RAG 负责从海量里挑出候选，长上下文负责容纳足够多的候选。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Retrieval-augmented generation means retrieving relevant passages and conditioning the generation on them. The standard pipeline is: chunk documents along their natural structure, embed them with a bi-encoder trained contrastively, retrieve with approximate nearest neighbors — usually combined with BM25 for exact keyword matches — then rerank the top candidates with a cross-encoder, and put the best few in the prompt with citations. I'd evaluate retrieval recall separately from answer faithfulness, because if the right chunk never gets retrieved, no amount of prompt tuning helps. In agents, retrieval becomes a tool the model decides when to call, often just grep and file reads.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why use a bi-encoder for retrieval but a cross-encoder for reranking?</b><details><summary>思路</summary><div class="inner">bi-encoder 的文档向量可以离线预计算，查询时只需一次 query 编码 + ANN 搜索，能扩展到亿级文档；但 query 和文档之间没有 token 级交互，精度有限。cross-encoder 把 query 和文档拼接后联合编码，有完整的交叉注意力，更准，但每个 (q, d) 对都要跑一次前向，只能用于几十到几百个候选。所以两阶段：便宜的高召回 + 昂贵的高精度。</div></details></li>
+    <li><b>Why are in-batch negatives effective, and what are hard negatives for?</b><details><summary>思路</summary><div class="inner">in-batch negatives：同一批里其他 query 的正例当作当前 query 的负例，几乎零成本地得到 B−1 个负例，batch 越大对比信号越强。但它们大多是"容易负例"（主题完全不同）。hard negatives（例如 BM25 检索出的高分但不相关的段落）迫使模型学习细粒度区分。注意 hard negative 里可能混入假负例（其实相关），需要过滤。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-context">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Context engineering、压缩与 context rot</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Context engineering 是在每一步为模型挑选"最小但足够的高信号 token 集合"：系统提示、工具、检索内容、历史都算。长任务的三大手段：compaction（总结后重开上下文）、结构化笔记（写到外部文件）、子 agent（干净上下文做子任务，只返回摘要）。</p><p class="en">Context engineering curates the smallest high-signal token set at each step; for long tasks use compaction, structured note-taking, and sub-agents.</p></div>
+  <div class="deep">
+    <p><b>为什么需要</b>：上下文越长，模型对其中信息的利用越差。Chroma 的技术报告 <a href="https://www.trychroma.com/research/context-rot" target="_blank" rel="noreferrer">Context Rot (2025)</a> 测了 18 个模型，发现即使在简单任务上，性能也随输入长度增加而下降；语义上与问题不太相似的"针"、以及主题相关的干扰项，会让下降更快。所以"窗口能装下"≠"模型能用好"。</p>
+    <p>Anthropic 的 <a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents" target="_blank" rel="noreferrer">Effective context engineering for AI agents (2025)</a> 把它定义为 prompt engineering 的延伸，总结了长程任务的技术：</p>
+    <ul>
+      <li><b>Compaction（压缩）</b>：接近上下文上限时，让模型总结历史（保留目标、关键决策、未解决问题、重要文件/路径），用总结开启新窗口。最轻量的形式是<b>清除旧的工具结果</b>（原始输出已经被消化过了）。难点：总结会丢信息，而且丢什么事先不知道；太激进会丢掉后来才变重要的细节。</li>
+      <li><b>Structured note-taking</b>：agent 把进度、发现、TODO 写到上下文之外的文件里，需要时再读回来。相当于"外部工作记忆"，对跨越多个上下文窗口的任务非常关键。</li>
+      <li><b>Sub-agent 架构</b>：主 agent 把聚焦的子任务（如"搜一下这个 API 的用法"）交给子 agent，子 agent 在干净的上下文里可能用掉很多 token 探索，最后只返回一段浓缩结果。主 agent 的上下文因此保持干净。</li>
+      <li><b>Just-in-time retrieval</b>：不预先塞入所有可能相关的数据，而是保留轻量引用（文件路径、查询、链接），需要时用工具加载。常见是混合策略：预加载少量关键信息 + 其余按需获取。</li>
+    </ul>
+    <p><b>其他实用技巧</b>：系统提示保持在"合适的抽象高度"（不写死脆弱的 if-else，也不空泛）；工具集精简且不重叠；few-shot 示例选少量有代表性的而不是罗列所有边界情况；把稳定内容放在前面以利用 <b>prompt caching</b>（前缀不变时 KV cache 可复用，显著降低成本和延迟，见 <a href="m08-inference.html">08</a>）。</p>
+    <div class="box why"><span class="lbl">直觉</span>注意力是有限的"预算"：每多一个无关 token，都在和有用 token 争夺注意力。上下文工程就是在每一步重新问"如果我是一个刚接手这项工作的同事，我需要看到什么"。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>① 只靠增大上下文窗口解决长任务；② 压缩时只保留"做了什么"而丢了"为什么这样做"和"试过但失败的方法"，导致模型在新窗口里重复失败的尝试；③ 频繁改动系统提示前缀，使 prompt cache 失效，成本暴增。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Context engineering is about curating, at every step, the smallest set of high-signal tokens the model needs. It matters because performance degrades as context grows — Chroma's context rot report showed this across many models even on simple retrieval tasks. For long-horizon work the main tools are compaction, where you summarize the history and restart with the summary; structured note-taking, where the agent keeps progress and decisions in external files; and sub-agents, which burn tokens in a clean context and return only a condensed result. I'd also load data just in time through tools rather than up front, and keep the prompt prefix stable so caching works.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you evaluate a compaction strategy?</b><details><summary>思路</summary><div class="inner">在长任务 benchmark 上做 A/B：固定模型和 harness，只改 compaction 策略（不压缩/截断/总结/总结+笔记），比较任务成功率、总 token 成本、以及压缩后的"重复失败率"（是否重复已经失败过的动作）。还可以做探针式评估：压缩后问模型关键事实（目标、已改文件、已知 bug），测信息保留率。注意多种子和置信区间，因为长任务方差大。</div></details></li>
+    <li><b>Is a bigger context window a substitute for memory management?</b><details><summary>思路</summary><div class="inner">不是。(1) context rot：长了也用不好；(2) 成本：注意力计算和 KV cache 随长度增长，每一步都要为整个前缀付费（缓存可缓解）；(3) 任务可能运行数小时、产生远超任何窗口的 token。大窗口降低了压缩频率，但没有消除对选择性的需求。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-memgpt">
+  <div class="concept-head"><span class="pri p3">○</span><h3>MemGPT：把上下文当作操作系统的内存层级</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>MemGPT 借用操作系统的虚拟内存思想：上下文窗口是"主存"，外部存储是"磁盘"，模型通过函数调用自己在两者之间换入换出信息，从而在有限窗口下实现"无限"上下文。</p><p class="en">MemGPT treats the context window like RAM and external storage like disk, with the LLM paging information in and out via function calls.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2310.08560" target="_blank" rel="noreferrer">Packer et al., 2023</a>。上下文分为：固定的系统指令、可编辑的 working context（核心事实，如用户偏好）、FIFO 消息队列；外部有 recall storage（完整历史）和 archival storage（任意文档）。当队列接近满时触发"内存压力"警告，模型可以调用函数把重要信息写入外部存储，或检索回来。实验场景是长期对话和大文档分析。</p>
+    <p><b>意义</b>：把"记忆管理"变成模型自己的动作（而不是 harness 写死的规则），这和后来"让模型自己写笔记、自己决定何时 compaction"的方向一致。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>MemGPT borrows the virtual-memory idea from operating systems. The context window is main memory, external storage is disk, and the model itself pages information in and out using function calls — writing important facts to archival storage and searching it later. The key idea is making memory management an action the model takes rather than a fixed rule in the harness, which is the direction a lot of later agent memory work went.</p></div>
+</section>
+
+<!-- ============================ §5 ============================ -->
+<h2 class="sec" id="s-reflect"><span class="num">§5 · REFLECTION &amp; SELF-IMPROVEMENT</span>反思与自我改进</h2>
+<p class="sec-intro">"让模型检查并改进自己的输出"是非常诱人的想法，但面试官最想听到的是：<b>什么时候有效（有外部反馈），什么时候无效（没有外部反馈）</b>。</p>
+
+<section class="concept" id="c-reflexion">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Reflexion 与 Self-Refine</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Self-Refine：同一模型生成 → 自我反馈 → 修改，循环；Reflexion：任务失败后，模型用语言写下"为什么失败、下次怎么做"，存入情景记忆，在下一次尝试时作为上下文——相当于"语言形式的强化学习"，不更新权重。</p><p class="en">Self-Refine iterates generate-feedback-revise; Reflexion stores verbal lessons from failed trials in memory to guide the next attempt — "verbal RL" without weight updates.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Self-Refine</b>（<a href="https://arxiv.org/abs/2303.17651" target="_blank" rel="noreferrer">Madaan et al., 2023</a>）：单模型三角色（生成器、反馈者、修改者），在代码优化、对话回复、数学等 7 个任务上提升。注意它对"开放式质量"任务（风格、可读性）更有效。</li>
+      <li><b>Reflexion</b>（<a href="https://arxiv.org/abs/2303.11366" target="_blank" rel="noreferrer">Shinn et al., 2023</a>）：Actor（执行任务）、Evaluator（给出成功/失败信号——可以是单元测试、环境奖励或启发式）、Self-Reflection（把失败转成文字教训）。关键是 <b>Evaluator 的信号往往来自外部</b>：在 HumanEval 上用模型自己生成的单元测试执行结果作为反馈；在 ALFWorld 上用环境的成功信号和启发式（如动作重复检测）。</li>
+    </ul>
+    <p><b>Reflexion 和 RL 的类比</b>：失败信号 ≈ 奖励；反思文字 ≈ "语义梯度"；记忆 ≈ 被更新的 "策略参数"（但存在上下文中）。优点：样本效率高、可解释；缺点：受上下文长度限制，教训可能不正确，无法真正提升模型的底层能力。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Self-Refine has one model generate, critique its own output and revise it in a loop. Reflexion is more agentic: after a failed attempt, the model writes a short verbal reflection on why it failed and what to do differently, and that goes into an episodic memory for the next trial. You can think of it as reinforcement learning where the "parameters" are text in the context. What's important is where the success signal comes from — in Reflexion's strongest results it's external, like unit-test execution or the environment's success flag, not the model's own judgment.</p></div>
+</section>
+
+<section class="concept" id="c-selfcorrect">
+  <div class="concept-head"><span class="pri p1">★</span><h3>没有外部反馈时，自我纠错的局限</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Huang et al. (2023) 发现：在推理任务上，如果没有外部反馈（不告诉模型答案对不对），"让模型自己检查再改"通常不提升、甚至降低准确率；很多早期的正面结果其实偷偷用了 oracle 标签来决定何时停止。</p><p class="en">Without external feedback, intrinsic self-correction on reasoning usually doesn't help and can hurt; many earlier gains relied on oracle stopping.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2310.01798" target="_blank" rel="noreferrer">Large Language Models Cannot Self-Correct Reasoning Yet (Huang et al., 2023; ICLR 2024)</a>：</p>
+    <ul>
+      <li>在 GSM8K、CommonSenseQA、HotpotQA 等上，"内在自我纠错"（只靠模型自己判断是否有错）后准确率下降：模型会把原本正确的答案改错，因为它判断"有没有错"的能力并不比生成正确答案的能力强。</li>
+      <li>之前报告的提升，很多用了 <b>oracle</b>：只在答案错误时才让模型修改（这等于泄露了正确性标签）。</li>
+      <li>多智能体辩论在同等推理次数下也不比 self-consistency（多数投票）更好。</li>
+    </ul>
+    <p>后续的综述 <a href="https://arxiv.org/abs/2406.01297" target="_blank" rel="noreferrer">Kamoi et al., 2024 (TACL)</a> 结论类似：用提示让模型依靠自身反馈纠错，在一般任务上没有被可靠地证明有效；<b>有可靠外部反馈</b>时有效；<b>专门训练</b>（大规模微调或 RL）可以让模型获得自我纠错能力——例如 <a href="https://arxiv.org/abs/2409.12917" target="_blank" rel="noreferrer">SCoRe (Kumar et al., 2024)</a> 用多轮在线 RL 训练模型在第二次尝试中改正第一次的错误。今天的推理模型在长 CoT 中出现的"wait, let me re-check"行为，也是 RL 训练出来的，而不是靠外部提示。</p>
+    <div class="box why"><span class="lbl">直觉</span>如果一个模型能可靠地判断自己的答案错了，那它通常一开始就能答对（验证和生成的难度在很多任务上相当）。自我纠错有效的前提是存在<b>验证比生成容易</b>的不对称性——比如代码可以运行测试、数学证明可以用形式化检查器、网页任务可以检查页面状态。这就是为什么 agent 场景里自我纠错比纯推理里有效得多：环境本身就提供了外部反馈。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把 "Reflexion 在 HumanEval 上有效" 和 "Huang et al. 说自我纠错无效" 当成矛盾。两者不矛盾：前者用了执行反馈（外部信号），后者讨论的是没有外部信号的情况。回答时一定要点出"反馈来源"。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The key distinction is whether there's external feedback. Huang et al. showed that intrinsic self-correction on reasoning tasks — asking the model to review and fix its answer without any signal about correctness — generally doesn't help and can even hurt, because the model flips correct answers to wrong ones. Many earlier positive results quietly used oracle labels to decide when to stop. Self-correction does work when there's a reliable external verifier — tests, a compiler, a proof checker, the environment state — or when the model has been explicitly trained to self-correct with RL. That's exactly why agents are a better setting for self-correction than pure reasoning: the environment gives you feedback for free.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Reasoning models clearly backtrack and fix mistakes within their chain of thought. Doesn't that contradict Huang et al.?</b><details><summary>思路</summary><div class="inner">不矛盾，原因有二：(1) 这些行为是 RL 用<b>可验证奖励</b>训练出来的，训练时的外部信号已经"内化"成了模型的验证能力；Huang et al. 讨论的是未经训练、只靠提示的自我纠错。(2) 长 CoT 内部的检查发生在生成过程中（还没提交答案），而且可以做中间计算的验证（比如代回检查），这种局部验证比判断整个答案对错更容易。但也要注意，即使推理模型，也存在把对的改错、过度反复检查（overthinking）的现象。</div></details></li>
+    <li><b>How would you design an experiment to test whether self-correction helps in your agent?</b><details><summary>思路</summary><div class="inner">对照组：不加自我检查；实验组：加自我检查轮。关键控制：<b>等计算量</b>（自我检查多用了 token，对照组应该给同样预算做 best-of-N 或多数投票）；<b>不使用 oracle 停止</b>；报告"对→错"和"错→对"的翻转率，而不仅是净准确率；多种子和置信区间。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-verifier">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Verifier-in-the-loop</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在循环里接入一个独立的验证信号（测试、编译器、形式化检查器、规则、训练过的奖励模型或 LLM judge），用它来决定接受、重试还是回滚。verifier 的假阳性率决定了重试/搜索能把成功率推到多高。</p><p class="en">Put an independent verifier in the loop to accept, retry or roll back; its false-positive rate caps how far retries and search can push success.</p></div>
+  <div class="deep">
+    <p><b>verifier 的谱系</b>（从可靠到不可靠）：形式化检查（Lean 证明检查器、类型检查）&gt; 执行测试（单元测试，但测试可能不完整）&gt; 规则检查（格式、约束）&gt; 训练过的奖励模型 / PRM &gt; LLM-as-judge &gt; 自我评估。</p>
+    <p><b>定量直觉</b>（§11 有完整模拟）：设单次尝试正确率 \(q\)，verifier 对正确答案通过率为 TPR，对错误答案误通过率为 FPR。如果反复采样直到某个样本被 verifier 接受，最终正确率的极限是</p>
+    $$ P(\text{correct} \mid \text{accepted}) = \frac{q \cdot \mathrm{TPR}}{q \cdot \mathrm{TPR} + (1-q)\cdot \mathrm{FPR}} $$
+    <p>例如 \(q = 0.3\)、TPR = 0.9、FPR = 0.1 时极限约为 0.79；FPR = 0.3 时只有约 0.56。<b>无论采样多少次，都突破不了这个上限</b>——这就是"verifier 质量决定 test-time scaling 上限"的数学版本。</p>
+    <p><b>相关</b>：形式化数学是 verifier-in-loop 的理想场景（Lean 检查器几乎没有假阳性），例如 Seed-Prover（<a href="https://arxiv.org/abs/2507.23726" target="_blank" rel="noreferrer">arXiv 2507.23726</a>）把证明器反馈用于迭代修正与 RL（相关阅读）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A verifier in the loop is an independent check — tests, a compiler, a proof checker, a reward model or an LLM judge — that decides whether to accept an output, retry or roll back. The quality of that verifier sets the ceiling. If you keep sampling until something passes, your final accuracy converges to the precision of the verifier: q times the true-positive rate over the total acceptance rate. With a 30 percent base rate and a 10 percent false-positive rate, you top out around 79 percent no matter how many samples you draw. So in practice, improving the verifier is often worth more than scaling the number of attempts.</p></div>
+</section>
+
+<section class="concept" id="c-rsi">
+  <div class="concept-head"><span class="pri p3">○</span><h3>技能库与自我改进：Voyager、STaR、self-play、curricula</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>自我改进的几种形式：积累可复用技能（Voyager 的代码技能库）、用自己的成功轨迹训练自己（STaR / 拒绝采样微调）、自我对弈生成对手和数据、自动课程（从失败中生成新任务）。共同前提都是有一个可靠的成功信号。</p><p class="en">Self-improvement comes from skill libraries, training on one's own verified successes, self-play, and automatic curricula — all of which need a reliable success signal.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>Voyager</b>（<a href="https://arxiv.org/abs/2305.16291" target="_blank" rel="noreferrer">Wang et al., 2023</a>）：Minecraft 中的终身学习 agent。三部分：自动课程（根据当前状态提出下一个探索目标）、技能库（把验证成功的行为存成可执行的 JavaScript 函数，按描述的 embedding 检索复用）、迭代提示（用环境反馈、执行错误和自我验证来修正代码）。技能是<b>程序</b>，所以可组合、可复用——这是"procedural memory"的具体实现。不更新模型权重。</li>
+      <li><b>STaR</b>（<a href="https://arxiv.org/abs/2203.14465" target="_blank" rel="noreferrer">Zelikman et al., 2022</a>）：模型生成推理，保留得出正确答案的推理来微调；对答错的题给出正确答案做 "rationalization"（反推推理）。迭代多轮。它可以被理解为一种近似的 policy gradient / expert iteration。agent 版本：在环境中采样轨迹，保留成功轨迹做 SFT（rejection sampling fine-tuning），是 §8 的基础方法之一。</li>
+      <li><b>Self-play</b>：模型和自己（或自己的历史版本）对抗或合作，生成越来越难的数据，例如一个模型出题、另一个解题，难度自动适配。前提：游戏/任务有客观的胜负判定。</li>
+      <li><b>自动课程</b>：从失败中生成难度合适的新任务，例如 WebRL（<a href="https://arxiv.org/abs/2411.02337" target="_blank" rel="noreferrer">Qi et al., 2024</a>）基于失败尝试生成新的 web 训练任务。目的是保持任务在"能力边缘"——太简单没有梯度信号（全对），太难也没有（全错）。</li>
+    </ul>
+    <p><b>关于"递归自我改进"（RSI）</b>：讨论时要谨慎。现有方法是在<b>固定的验证信号</b>下迭代变强；它们会受限于 verifier 的覆盖面和可被利用的漏洞（reward hacking），以及数据多样性的坍缩。可以说："Current self-improvement loops are bounded by the verifier — they improve what can be checked."</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There are a few flavors of self-improvement. Voyager accumulates a library of verified skills as executable code and retrieves them later, which is a nice form of procedural memory without touching the weights. STaR and rejection-sampling fine-tuning train the model on its own successful trajectories, which is basically a crude policy-gradient step. Self-play and automatic curricula generate new tasks at the edge of the model's ability. All of these depend on a reliable success signal, so I'd say current self-improvement loops are bounded by what we can verify, and they're vulnerable to exploiting holes in that verifier.</p></div>
+</section>
+
+<!-- ============================ §6 ============================ -->
+<h2 class="sec" id="s-multi"><span class="num">§6 · MULTI-AGENT SYSTEMS</span>多智能体</h2>
+<p class="sec-intro">多智能体是热门但容易说空话的话题。面试时最好的回答结构是：有哪些形态 → 有证据说明什么时候有用 → 有证据说明什么时候没用 → 你会怎么在等预算条件下验证。</p>
+
+<section class="concept" id="c-mas-forms">
+  <div class="concept-head"><span class="pri p1">★</span><h3>多智能体的形态：辩论、角色分工、编排</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>多智能体 = 多个 LLM 实例（通常是同一个模型配不同提示/工具/上下文）通过消息协作。三大类：并行采样投票、辩论/互评、角色分工（SOP、orchestrator-subagents）。</p><p class="en">Multi-agent systems are multiple LLM instances — often the same model with different prompts, tools and contexts — coordinating through messages.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>形态</th><th>代表</th><th>机制</th></tr>
+      <tr><td>采样 + 投票</td><td>More Agents Is All You Need（<a href="https://arxiv.org/abs/2402.05120" target="_blank" rel="noreferrer">Li et al., 2024</a>）</td><td>多个 agent 独立回答，多数投票；本质是 self-consistency / ensemble</td></tr>
+      <tr><td>辩论</td><td>Multiagent Debate（<a href="https://arxiv.org/abs/2305.14325" target="_blank" rel="noreferrer">Du et al., 2023</a>）</td><td>多个实例各自回答，多轮互相阅读对方答案并更新，最后收敛</td></tr>
+      <tr><td>角色扮演对话</td><td>CAMEL（<a href="https://arxiv.org/abs/2303.17760" target="_blank" rel="noreferrer">Li et al., 2023</a>）</td><td>"AI 用户"和"AI 助手"两个角色通过 inception prompting 自主对话完成任务</td></tr>
+      <tr><td>SOP 角色分工</td><td>MetaGPT（<a href="https://arxiv.org/abs/2308.00352" target="_blank" rel="noreferrer">Hong et al., 2023</a>）</td><td>产品经理、架构师、工程师、QA 等角色按标准作业流程产出结构化文档，减少自由对话的混乱</td></tr>
+      <tr><td>通用对话框架</td><td>AutoGen（<a href="https://arxiv.org/abs/2308.08155" target="_blank" rel="noreferrer">Wu et al., 2023</a>）</td><td>可定制的 "conversable agents"，支持人类参与、工具执行、灵活的对话模式</td></tr>
+      <tr><td>Orchestrator + subagents</td><td>Anthropic 多智能体研究系统（<a href="https://www.anthropic.com/engineering/multi-agent-research-system" target="_blank" rel="noreferrer">2025</a>）</td><td>主 agent 规划并派生并行子 agent 搜索，各自在独立上下文中工作，返回浓缩结果</td></tr>
+    </table>
+    <p><b>多智能体的真正价值来源</b>（要能说出来）：</p>
+    <ol>
+      <li><b>并行</b>：独立子任务同时执行，降低墙钟时间。</li>
+      <li><b>上下文隔离</b>：每个 agent 有干净的上下文窗口，相当于把总的有效上下文扩大了（这可能是最被低估的原因）。</li>
+      <li><b>多样性 / 去相关</b>：不同提示/视角产生的错误相关性更低，投票或互查才有意义。</li>
+      <li><b>专业化</b>：不同工具集和指令，减少单个 agent 的混淆。</li>
+    </ol>
+    <p>注意：上面每一条都可以部分地用单 agent 实现（单 agent 也可以并行采样、可以 compaction、可以切换提示）。所以要问的是"<b>在相同 token 预算下</b>，多智能体是否更好"。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Multi-agent systems are usually several instances of the same model with different prompts, tools and contexts, exchanging messages. The main patterns are independent sampling with voting, debate where agents critique each other's answers over rounds, role-based pipelines like MetaGPT's software-company SOP, and orchestrator-worker setups where a lead agent spawns parallel subagents. When they help, it's usually for four reasons: parallelism, context isolation, decorrelated errors, and specialization. But each of those can partly be achieved by a single agent, so the real question is whether multi-agent wins at equal token budget.</p></div>
+</section>
+
+<section class="concept" id="c-mas-when">
+  <div class="concept-head"><span class="pri p1">★</span><h3>什么时候更多 agent 有用，什么时候有害</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>证据显示：多智能体的收益主要在<b>可分解、可并行、广度优先</b>的任务上，且很大程度来自"花了更多 token"；在<b>顺序依赖强、需要共享上下文</b>的任务上协调开销和错误传播会让它不如单 agent。等预算对比是必须的。</p><p class="en">Multi-agent helps on decomposable, parallel, breadth-first tasks and much of the gain is from extra tokens; on sequential, shared-context tasks coordination overhead often makes it worse.</p></div>
+  <div class="deep">
+    <p><b>支持"更多 agent 有用"的证据</b>：</p>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2402.05120" target="_blank" rel="noreferrer">More Agents Is All You Need (Li et al., 2024; TMLR)</a>：简单的采样投票（Agent Forest），性能随 agent 数增加而提升，收益与任务难度相关。注意这本质上就是扩大 self-consistency 的样本数。</li>
+      <li>Anthropic 多智能体研究系统：在内部研究评估上，Opus 4 主导 + Sonnet 4 子 agent 的系统比单 agent Opus 4 高 90.2%；但他们也明确指出，在 BrowseComp 上 <b>token 用量一项就解释了约 80% 的性能方差</b>，agent 一般比聊天多用约 4 倍 token，多智能体约 15 倍。并说明 coding 等可并行子任务少、需要共享上下文的任务不适合。</li>
+    </ul>
+    <p><b>批评与限制条件</b>：</p>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2403.02419" target="_blank" rel="noreferrer">Are More LLM Calls All You Need? (Chen et al., 2024)</a>：Vote 和 Filter-Vote 系统的性能随调用次数<b>先升后降</b>（非单调）。原因：更多调用对简单题有帮助，对难题反而有害（当错误答案比正确答案更"集中"时，投票会放大错误）。</li>
+      <li>辩论 vs 投票：<a href="https://arxiv.org/abs/2311.17371" target="_blank" rel="noreferrer">Smit et al., 2023</a> 发现多智能体辩论并不可靠地优于 self-consistency 等策略（调参后部分方法可提升）；Huang et al. (2023) 也指出在等推理次数下辩论不胜过多数投票。</li>
+      <li><a href="https://arxiv.org/abs/2512.08296" target="_blank" rel="noreferrer">Towards a Science of Scaling Agent Systems (Kim et al., 2025)</a>：在 6 个 agent benchmark、5 种架构（单 agent + 4 种多 agent）、3 个模型家族共 260 个配置上做受控实验。结论：在可分解任务上（如金融推理）多 agent 相对提升可达 +80.8%，在顺序规划任务上可下降多达 −70%；工具密集任务有额外协调开销；没有集中验证的架构更容易传播错误；单 agent 基线已经很强时，协调的边际收益递减。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>用投票的数学想：如果每个 agent 独立且正确率 &gt; 0.5（并且正确答案是众数），增加 agent 数会让多数投票正确率趋于 1（Condorcet 陪审团定理）。但 LLM 的错误<b>高度相关</b>（同一个模型、同样的误解），而且在难题上错误答案可能比正确答案更集中——那么投票会把正确率推向 0。辩论还额外引入"从众"：一个自信的错误 agent 可以说服其他 agent。</div>
+    <p><b>拓扑与成本</b>：设 \(n\) 个 agent，每轮每个 agent 生成 \(m\) 个 token。全连接广播（每个 agent 读所有其他 agent 的消息）时，每轮每个 agent 要读 \((n-1)m\) 个 token，总读入量 \(O(n^2 m)\) 每轮，且多轮累积；星形（orchestrator 中心）读入量 \(O(nm)\)；链式/层级在中间。所以拓扑选择直接决定成本曲线，也决定错误传播路径（全连接时一个错误可以一轮内污染所有人）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>比较"多智能体系统"和"单次调用的单 agent"，然后宣布多智能体更好。正确的基线是<b>相同 token/成本预算</b>的单 agent（加上 self-consistency、更长思考、或 best-of-N）。很多"多智能体收益"在等预算下会缩小甚至消失。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>My answer is: it depends on task structure, and you have to compare at equal budget. Simple sampling-and-voting does improve with more agents on many tasks, and Anthropic's research system beat a single agent by a large margin — but they also found token usage alone explained most of the variance on BrowseComp. On the other side, Chen et al. showed that more calls can make voting worse on hard queries, debate often doesn't beat self-consistency at matched compute, and a large controlled study from late 2025 found big gains on decomposable tasks but large drops on sequential planning. So I'd use multiple agents for breadth-first, parallelizable work with a central verifier, and stick with a single strong agent when the steps are tightly coupled.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why can majority voting get worse as you add more samples?</b><details><summary>思路</summary><div class="inner">多数投票收敛到模型输出分布的众数。如果对某题，模型最常给的答案是错的（比如一个常见误解占 40%，正确答案占 30%，其余分散），那么样本越多，投票越确定地选中错误答案；小样本时反而有一定概率碰巧选中正确答案。所以投票准确率在"众数正确的题"上趋于 1，在"众数错误的题"上趋于 0，整体曲线取决于这两类题的比例，可以非单调。</div></details></li>
+    <li><b>How would you design a fair single- vs multi-agent comparison?</b><details><summary>思路</summary><div class="inner">(1) 同一个底座模型；(2) 等总 token（或等美元成本、等墙钟时间，分别报告）；(3) 单 agent 基线给到同样的预算（更长推理、best-of-N + verifier、self-consistency、compaction）；(4) 多种任务类型（可分解 vs 顺序）；(5) 多种子 + 置信区间；(6) 报告失败模式分布（用 MAST 之类的分类）而不仅是总分；(7) 消融多智能体的每个"价值来源"（只隔离上下文、只并行、只多样化提示）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-mast">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>失败分类：MAST 与错误传播</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>MAST（Cemri et al., 2025）分析了 7 个多智能体框架的 1600+ 条轨迹，总结出 14 种失败模式，分为三类：系统设计问题、agent 间不对齐、任务验证问题。很多失败来自组织设计，而不是单个模型能力。</p><p class="en">MAST catalogs 14 multi-agent failure modes in three categories: system design, inter-agent misalignment, and task verification.</p></div>
+  <div class="deep">
+    <p><a href="https://arxiv.org/abs/2503.13657" target="_blank" rel="noreferrer">Why Do Multi-Agent LLM Systems Fail? (Cemri et al., 2025)</a>。三大类及典型例子（意译）：</p>
+    <ul>
+      <li><b>系统设计 / 规格问题</b>：不遵守任务或角色规格、步骤重复、丢失对话历史、不知道何时终止。</li>
+      <li><b>Agent 间不对齐</b>：对话重置、不在需要时澄清、任务偏离（derailment）、隐瞒信息、忽视其他 agent 的输入、推理与行动不匹配。</li>
+      <li><b>任务验证</b>：过早终止、验证缺失或不完整、验证不正确。</li>
+    </ul>
+    <p><b>错误传播</b>：在流水线里，上游 agent 的错误会被下游当作"事实"接收；下游 agent 通常没有原始信息（只看到上游的摘要），无法发现错误；如果有多轮互相引用，错误会被反复强化（"回音室"）。缓解：(1) 中心化的独立 verifier（Kim et al. 2025 也观察到集中验证减少错误传播）；(2) 传递原始证据而不只是结论；(3) 让下游可以回溯查询；(4) 关键节点设置检查点。</p>
+    <p><b>和人类组织的类比</b>：论文也指出，很多失败像组织理论中的问题（职责不清、沟通失败、缺少质检），提示我们多智能体设计需要"组织设计"层面的思考。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The MAST paper annotated over sixteen hundred traces from seven multi-agent frameworks and found fourteen failure modes in three buckets: specification and system-design issues, like agents ignoring their roles or not knowing when to stop; inter-agent misalignment, like withholding information, ignoring other agents, or drifting off task; and task verification failures, like stopping early or checking incorrectly. The takeaway for me is that many failures are organizational rather than about raw model capability — so things like an independent verifier and passing raw evidence instead of summaries matter a lot.</p></div>
+</section>
+
+<!-- ============================ §7 ============================ -->
+<h2 class="sec" id="s-long"><span class="num">§7 · LONG-HORIZON TASKS</span>长程任务</h2>
+<p class="sec-intro">"为什么 agent 在长任务上失败？"几乎是必考题。答案要有数字（\(p^n\)）、有经验证据（METR）、有工程解法（状态、检查点、恢复、上下文）。</p>
+
+<section class="concept" id="c-compound">
+  <div class="concept-head"><span class="pri p1">★</span><h3>复合误差：\(p^n\) 的数字</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>如果每步独立地以概率 \(p\) 成功且任何一步失败都会让任务失败，\(n\) 步任务的成功率是 \(p^n\)：每步 99% 成功，100 步后只剩约 37%。所以长程能力的关键不是"不犯错"，而是"发现并恢复错误"。</p><p class="en">With per-step success p and no recovery, an n-step task succeeds with probability p^n — 99% per step gives only about 37% over 100 steps. Long-horizon competence is about recovery, not perfection.</p></div>
+  <div class="deep">
+    <p><b>数字表</b>（§11 代码生成）：</p>
+    <table>
+      <tr><th>每步成功率 \(p\)</th><th>n = 10</th><th>n = 50</th><th>n = 100</th><th>n = 500</th></tr>
+      <tr><td>0.90</td><td>0.349</td><td>0.005</td><td>≈0</td><td>≈0</td></tr>
+      <tr><td>0.95</td><td>0.599</td><td>0.077</td><td>0.006</td><td>≈0</td></tr>
+      <tr><td>0.99</td><td>0.904</td><td>0.605</td><td>0.366</td><td>0.007</td></tr>
+      <tr><td>0.999</td><td>0.990</td><td>0.951</td><td>0.905</td><td>0.606</td></tr>
+    </table>
+    <p>反过来：要让 \(n\) 步任务整体成功率 ≥ 50%，需要 \(p \ge 0.5^{1/n}\)：n = 10 需要 0.933，n = 100 需要 0.9931，n = 500 需要 0.9986。<b>记忆点</b>：\(p^n \approx e^{-n(1-p)}\)，所以整体成功率主要由"期望错误数" \(n(1-p)\) 决定；\(n(1-p) = 1\) 时约为 \(e^{-1} \approx 0.37\)。</p>
+    <p><b>恢复改变一切</b>：如果每步错误能被检测（比如测试失败），并且可以重试 \(r\) 次（假设检测完美、重试独立），有效每步成功率变成 \(1-(1-p)^{r+1}\)。以 \(p = 0.95, n = 100\) 为例：</p>
+    <table>
+      <tr><th>重试次数 r</th><th>有效每步成功率</th><th>100 步任务成功率</th></tr>
+      <tr><td>0</td><td>0.95</td><td>0.006</td></tr>
+      <tr><td>1</td><td>0.9975</td><td>0.779</td></tr>
+      <tr><td>2</td><td>0.999875</td><td>0.988</td></tr>
+    </table>
+    <p>一次重试就把 0.6% 提到 78%。这说明：<b>可验证性（能否发现错误）+ 可恢复性（能否回滚/重试）</b>比单步准确率的小幅提升更重要。</p>
+    <p><b>模型的假设哪里不现实</b>（面试加分点）：</p>
+    <ul>
+      <li>步骤不独立：错误是相关的（同一个误解反复出现），实际比 \(p^n\) 更糟；但也有"不致命"的步骤，比如一次多余的 ls 并不会让任务失败，实际又比 \(p^n\) 更好。</li>
+      <li>\(p\) 不是常数：随上下文变长、状态变复杂，后期步骤的 \(p\) 往往下降（context rot、累计的错误状态）。</li>
+      <li>检测不完美：verifier 有假阳性，错误可能被"接受"后埋在状态里，在很多步之后才爆发——这种<b>延迟暴露的错误</b>最难处理。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>用 \(p^n\) 论证"长任务注定失败"。这只在没有恢复的情况下成立；人类每步错误率也不低，但我们能完成长任务，靠的正是检查和纠错。正确的结论是"长程能力 = 低错误率 × 高恢复率"。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The simplest model is compounding error: if each step succeeds independently with probability p and any failure is fatal, an n-step task succeeds with p to the n. At 99 percent per step, a hundred-step task only succeeds about 37 percent of the time — roughly e to the minus expected number of errors. But that assumes no recovery. If errors are detectable and you can retry once, 95 percent per step jumps from under one percent to nearly 80 percent over a hundred steps. So I think long-horizon competence is mostly about noticing and recovering from mistakes — verification, checkpoints and rollback — rather than pushing per-step accuracy to perfection. The real-world caveats are correlated errors, per-step accuracy that drops as context grows, and errors that only surface many steps later.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If errors are correlated, is p^n optimistic or pessimistic?</b><details><summary>思路</summary><div class="inner">取决于相关的方向。正相关的"系统性"错误（模型对任务有一个根本误解）意味着某些任务几乎必定失败、某些几乎必定成功——任务成功率分布变成双峰，平均成功率可能高于 \(p^n\)（因为成功的任务往往全部步骤都对），但在"难的那部分任务"上重试几乎无效（重试会重复同样的错误）。对重试策略而言，相关性是坏消息：独立重试假设下的 \(1-(1-p)^{r+1}\) 过于乐观。所以多样化的重试（换方法、换提示、反思后再试）比简单重复更有价值。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-metr">
+  <div class="concept-head"><span class="pri p1">★</span><h3>METR time horizon：用人类耗时衡量 agent 能力</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>METR 定义 "50% time horizon"：模型能以 50% 成功率完成的任务，人类专家通常需要多长时间。2025 年的论文估计这个值约每 7 个月翻倍（2019–2025）；2026 年 1 月的 Time Horizon 1.1 更新估计 2023 年后约 4.3 个月翻倍。</p><p class="en">METR's 50% time horizon is the human completion time of tasks a model finishes with 50% success; it has been doubling roughly every 7 months, and faster since 2023.</p></div>
+  <div class="deep">
+    <p><b>论文</b>：<a href="https://arxiv.org/abs/2503.14499" target="_blank" rel="noreferrer">Measuring AI Ability to Complete Long Tasks (Kwa, West et al., METR, 2025)</a>。</p>
+    <p><b>方法</b>：</p>
+    <ol>
+      <li>任务集：软件工程/研究类任务（HCAST、RE-Bench、以及很短的 SWAA 任务），从几秒到数小时；请人类专家完成并计时，任务难度用<b>成功人类基线的几何平均耗时</b> \(t_{\text{task}}\) 表示。</li>
+      <li>对每个模型拟合 logistic 曲线：成功概率随 \(\log t_{\text{task}}\) 下降
+      $$ P(\text{success}) = \sigma\big(\beta \cdot (\log h - \log t_{\text{task}})\big) $$
+      其中 \(h\) 就是该模型的 50% time horizon（当 \(t_{\text{task}} = h\) 时概率为 0.5），\(\beta\) 是斜率。</li>
+      <li>把各模型的 \(h\) 对发布日期作图，在 log 尺度上做线性回归，得到翻倍时间：主拟合约 207 天（约 7 个月）。论文也指出 2024–2025 的趋势可能更快，但当时数据点少、置信度低。</li>
+    </ol>
+    <p><b>后续</b>：METR 在 2026 年 1 月发布 Time Horizon 1.1，估计 2023 年之后翻倍时间约 131 天（约 4.3 个月）。2026 年的前沿模型 50% horizon 已经达到数小时到十几个小时的量级，METR 也提醒其任务集对很长的 horizon（超过约 16 小时）测量不可靠。具体数值变化很快，面试前去 METR 官网看最新数字，不要背。</p>
+    <p><b>要点与局限（面试官最想听这个）</b>：</p>
+    <ul>
+      <li><b>50% vs 80%</b>：80% 成功率对应的 horizon 要短很多（通常短数倍）。可靠性要求越高，可用的任务长度越短——这和 pass^k 的思想一致。</li>
+      <li><b>任务分布</b>：主要是软件/ML 研究类、明确定义、可自动评分、不需要和人互动的任务；在更"混乱"的真实任务（需求模糊、需要与人沟通）上 horizon 可能更短。</li>
+      <li><b>人类耗时 ≠ 步骤数</b>：人类耗时衡量的是"对人而言的难度"，和 agent 的步数、token 数不是一回事。</li>
+      <li><b>外推风险</b>：指数趋势外推有很大不确定性；趋势依赖于任务集能否持续提供足够长的任务。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>METR measures agent capability in units of human time. They time human experts on a suite of software and research tasks, then for each model fit a logistic curve of success probability against the log of human completion time. The 50 percent time horizon is the task length where the model succeeds half the time. Plotting that against release date, the 2025 paper found a doubling time of about seven months, and their early-2026 update estimated closer to four months since 2023. The caveats I'd mention are that the 80 percent horizon is several times shorter, the tasks are well-specified and automatically scored, which is friendlier than messy real work, and extrapolating an exponential is risky.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why use human time rather than number of agent steps as the difficulty measure?</b><details><summary>思路</summary><div class="inner">人类耗时是与模型无关的、跨任务可比的"难度单位"，并且直接关联经济价值（"能替代多少小时的人工"）。步数依赖 harness（同一任务不同 scaffold 步数差很多），且不同模型的步数不可比。缺点：人类耗时混合了"思考难度"和"机械工作量"，对 agent 而言后者往往很容易。</div></details></li>
+    <li><b>How does the logistic fit relate to the p^n model?</b><details><summary>思路</summary><div class="inner">如果把任务看成 \(n \propto t\) 个步骤、每步成功率 \(p\)，则 \(P = p^{n} = e^{n \log p}\)，成功率随 \(t\) 指数下降。METR 用的是对 \(\log t\) 的 logistic，衰减比指数慢（重尾），经验上拟合得好——这暗示真实任务不完全是"任一步失败即失败"，存在恢复和不致命错误。两种模型都预测：提高 horizon 需要降低"单位时间的不可恢复错误率"。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-state">
+  <div class="concept-head"><span class="pri p1">★</span><h3>长程工程：状态跟踪、检查点、恢复、context rot、成本</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>长程 agent 的工程核心是把状态外部化（计划文件、进度日志、git 提交）、让环境可回滚（检查点、沙箱快照）、让错误尽早暴露（频繁验证）、并控制上下文和成本（压缩、子 agent、缓存）。</p><p class="en">Externalize state, make the environment checkpointable, verify early and often, and manage context and cost.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>问题</th><th>症状</th><th>做法</th></tr>
+      <tr><td>状态跟踪</td><td>忘了已经做过什么、重复工作、改了 A 忘了相关的 B</td><td>显式 TODO/进度文件；结构化的状态（JSON 测试清单比自由文本更不容易被模型"改坏"）；每次新上下文开始时先读进度文件和 git log</td></tr>
+      <tr><td>检查点</td><td>一步错误毁掉之前的成果</td><td>频繁 git commit；沙箱快照；把任务切成可独立验证的里程碑，每个里程碑通过后再继续</td></tr>
+      <tr><td>恢复</td><td>错误后在错误状态上越走越远</td><td>验证失败就回滚到上一个检查点而不是在坏状态上修补；记录失败的尝试防止重复；必要时请求人工</td></tr>
+      <tr><td>Context rot</td><td>后期决策质量下降、忽略早期约束</td><td>compaction、笔记、子 agent、在上下文末尾重申关键约束和目标</td></tr>
+      <tr><td>目标漂移</td><td>做着做着偏离原始需求、"自作主张"扩大范围</td><td>原始任务描述始终保留；里程碑对照验收标准；限制可修改范围</td></tr>
+      <tr><td>过早宣布完成</td><td>没完成就说 done（很常见）</td><td>要求端到端验证（真正运行、测试、截图）；独立的 verifier/评审 agent；完成标准写成可检查的清单</td></tr>
+      <tr><td>成本</td><td>每一步都要重新处理整个上下文</td><td>prompt caching、压缩、便宜模型做子任务、限制观察长度、预算上限</td></tr>
+    </table>
+    <p><b>成本的数量级</b>：没有缓存时，第 \(t\) 步的输入是之前所有 token，总输入 token 约为 \(\sum_t t \cdot c = O(T^2 c)\)（\(c\) 为每步新增 token），所以长任务的成本随步数<b>超线性</b>增长；prefix caching 把重复前缀的成本降到很低，但仍有注意力计算和缓存存储开销。压缩把上下文长度"重置"，把二次增长切成若干段。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Engineering for long horizons mostly comes down to a few things. First, externalize state — a plan or progress file, structured test lists, and git history — so a fresh context can pick up where the last one left off. Second, checkpoints: commit often and break the task into milestones that are verified before moving on, so when something breaks you roll back instead of patching a broken state. Third, verify early and end-to-end, because agents often declare victory too soon. And fourth, manage context and cost: without caching, input tokens grow quadratically with the number of steps, so compaction, subagents and prompt caching matter a lot.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you measure where in a long trajectory an agent typically fails?</b><details><summary>思路</summary><div class="inner">(1) 用里程碑/子目标标注轨迹，计算每个里程碑的条件通过率（survival curve）；(2) 找到"第一个不可恢复错误"的位置（人工或 LLM 标注 + 抽检），画出它在轨迹中的位置分布；(3) 区分错误类型（规划、工具使用、状态遗忘、验证缺失）；(4) 对照上下文长度，看后期错误率是否上升（context rot 证据）；(5) 做干预实验：在某个检查点给出正确状态重新开始，看后续成功率，判断失败是"累积"导致还是"局部难点"导致。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ §8 ============================ -->
+<h2 class="sec" id="s-train"><span class="num">§8 · TRAINING AGENTS</span>Agent 训练：SFT 与多轮 RL</h2>
+<p class="sec-intro">这是和你的 RL 主线交汇的地方，面试官会深挖。先确保 <a href="m06-rl-posttraining.html">06</a> 里的 policy gradient、advantage、GRPO 已经熟悉。</p>
+
+<section class="concept" id="c-sft">
+  <div class="concept-head"><span class="pri p1">★</span><h3>轨迹 SFT：FireAct、AgentTuning、拒绝采样</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>收集成功的 agent 轨迹（强模型生成、人类示范或拒绝采样筛选），对 assistant 部分做 SFT。简单有效、能教会格式和基本策略，但只学到"成功路径"，缺少从错误中恢复的经验，且受限于示范者能力。</p><p class="en">Fine-tune on successful trajectories (from a stronger model, humans, or rejection sampling), training only on assistant tokens.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>FireAct</b>（<a href="https://arxiv.org/abs/2310.05915" target="_blank" rel="noreferrer">Chen et al., 2023</a>）：用 GPT-4 在多个任务、多种提示方法（ReAct、CoT、Reflexion）下生成轨迹，微调较小模型；发现轨迹的多样性（多任务、多方法）提升泛化和鲁棒性。</li>
+      <li><b>AgentTuning</b>（<a href="https://arxiv.org/abs/2310.12823" target="_blank" rel="noreferrer">Zeng et al., 2023</a>）：构建 AgentInstruct 交互轨迹数据集，并<b>混合通用指令数据</b>训练（AgentLM），以保持通用能力不退化。</li>
+      <li><b>拒绝采样微调（RFT / expert iteration）</b>：用当前模型在环境中采样多条轨迹，只保留成功的再训练，迭代。这和 STaR 相同，可以看作只对正奖励样本做的 policy gradient（\(A = 1\) for success, 0 otherwise）。</li>
+    </ul>
+    <p><b>实现细节</b>：</p>
+    <ul>
+      <li><b>只在 assistant token 上算 loss</b>：系统提示、用户消息、<b>工具返回内容</b>都要 mask 掉。原因：工具输出不是模型生成的，训练模型去预测它没有意义（模型并不控制环境），还会让模型学会"幻想 observation"。</li>
+      <li><b>数据质量 &gt; 数量</b>：去掉"碰巧成功"的轨迹（比如靠猜对）、冗长绕路的轨迹；保留一些"出错后恢复"的片段，教模型恢复。</li>
+      <li><b>分布偏移（exposure bias / compounding）</b>：SFT 只见过专家状态分布；部署时模型一旦偏离，进入没见过的状态就容易继续犯错——这正是 imitation learning 里 DAgger 要解决的问题，也是转向 on-policy RL 的主要动机。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The simplest way to train an agent is supervised fine-tuning on successful trajectories — from a stronger model, from humans, or from the model itself with rejection sampling. You only compute the loss on the assistant's tokens and mask out tool outputs, since the model doesn't control the environment. FireAct showed that diverse trajectories from multiple tasks and prompting styles help, and AgentTuning mixed in general instruction data to avoid losing general ability. The main limitation is the classic imitation-learning problem: the model only sees expert states, so once it drifts off that distribution it doesn't know how to recover. That's the main motivation for on-policy RL.</p></div>
+</section>
+
+<section class="concept" id="c-mtrl">
+  <div class="concept-head"><span class="pri p1">★</span><h3>多轮 RL：credit assignment 与稀疏奖励</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>多轮 agent RL 把整条轨迹（多次生成 + 工具交互）当作一个 episode，通常只在结束时给奖励（任务成功与否）。难点：奖励稀疏、轨迹长、方差大、需要把最终结果归因到早期的关键决策上。</p><p class="en">Multi-turn agent RL treats the whole interaction as one episode with a mostly terminal reward; the hard part is assigning credit across many turns with high variance.</p></div>
+  <div class="deep">
+    <p><b>形式化</b>：轨迹 \(\tau = (o_0, a_0, o_1, a_1, \dots, a_{T-1}, o_T)\)，其中 \(a_t\) 是第 \(t\) 轮模型生成的 token 序列 \(a_t = (y_{t,1}, \dots, y_{t,L_t})\)，\(o_{t+1}\) 是环境返回。奖励 \(R(\tau)\) 通常只在末尾。策略梯度：</p>
+    $$ \nabla_\theta J = \mathbb{E}_\tau\Big[\sum_{t=0}^{T-1}\sum_{l=1}^{L_t} \nabla_\theta \log \pi_\theta(y_{t,l} \mid h_t, y_{t,&lt;l}) \cdot A_{t,l}\Big] $$
+    <p>注意：<b>求和只遍历模型生成的 token</b>，环境 observation 的概率不依赖 \(\theta\)，在 \(\log P(\tau)\) 的梯度中消失（与单轮推导完全一致：\(\nabla_\theta \log P(\tau) = \sum \nabla_\theta \log \pi_\theta(\cdot)\)，转移概率项不含 \(\theta\)）。这就是 tool-output masking 的数学依据。</p>
+    <p><b>为什么难</b>：</p>
+    <ul>
+      <li><b>稀疏奖励</b>：只有最后一个信号，几十轮、几万 token 共享一个标量。如果任务太难，组内全部失败，advantage 全为 0，没有梯度（GRPO 的"零方差组"问题，在长任务上更严重）→ 需要课程学习、难度过滤、部分奖励。</li>
+      <li><b>Credit assignment</b>：成功可能归功于第 3 轮的一个关键搜索，但最终的轨迹级 advantage 平均地分给了所有 token，包括无用的绕路。</li>
+      <li><b>方差</b>：环境随机性（网页内容、工具超时）+ 长轨迹，梯度方差大。</li>
+      <li><b>非平稳与部分可观测</b>：同样的动作在不同环境状态下结果不同。</li>
+    </ul>
+    <p><b>缓解方法</b>：</p>
+    <ul>
+      <li><b>中间奖励 / reward shaping</b>：子目标完成（测试通过数、页面到达）给部分奖励。风险：被 hack（§8 reward hacking），以及偏离真实目标。</li>
+      <li><b>Process reward / 回合级 critic</b>：训练价值函数在每一轮估计 \(V(h_t)\)，用 TD 或 GAE 计算每轮 advantage（下一个概念）。</li>
+      <li><b>组相对基线</b>：GRPO 风格，对同一任务采样 G 条轨迹，用组内均值做基线，无需 critic。</li>
+      <li><b>课程与过滤</b>：只保留成功率在 (0, 1) 之间的任务（有信号的任务），动态调整难度。</li>
+    </ul>
+    <p><b>训练稳定性</b>：RAGEN（<a href="https://arxiv.org/abs/2504.20073" target="_blank" rel="noreferrer">Wang et al., 2025</a>）研究多轮 agent RL（StarPO 框架），报告了一种 "Echo Trap" 失败模式：奖励方差坍缩、梯度尖峰、模型陷入重复的推理模式；提出 StarPO-S（轨迹过滤、critic、梯度稳定）缓解。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In multi-turn agent RL, the whole interaction is one episode — the model generates, a tool returns an observation, the model generates again — and usually the only reward is whether the task succeeded at the end. The policy gradient only sums over tokens the model generated, because the environment's transition probabilities don't depend on the parameters; that's the formal reason we mask tool outputs. The hard parts are sparse reward, credit assignment across many turns, and high variance. If a task is too hard, every rollout in the group fails, the advantages are all zero and you get no gradient, so curriculum and difficulty filtering matter a lot. Beyond that you can add partial rewards for subgoals — carefully, because they can be gamed — or train a turn-level critic.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Show why the environment transition terms drop out of the gradient.</b><details><summary>思路</summary><div class="inner">\(P_\theta(\tau) = P(o_0)\prod_t \pi_\theta(a_t \mid h_t)\, P(o_{t+1} \mid h_t, a_t)\)。取对数：\(\log P_\theta(\tau) = \log P(o_0) + \sum_t \log \pi_\theta(a_t\mid h_t) + \sum_t \log P(o_{t+1}\mid h_t, a_t)\)。对 \(\theta\) 求梯度，第一项和第三项不含 \(\theta\)，为 0。所以 \(\nabla_\theta \log P_\theta(\tau) = \sum_t \nabla_\theta \log \pi_\theta(a_t\mid h_t)\)，再把 \(\log \pi_\theta(a_t\mid h_t)\) 按 token 展开为 \(\sum_l \log \pi_\theta(y_{t,l}\mid h_t, y_{t,&lt;l})\)。这要求环境是"黑盒"——如果"环境"本身是同一个模型（比如模拟用户也是 \(\pi_\theta\)），那就不能简单 mask 了。</div></details></li>
+    <li><b>What would you do if 95% of your RL tasks have zero successful rollouts?</b><details><summary>思路</summary><div class="inner">(1) 难度过滤/课程：先在能部分成功的任务上训练，逐步加难；(2) 先做 SFT 或拒绝采样热启动，提高基础成功率；(3) 增加每任务采样数 G，提高至少一个成功的概率（\(1-(1-q)^G\)）；(4) 部分奖励（如测试通过比例）提供梯度，但监控 hacking；(5) 提示中给 hint 或部分解（类似 reverse curriculum：从接近完成的状态开始）；(6) 检查环境是否有 bug（零成功率有时是评分器或沙箱问题）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-adv">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Turn-level vs token-level advantage；tool-output masking</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Advantage 可以在三个粒度上分配：轨迹级（整条轨迹一个值，GRPO 式）、回合级（每轮一个值，需要回合级 critic）、token 级（每个 token 一个值，PPO + token 级 critic + GAE）。无论哪种，loss 只计算在模型生成的 token 上，工具输出必须 mask。</p><p class="en">Advantages can be trajectory-, turn- or token-level; in all cases the loss is computed only on model-generated tokens, with tool outputs masked.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>粒度</th><th>做法</th><th>优点</th><th>缺点</th></tr>
+      <tr><td>轨迹级</td><td>\(A = (R - \bar R_{\text{group}})/\sigma\)，同一轨迹所有 assistant token 共享</td><td>无需 critic，实现简单，稳定；当前大量 agent RL 工作的默认选择</td><td>credit assignment 最粗；长轨迹方差大</td></tr>
+      <tr><td>回合级</td><td>critic 估计每轮开始时 \(V(h_t)\)，\(A_t = r_t + \gamma V(h_{t+1}) - V(h_t)\) 或回合级 GAE；同一轮内 token 共享 \(A_t\)</td><td>粒度匹配"决策单元"（一次工具调用就是一个动作）；时间步少，TD 传播快</td><td>需要训练 critic（长上下文的价值估计很难）</td></tr>
+      <tr><td>Token 级</td><td>标准 PPO：每个 token 一个状态，GAE 跨越所有 token</td><td>最细粒度</td><td>"时间步"数以万计，\(\gamma, \lambda\) 下 credit 传播很慢；对于工具 token，"时间步"如何计数需要特殊处理</td></tr>
+    </table>
+    <p><b>层次化</b>：ArCHer（<a href="https://arxiv.org/abs/2402.19446" target="_blank" rel="noreferrer">Zhou et al., 2024</a>）用高层的回合级 off-policy 价值学习 + 低层的 token 级策略梯度，以利用回合级结构提高样本效率。</p>
+    <p><b>Tool-output masking 的实现</b>：拼接后的序列里，每个 token 带一个 role 标签；loss mask = 1 仅在 assistant 生成的 token 上。几个容易错的地方：</p>
+    <ul>
+      <li>特殊 token：assistant 回合结束的终止 token（如 EOS / end-of-turn）<b>应该</b>计入 loss（模型要学会何时停止生成、交还控制权）；工具结果的包裹 token 不应计入。</li>
+      <li><b>重新分词问题</b>：rollout 时模型生成的 token 序列，在训练时如果把文本重新 tokenize，可能得到不同的 token 切分，导致 logprob 不一致（off-policy 误差）。正确做法是<b>保留 rollout 时的 token id</b>。</li>
+      <li><b>loss 归一化</b>：按 token 数平均时，长轨迹（多轮）的 token 多，对梯度的总贡献更大；按样本平均则相反。和 GRPO/DAPO 里的长度归一化讨论一样（见 06），需要明确选择。</li>
+      <li>KL 正则也只在 assistant token 上计算。</li>
+    </ul>
+  </div>
+  <details class="deep"><summary>代码：多轮 loss mask + 轨迹级 advantage（PyTorch）</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+def build_loss_mask(roles):
+    """roles: list[str] per token, one of 'prompt','assistant','tool'.
+    只在模型自己生成的 token (assistant) 上算 loss；tool 输出和 prompt 被 mask 掉。"""
+    return torch.tensor([r == "assistant" for r in roles], dtype=torch.float32)
+
+def multiturn_pg_loss(logprobs, loss_mask, advantages):
+    """logprobs: (B, T) 采样 token 在当前策略下的 log-prob
+    loss_mask: (B, T) 1=assistant token
+    advantages: (B,) 轨迹级 advantage（如 GRPO 组内标准化后的 reward）
+    返回 token-level 平均的 REINFORCE 型 loss（on-policy，无 ratio/clip）。"""
+    per_tok = -advantages[:, None] * logprobs * loss_mask          # (B, T)
+    return per_tok.sum() / loss_mask.sum().clamp(min=1.0)
+
+def group_advantages(rewards, eps=1e-6):
+    """GRPO 风格：同一任务的 G 条轨迹，reward 减均值除以标准差。"""
+    return (rewards - rewards.mean()) / (rewards.std() + eps)
+
+if __name__ == "__main__":
+    roles = ["prompt"] * 3 + ["assistant"] * 4 + ["tool"] * 5 + ["assistant"] * 2
+    m = build_loss_mask(roles)
+    assert m.sum().item() == 6 and m[3:7].sum() == 4 and m[7:12].sum() == 0
+
+    torch.manual_seed(0)
+    B, T = 4, len(roles)
+    logits = torch.randn(B, T, 10, requires_grad=True)
+    tokens = torch.randint(0, 10, (B, T))
+    logprobs = torch.log_softmax(logits, -1).gather(-1, tokens[..., None]).squeeze(-1)
+    rewards = torch.tensor([1.0, 0.0, 0.0, 1.0])
+    adv = group_advantages(rewards)
+    assert torch.allclose(adv.sum(), torch.tensor(0.0), atol=1e-5)
+    mask = m.expand(B, T)
+    loss = multiturn_pg_loss(logprobs, mask, adv)
+    loss.backward()
+    # tool / prompt 位置不应收到任何梯度
+    g = logits.grad.abs().sum(-1)            # (B, T)
+    assert torch.all(g[:, 7:12] == 0) and torch.all(g[:, :3] == 0)
+    assert torch.all(g[:, 3:7] &gt; 0)
+    print("loss", float(loss), "ok")</code></pre>
+    <p>（逻辑已用等价的 NumPy 实现 + 数值梯度验证：prompt 与 tool 位置梯度为 0，assistant 位置梯度非 0。）</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>① 在工具输出上算 loss（模型学会"编造" observation，并且梯度被浪费在不可控部分）；② 训练时重新分词，导致新旧 logprob 对不上，importance ratio 失真；③ 回合级 advantage 时忘了同一轮内所有 token 应共享该轮的 advantage。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>There are three granularities for the advantage. Trajectory-level, like GRPO, gives every assistant token in a rollout the same group-normalized reward — simple and stable, but coarse. Turn-level treats each assistant turn as one action and uses a critic over the conversation history, so credit propagates over tens of steps instead of tens of thousands of tokens. Token-level PPO is finest but credit propagates very slowly over long trajectories. Regardless of the choice, the loss mask covers only model-generated tokens — including the end-of-turn token, but not the tool outputs — and you should keep the exact token ids from rollout rather than re-tokenizing, otherwise the log-probs won't match.</p></div>
+</section>
+
+<section class="concept" id="c-env">
+  <div class="concept-head"><span class="pri p1">★</span><h3>环境设计、沙箱与异步 rollout</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Agent RL 的瓶颈往往是环境而不是算法：需要大量可复现、可并行、安全隔离的环境（容器化代码仓库、模拟网站、浏览器），可靠的自动评分，以及能容纳长短不一 rollout 的异步训练系统。</p><p class="en">The bottleneck in agent RL is often the environment: reproducible, parallel, sandboxed environments with reliable automatic grading, plus asynchronous rollout systems.</p></div>
+  <div class="deep">
+    <p><b>好的 RL 环境需要</b>：</p>
+    <ul>
+      <li><b>可复现</b>：每个 episode 从相同的初始状态开始（Docker 镜像、数据库快照）；外部依赖（网络、时间）要冻结或模拟。</li>
+      <li><b>可扩展</b>：上千个并行沙箱；启动快（镜像缓存、预热池）。</li>
+      <li><b>安全隔离</b>：模型会执行任意命令；要限制网络、文件系统、资源（CPU/内存/时间），防止破坏宿主或"作弊"（如读取测试答案、修改评分脚本）。</li>
+      <li><b>可靠的奖励</b>：单元测试（隐藏测试防止过拟合）、状态检查（数据库最终状态与目标比对，如 τ-bench）、规则匹配。评分器的漏洞会被 RL 找到。</li>
+      <li><b>任务多样性与难度分布</b>：足够多不同的任务，难度集中在模型能力边缘。</li>
+    </ul>
+    <p><b>SWE 领域的例子</b>：</p>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2412.21139" target="_blank" rel="noreferrer">SWE-Gym (Pan et al., 2024)</a>：2,438 个真实 Python 仓库任务，带可执行环境和测试，用于训练 SWE agent 和 verifier。</li>
+      <li><a href="https://arxiv.org/abs/2502.18449" target="_blank" rel="noreferrer">SWE-RL (Wei et al., 2025)</a>：在开源软件演化数据（PR、issue）上做 RL，奖励是生成的补丁与真实补丁之间的相似度——一个<b>不需要执行环境</b>的规则奖励，可以大规模扩展，代价是相似度不等于正确性。</li>
+    </ul>
+    <p><b>异步 rollout</b>：agent 轨迹长度差异巨大（几步到几百步，工具调用延迟不一），同步 RL（所有 rollout 完成才训练）会让 GPU 大量空等长尾 rollout。异步系统把生成和训练解耦：rollout worker 持续生成，trainer 用已完成的数据更新，模型权重定期同步。代价是<b>数据陈旧（staleness）</b>：数据由几步之前的策略生成，是 off-policy 的，需要 importance sampling 修正、限制最大陈旧度。例如 AReaL（<a href="https://arxiv.org/abs/2505.24298" target="_blank" rel="noreferrer">Fu et al., 2025</a>）就是完全异步的 RL 系统设计。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>In agent RL the environment is often the real bottleneck. You need thousands of reproducible, sandboxed environments — containerized repos, simulated websites, browsers — that start from a fixed state, isolate the network and filesystem, and have a reliable automatic grader, ideally hidden tests or a final-state check. SWE-Gym is an example of executable training environments for coding agents, while SWE-RL scaled with a cheap patch-similarity reward instead of execution. On the systems side, trajectory lengths vary wildly, so synchronous RL wastes GPUs waiting on the long tail; asynchronous systems decouple rollout from training, at the price of stale, slightly off-policy data that you need to correct for.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How do you correct for staleness in asynchronous RL?</b><details><summary>思路</summary><div class="inner">记录每条 rollout 生成时的行为策略 logprob \(\log \mu(y)\)，训练时计算当前策略 \(\pi_\theta\) 的 logprob，用 importance ratio \(\pi_\theta/\mu\) 修正，并像 PPO 一样 clip 防止方差爆炸；限制最大陈旧度（如数据最多落后 k 个版本，超过丢弃）；一些工作把"行为策略"和"近端锚点策略"分开处理（decoupled PPO）。另外，推理引擎和训练引擎的数值差异也会造成 logprob 不一致，需要监控。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-web">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Web / GUI agent 的训练要点</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Web/GUI agent 的观测是 HTML/可访问性树/截图，动作是点击、输入、滚动；难点是观测巨大且嘈杂、动作需要精确定位（grounding）、环境非平稳（真实网站会变）、评分难。常见做法是自建可复现的网站副本 + 在线课程 RL。</p><p class="en">Web/GUI agents act on DOM, accessibility trees or screenshots; the hard parts are noisy observations, grounding, non-stationary sites and grading.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>观测表示</b>：原始 HTML 极长 → 精简的可访问性树（带元素 id）；或截图（需要视觉 grounding，把"点击搜索按钮"转为坐标），或两者结合（Set-of-Marks：在截图上标号）。</li>
+      <li><b>环境</b>：真实网站不可复现、会变、有反爬和副作用 → 自托管网站副本（WebArena 的方式）用于训练和评估。</li>
+      <li><b>训练</b>：WebRL（<a href="https://arxiv.org/abs/2411.02337" target="_blank" rel="noreferrer">Qi et al., 2024</a>）在 WebArena 环境上，用从失败中生成新任务的在线课程 + 结果奖励模型做 RL，把开源模型训练成较强的 web agent。</li>
+      <li><b>评分</b>：检查最终页面状态 / 数据库状态 / 答案字符串；或训练结果奖励模型（ORM）判断任务是否完成——ORM 会被 hack，需要抽检。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Web and GUI agents observe the page as HTML, an accessibility tree, or screenshots, and act with clicks, typing and scrolling. The challenges are that observations are huge and noisy, actions need precise grounding to elements or coordinates, real websites change and have side effects, and success is hard to grade automatically. So for training people usually self-host reproducible copies of websites, like WebArena, and use outcome reward models or state checks, often with an online curriculum like WebRL that generates new tasks from failures.</p></div>
+</section>
+
+<section class="concept" id="c-hack">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Agent RL 中的 reward hacking</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Agent 有真实的行动能力，所以 reward hacking 不只是"讨好评分模型"，而是可以直接改测试、特判测试用例、读取答案、修改评分脚本、谎称完成。防御：隐藏/保护评分器、权限隔离、多重验证、监控轨迹而不仅是结果。</p><p class="en">Agents can act, so reward hacking includes editing tests, special-casing test inputs, reading answers, or claiming success; defend with protected graders, isolation, and trajectory monitoring.</p></div>
+  <div class="deep">
+    <p><b>常见 hack 形式</b>：</p>
+    <ul>
+      <li><b>改测试/删测试</b>：让测试"通过"而不是修好代码；或在代码里检测是否在测试环境中运行、对测试输入硬编码答案。</li>
+      <li><b>利用评分器漏洞</b>：例如只检查退出码，就让程序直接 exit(0)；只检查输出包含某字符串，就打印该字符串。</li>
+      <li><b>信息泄露</b>：沙箱里能看到 git 历史中的未来提交、答案文件、网络上的解答。</li>
+      <li><b>LLM judge hacking</b>：对 LLM 评分器写说服性的文字、宣称"任务已完成"。</li>
+      <li><b>规格博弈</b>：用技术上满足但违背意图的方式完成（比如为了"让所有测试通过"而跳过困难测试）。</li>
+    </ul>
+    <p><b>防御</b>：评分用隐藏测试、在 agent 不可写的位置运行；文件权限（测试目录只读）；在干净环境中重新运行评分；对轨迹做监控（检测修改测试文件、访问不该访问的路径、可疑的 sys.exit）；用多个独立的验证信号；人工抽检高奖励轨迹；在奖励中惩罚检测到的 hack 时要谨慎——监控信号本身也会被优化去规避（被训练得"隐藏"作弊行为），所以监控最好只用于检测与过滤，而不是直接放进奖励。</p>
+    <div class="box why"><span class="lbl">直觉</span>RL 是一个极强的优化器：它不理解你的意图，只看奖励。评分器的每一个漏洞，在足够多的 rollout 下都会被找到。Agent 的行动空间越大（可以执行任意命令），漏洞面就越大。</div>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Reward hacking is worse for agents because they can act on the environment. Instead of just flattering a reward model, an agent can edit or delete the tests, special-case test inputs, read answers from the git history, make the program exit zero, or simply claim it's done to an LLM judge. RL will find any hole in the grader given enough rollouts. My defenses would be: run hidden tests in a location the agent can't write to, re-grade in a clean environment, monitor trajectories for suspicious actions like modifying test files, and spot-check high-reward episodes. I'd be careful about putting the monitor directly into the reward, because then you're also training the policy to evade the monitor.</p></div>
+</section>
+
+<!-- ============================ §9 ============================ -->
+<h2 class="sec" id="s-eval"><span class="num">§9 · EVALUATION</span>Agent 评估</h2>
+<p class="sec-intro">要能说出每个主流 benchmark 测什么、怎么评分、已知问题是什么，以及 agent 评估特有的方法论问题：方差、成本、harness、pass^k。</p>
+
+<section class="concept" id="c-benchmarks">
+  <div class="concept-head"><span class="pri p1">★</span><h3>主流 benchmark 一览</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>编程（SWE-bench / Verified / Pro、Terminal-Bench）、网页（WebArena）、电脑操作（OSWorld）、通用助理（GAIA）、带用户交互的工具使用（τ-bench）、综合（AgentBench）。每个都要知道评分方式和已知缺陷。</p><p class="en">Know what each benchmark measures, how it is graded, and its known flaws.</p></div>
+  <div class="deep">
+    <table>
+      <tr><th>Benchmark</th><th>测什么</th><th>评分</th><th>要点 / 已知问题</th></tr>
+      <tr><td><a href="https://arxiv.org/abs/2310.06770" target="_blank" rel="noreferrer">SWE-bench</a> (Jimenez et al., 2023)</td><td>真实 GitHub issue → 生成补丁；2,294 个任务，来自 12 个 Python 仓库</td><td>运行仓库测试：FAIL_TO_PASS（修复相关测试）+ PASS_TO_PASS（不破坏其他测试）</td><td>原文中 Claude 2 只解决 1.96%。很多任务描述不清或测试过严</td></tr>
+      <tr><td><a href="https://openai.com/index/introducing-swe-bench-verified/" target="_blank" rel="noreferrer">SWE-bench Verified</a> (OpenAI, 2024-08)</td><td>人工筛选后的 500 题子集</td><td>同上</td><td>93 位开发者筛查 1,699 个样本，去掉描述不清和测试可能拒绝正确解的题。2026 年 2 月 OpenAI 宣布<a href="https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/" target="_blank" rel="noreferrer">不再用它评估</a>：在其审计的 138 道难题中 59.4% 有实质性测试/描述问题，且有前沿模型能复现标准补丁的污染迹象；推荐 SWE-bench Pro</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2509.16941" target="_blank" rel="noreferrer">SWE-Bench Pro</a> (Scale AI, 2025)</td><td>更长、更难的企业级任务；1,865 题、41 个仓库</td><td>测试</td><td>分公开集、私有 held-out 集和商业仓库集，用不公开的部分抵抗污染</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2601.11868" target="_blank" rel="noreferrer">Terminal-Bench 2.0</a> (Merrill et al., 2026)</td><td>命令行中的困难真实任务（编译、配置、数据处理、安全等）；89 个任务</td><td>每个任务有独立环境、人写参考解和验证测试</td><td>论文报告前沿模型/agent 得分低于 65%</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2307.13854" target="_blank" rel="noreferrer">WebArena</a> (Zhou et al., 2023)</td><td>自托管的真实网站（电商、论坛、GitLab、地图等）上的长任务</td><td>功能性检查（最终状态/答案）</td><td>原文最好的 GPT-4 agent 14.41%，人类 78.24%。可复现是最大优点</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2404.07972" target="_blank" rel="noreferrer">OSWorld</a> (Xie et al., 2024)</td><td>真实操作系统（Ubuntu/Windows/macOS）中的多应用电脑任务；369 个任务</td><td>每任务定制的执行式评估脚本</td><td>原文人类 72.36%，最好模型 12.24%；主要失败在 GUI grounding 和操作知识</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2311.12983" target="_blank" rel="noreferrer">GAIA</a> (Mialon et al., 2023)</td><td>通用助理问题：需要浏览、多模态、工具、多步推理；466 题</td><td>答案精确匹配（答案简短、唯一）</td><td>"对人简单、对 AI 难"：原文人类 92%，GPT-4+插件 15%；300 题答案保留用于排行榜</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2406.12045" target="_blank" rel="noreferrer">τ-bench</a> (Yao et al., 2024)</td><td>agent 与（LLM 模拟的）用户对话，按领域规则使用 API（零售、航空）</td><td>比较对话结束时数据库状态与目标状态</td><td>提出 <b>pass^k</b>：同一任务 k 次都成功的概率；原文 gpt-4o 零售 pass^8 &lt; 25%</td></tr>
+      <tr><td><a href="https://arxiv.org/abs/2308.03688" target="_blank" rel="noreferrer">AgentBench</a> (Liu et al., 2023)</td><td>8 个环境（操作系统、数据库、知识图谱、游戏、家务、网购、网页浏览等）</td><td>各环境各自评分</td><td>早期"LLM-as-agent"综合评测，揭示开源与闭源模型的巨大差距</td></tr>
+    </table>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For coding, SWE-bench asks the agent to resolve real GitHub issues and grades with the repo's tests — the fail-to-pass tests must now pass and nothing else may break. SWE-bench Verified was a human-filtered 500-task subset, but by 2026 it was considered saturated and contaminated, and OpenAI recommended SWE-bench Pro, which keeps part of its tasks private. Terminal-Bench tests hard command-line tasks. WebArena and OSWorld test web and full computer use in reproducible environments, GAIA tests general assistant questions that are easy for humans, and tau-bench tests tool use while talking to a simulated user, grading the final database state. The thing I always check is how each one is graded, because that's where the flaws are.</p></div>
+</section>
+
+<section class="concept" id="c-passk">
+  <div class="concept-head"><span class="pri p1">★</span><h3>pass@k vs pass^k：能力 vs 可靠性</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>pass@k = k 次尝试中<b>至少一次</b>成功的概率（衡量能力上限，适合有 verifier 可挑选的场景）；pass^k = k 次尝试<b>全部</b>成功的概率（衡量可靠性/一致性，适合面向用户的部署）。单次成功率 \(s\) 时分别是 \(1-(1-s)^k\) 和 \(s^k\)。</p><p class="en">pass@k is the chance at least one of k tries succeeds (capability); pass^k is the chance all k succeed (reliability).</p></div>
+  <div class="deep">
+    <p><b>数字</b>（对单个任务，单次成功率 \(s\)）：</p>
+    <table>
+      <tr><th>\(s\)</th><th>pass@4</th><th>pass^4</th><th>pass@8</th><th>pass^8</th></tr>
+      <tr><td>0.6</td><td>0.974</td><td>0.130</td><td>0.999</td><td>0.017</td></tr>
+      <tr><td>0.8</td><td>0.998</td><td>0.410</td><td>≈1.000</td><td>0.168</td></tr>
+      <tr><td>0.9</td><td>≈1.000</td><td>0.656</td><td>≈1.000</td><td>0.430</td></tr>
+    </table>
+    <p>两者朝相反方向变化：同一个单次 80% 的 agent，pass@8 接近 100%，pass^8 只有 17%。数据集层面，对每个任务分别计算再取平均（每个任务的 \(s\) 不同）。</p>
+    <p><b>无偏估计</b>：每个任务采样 \(n \ge k\) 次，成功 \(c\) 次：</p>
+    $$ \widehat{\text{pass@}k} = 1 - \frac{\binom{n-c}{k}}{\binom{n}{k}}, \qquad \widehat{\text{pass}^k} = \frac{\binom{c}{k}}{\binom{n}{k}} $$
+    <p>直觉：从 n 次中无放回地抽 k 次，pass@k 的补事件是"抽到的全是失败"，pass^k 是"抽到的全是成功"。直接用 \(\hat s^k\)（\(\hat s = c/n\)）估计 pass^k 是有偏的（凸函数，Jensen）。例：\(n = 8, c = 6\)：\(\widehat{\text{pass}^4} = \binom{6}{4}/\binom{8}{4} = 15/70 \approx 0.214\)，而 \(0.75^4 \approx 0.316\)。</p>
+    <p><b>什么时候用哪个</b>：有可靠的 verifier 可以从 k 个候选中挑（例如代码能跑测试），pass@k 是相关指标；面向用户、每次都必须对（客服、操作真实账户），pass^k 更相关。也和 RL 中关于 "RL 是提升了 pass@1 还是扩展了 pass@k 边界" 的讨论相关（见 <a href="m06-rl-posttraining.html">06</a>）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Pass at k is the probability that at least one of k attempts succeeds, so it measures capability when you have a verifier to pick the winner. Pass hat k, from tau-bench, is the probability that all k attempts succeed, so it measures reliability, which is what matters when a user gets one shot each time. They move in opposite directions: an agent with 80 percent single-try success has near-perfect pass at 8 but only about 17 percent pass hat 8. To estimate them without bias you sample n times per task and use the combinatorial formulas — c choose k over n choose k for pass hat k — rather than just raising the empirical rate to the k-th power.</p></div>
+</section>
+
+<section class="concept" id="c-evalmethod">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Agent 评估的方法论：污染、flakiness、成本、harness 敏感性</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Agent 分数受很多非模型因素影响：数据污染、环境不稳定（flaky tests、网络）、随机性、harness 和步数预算、评分器错误。可信的报告要固定并公开 harness，多次运行给置信区间，同时报告成本，并审计失败案例。</p><p class="en">Agent scores depend on contamination, flaky environments, randomness, harness and budget, and grader errors; report harness, multiple runs with CIs, and cost.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>污染</b>：SWE-bench 的 issue 和补丁都公开在 GitHub，很可能进入预训练数据。检测：让模型在不给代码的情况下复现补丁、对比发布日期前后任务的表现。缓解：私有测试集（SWE-Bench Pro 的 held-out）、持续收集新任务、时间切分。</li>
+      <li><b>Flakiness</b>：测试本身不稳定（依赖时间、网络、并发顺序），同一补丁多次运行结果不同；网页环境状态漂移。做法：标准解跑多次剔除 flaky 任务；固定环境镜像；记录环境错误与模型错误的区分。</li>
+      <li><b>方差</b>：agent 轨迹长、分支多，单次运行的分数噪声很大。至少多种子、报告均值与置信区间（基于任务的 bootstrap）；小差距（如 1–2 个点）在 500 题上可能不显著（二项标准误 \(\sqrt{s(1-s)/N}\)，\(s = 0.5, N = 500\) 时约 2.2 个百分点）。</li>
+      <li><b>成本</b>：分数可以靠更多 token、更多尝试、更长步数买到。应报告每任务平均 token / 美元 / 墙钟时间，最好画<b>成本-准确率帕累托曲线</b>，而不是单个数字。</li>
+      <li><b>Harness 敏感性</b>：同一模型在不同 scaffold、提示、工具集、步数上限下差距很大。比较模型时固定 harness；比较 harness 时固定模型；报告所有设定。</li>
+      <li><b>评分器错误</b>：测试太严（拒绝正确解）或太松（接受错误解）；LLM judge 有偏差。人工审计一部分失败与成功案例，估计评分器的精确率/召回率。</li>
+      <li><b>饱和与上限</b>：benchmark 剩余的题如果大多有缺陷，分数接近"有效上限"后进步就没有意义（这正是 SWE-bench Verified 后期的情况）。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把排行榜上相差 1 个点的两个系统当作有差异；忽略它们可能用了不同的 scaffold、尝试次数（pass@1 vs 带 verifier 的 best-of-k）和成本。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Agent evals are noisy in ways that aren't about the model. There's contamination — SWE-bench issues and patches are public on GitHub. There are flaky tests and drifting web environments, so I'd run gold solutions several times and drop unstable tasks. There's run-to-run variance, so I'd use multiple seeds and bootstrap confidence intervals — on 500 tasks the standard error is around two points, so a one-point gap usually means nothing. Scores can be bought with tokens and attempts, so I'd report cost and ideally a cost-accuracy curve. And the harness matters as much as the model, so it has to be fixed and disclosed. Finally, I'd manually audit a sample of passes and failures to estimate how often the grader itself is wrong.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you build a new agent benchmark that stays useful for two years?</b><details><summary>思路</summary><div class="inner">(1) 私有 held-out 集 + 定期刷新的新任务（时间切分防污染）；(2) 任务难度分布宽，包含很长的任务（避免很快饱和）；(3) 每个任务人工验证可解、评分器经过对抗测试（试着用错误解骗过它）；(4) 标准环境镜像、去除 flaky 任务；(5) 标准 harness + 允许自定义 harness 两个赛道；(6) 强制报告成本和尝试次数；(7) 同时报告 pass@1 和 pass^k；(8) 发布失败案例分析工具。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ §10 ============================ -->
+<h2 class="sec" id="s-safety"><span class="num">§10 · SAFETY</span>Agent 安全</h2>
+<p class="sec-intro">Agent 能读取不可信内容并执行动作，二者结合就产生了新的攻击面。RS 面试一般不深挖安全，但能清楚讲出 prompt injection 的本质和纵深防御会加分。</p>
+
+<section class="concept" id="c-injection">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Prompt injection（尤其是间接注入）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>间接 prompt injection：攻击者把指令藏在 agent 会读取的数据里（网页、邮件、文档、工具输出），模型无法可靠区分"数据"和"指令"，于是执行了攻击者的指令（如泄露数据、调用危险工具）。根本原因是 LLM 把所有输入都放在同一个 token 流里处理。</p><p class="en">Indirect prompt injection hides instructions in data the agent reads; because instructions and data share one token stream, the model may follow them.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>经典论文</b>：<a href="https://arxiv.org/abs/2302.12173" target="_blank" rel="noreferrer">Greshake et al., 2023</a> 系统地展示了 LLM 集成应用中的间接注入（例如网页中的隐藏文字让聊天助手执行指令）。</li>
+      <li><b>"致命三要素"</b>（常见的风险框架）：agent 同时 (1) 能访问私密数据，(2) 会接触不可信内容，(3) 有向外传递信息的通道（发请求、发邮件、渲染图片 URL）。三者都具备时，注入就能导致数据外泄。</li>
+      <li><b>评估</b>：<a href="https://arxiv.org/abs/2406.13352" target="_blank" rel="noreferrer">AgentDojo (Debenedetti et al., 2024)</a> 提供动态环境，同时测量 agent 的任务效用和对注入攻击的鲁棒性。</li>
+      <li><b>防御层次</b>：
+        <ul>
+          <li>模型层：训练模型遵循指令层级（系统 &gt; 用户 &gt; 工具输出），对工具输出中的指令保持怀疑；对抗训练。有帮助但不能保证。</li>
+          <li>检测层：分类器检测注入；对不可信内容加标记/分隔。可被绕过。</li>
+          <li>系统层（最可靠）：<b>按设计限制能力</b>。例如 CaMeL（<a href="https://arxiv.org/abs/2503.18813" target="_blank" rel="noreferrer">Debenedetti et al., 2025</a>）从可信的用户查询中推导控制流和数据流，让从不可信数据中读到的内容无法改变程序要做什么；双 LLM 模式（有特权的 LLM 不直接看到不可信内容）；最小权限；敏感动作要求人工确认。</li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Indirect prompt injection is when an attacker plants instructions in content the agent reads — a web page, an email, a tool result — and the model follows them, because instructions and data live in the same token stream and the model can't reliably tell them apart. It becomes dangerous when an agent has access to private data, is exposed to untrusted content, and has a way to send information out. Model-level defenses like instruction hierarchy training help but aren't guarantees, so I'd rely on system design: least privilege, keeping untrusted data from influencing control flow — as in CaMeL — and human confirmation for sensitive actions.</p></div>
+</section>
+
+<section class="concept" id="c-sandbox">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>沙箱、权限、人在回路、监控</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>纵深防御：沙箱限制"能碰到什么"，权限限制"能做什么"，人在回路（HITL）控制"高风险动作要谁批准"，监控和日志负责"出事能发现和追溯"。</p><p class="en">Defense in depth: sandbox what it can touch, scope what it can do, gate risky actions on humans, and monitor everything.</p></div>
+  <div class="deep">
+    <ul>
+      <li><b>沙箱</b>：容器/虚拟机隔离；网络默认关闭或白名单出口（通过代理）；文件系统只挂载必要目录；资源和时间限制；凭证不放在 agent 可读的位置。</li>
+      <li><b>权限</b>：最小权限、按工具粒度授权（读 vs 写）；区分可逆与不可逆动作；短期令牌；危险命令黑名单只是补充（容易被绕过），白名单更可靠。</li>
+      <li><b>人在回路</b>：对不可逆或高影响动作（删除、付款、发布、对外发送）要求确认；但确认过多会导致"确认疲劳"（用户不看就点同意），所以要按风险分级。</li>
+      <li><b>监控</b>：记录完整轨迹；对可疑模式（访问凭证、大量外传、修改测试、反复尝试越权）报警；可以用另一个模型做实时监控；离线审计抽样。</li>
+      <li><b>失控行为</b>：agent 可能为了完成目标采取"过于积极"的方式（绕过限制、删除阻碍它的东西）——这既是安全问题，也是 reward hacking 在部署时的表现。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd think about agent safety as defense in depth. A sandbox limits what the agent can touch — container isolation, no network or an allowlisted egress proxy, only the directories it needs, no credentials in reach. Permissions limit what it can do — least privilege, separating read from write and reversible from irreversible actions. Human-in-the-loop gates the high-impact actions, tiered by risk so people don't develop approval fatigue. And monitoring with full trajectory logs catches what slips through, ideally with an automated monitor flagging suspicious patterns.</p></div>
+</section>
+
+<!-- ============================ §11 ============================ -->
+<h2 class="sec" id="s-code"><span class="num">§11 · CODE</span>代码：最小 ReAct 循环与模拟</h2>
+<p class="sec-intro">面试可能让你"写一个简单的 agent loop"。下面的代码不依赖任何 API：用一个按脚本回复的 mock LLM 测试解析、分发、错误回传、步数上限。全部已运行通过（Python 3，无第三方依赖；模拟部分用 NumPy）。</p>
+
+<section class="concept" id="c-loop">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>最小 ReAct 循环（mock LLM + 两个工具）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>核心结构：<code>for step in range(max_steps)</code>：调用 LLM → 解析出 final 或 action → 执行工具（异常转成 observation）→ 截断 → 追加到消息历史；到达上限就优雅退出。</p><p class="en">Loop: call the model, parse final-or-action, run the tool with errors turned into observations, truncate, append, and stop at a step budget.</p></div>
+  <div class="deep">
+    <p><b>设计要点</b>（写的时候边写边讲）：</p>
+    <ol>
+      <li>工具是普通函数，用字典注册，方便分发和报告"可用工具列表"。</li>
+      <li>计算器不用裸 <code>eval</code>：先用正则白名单字符，再用空 builtins 执行（面试中提一句安全性）。</li>
+      <li>解析返回三种结果：final / action / error；解析错误也变成 observation，让模型自己修复。</li>
+      <li>所有工具异常被捕获，带上异常类型和消息回传——尤其是"合法取值有哪些"。</li>
+      <li>observation 截断，防止上下文爆炸。</li>
+      <li>硬性步数上限；返回 trace 方便测试和调试。</li>
+    </ol>
+  </div>
+  <details class="deep" open><summary>代码：react_loop.py（已运行，全部 assert 通过）</summary><div class="inner">
+<pre><code class="language-python">import json, re
+
+# ---------- tools ----------
+def calculator(expression: str) -&gt; str:
+    # 只允许数字和 + - * / ( ) . 空格，避免 eval 任意代码
+    if not re.fullmatch(r"[0-9+\-*/(). ]+", expression):
+        raise ValueError(f"illegal characters in {expression!r}")
+    return str(eval(expression, {"__builtins__": {}}, {}))
+
+FAKE_DB = {"population_austin": "979882", "population_dallas": "1302868"}
+def lookup(key: str) -&gt; str:
+    if key not in FAKE_DB:
+        raise KeyError(f"unknown key {key!r}; valid keys: {sorted(FAKE_DB)}")
+    return FAKE_DB[key]
+
+TOOLS = {"calculator": calculator, "lookup": lookup}
+
+# ---------- scripted mock LLM ----------
+class ScriptedLLM:
+    """按顺序返回预先写好的回复，用来离线测试 agent loop。"""
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = 0
+    def __call__(self, messages):
+        self.calls += 1
+        return self.replies.pop(0) if self.replies else "Thought: I am stuck."
+
+# ---------- parsing ----------
+ACTION_RE = re.compile(r"Action:\s*(\w+)\s*\nAction Input:\s*(\{.*\})", re.S)
+FINAL_RE = re.compile(r"Final Answer:\s*(.*)", re.S)
+
+def parse(reply):
+    m = FINAL_RE.search(reply)
+    if m:
+        return ("final", m.group(1).strip())
+    m = ACTION_RE.search(reply)
+    if m:
+        try:
+            args = json.loads(m.group(2))
+        except json.JSONDecodeError as e:
+            return ("error", f"Action Input is not valid JSON: {e}")
+        return ("action", (m.group(1), args))
+    return ("error", "Could not parse. Use 'Action:' + 'Action Input:' or 'Final Answer:'.")
+
+# ---------- the loop ----------
+def run_agent(llm, task, max_steps=6, max_obs_chars=500):
+    messages = [{"role": "system", "content": "Tools: calculator(expression), lookup(key)."},
+                {"role": "user", "content": task}]
+    trace = []
+    for step in range(max_steps):
+        reply = llm(messages)
+        messages.append({"role": "assistant", "content": reply})
+        kind, payload = parse(reply)
+        if kind == "final":
+            trace.append(("final", payload))
+            return payload, trace
+        if kind == "error":
+            obs = f"Error: {payload}"
+        else:
+            name, args = payload
+            if name not in TOOLS:
+                obs = f"Error: unknown tool {name!r}. Available: {sorted(TOOLS)}"
+            else:
+                try:
+                    obs = TOOLS[name](**args)
+                except Exception as e:          # 工具错误 -&gt; 作为 observation 回给模型
+                    obs = f"Error: {type(e).__name__}: {e}"
+        obs = obs[:max_obs_chars]              # 截断过长输出，保护上下文
+        trace.append(("obs", obs))
+        messages.append({"role": "user", "content": f"Observation: {obs}"})
+    trace.append(("stop", "max_steps reached"))
+    return None, trace
+
+if __name__ == "__main__":
+    llm = ScriptedLLM([
+        'Thought: need Austin pop.\nAction: lookup\nAction Input: {"key": "austin"}',
+        'Thought: wrong key, use listed one.\nAction: lookup\nAction Input: {"key": "population_austin"}',
+        'Thought: now Dallas.\nAction: lookup\nAction Input: {"key": "population_dallas"}',
+        'Thought: compute difference.\nAction: calculator\nAction Input: {"expression": "1302868 - 979882"}',
+        'Final Answer: Dallas has 322986 more people.',
+    ])
+    ans, trace = run_agent(llm, "How many more people live in Dallas than Austin?")
+    for t in trace: print(t)
+    assert ans == "Dallas has 322986 more people."
+    assert trace[0][1].startswith("Error: KeyError")
+    assert llm.calls == 5
+
+    # 解析失败 + 未知工具 + 步数上限
+    llm2 = ScriptedLLM(["I think the answer is 4",
+                        'Action: search\nAction Input: {"q": "x"}',
+                        'Action: calculator\nAction Input: {bad json}'])
+    ans2, trace2 = run_agent(llm2, "2+2?", max_steps=4)
+    assert ans2 is None and trace2[-1] == ("stop", "max_steps reached")
+    assert "Could not parse" in trace2[0][1]
+    assert "unknown tool" in trace2[1][1]
+    assert "not valid JSON" in trace2[2][1]
+    # 非法表达式被拦截
+    llm3 = ScriptedLLM(['Action: calculator\nAction Input: {"expression": "__import__(\'os\')"}',
+                        "Final Answer: refused"])
+    ans3, trace3 = run_agent(llm3, "x")
+    assert "ValueError" in trace3[0][1] and ans3 == "refused"
+    print("all ok")</code></pre>
+    <p>运行输出（第一组测试的 trace）：</p>
+<pre><code class="language-text">('obs', 'Error: KeyError: "unknown key \'austin\'; valid keys: [\'population_austin\', \'population_dallas\']"')
+('obs', '979882')
+('obs', '1302868')
+('obs', '322986')
+('final', 'Dallas has 322986 more people.')</code></pre>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>① 工具异常直接抛出，整个循环崩溃；② 没有步数上限；③ 解析失败时静默跳过（模型不知道自己格式错了，会一直错）；④ 把 observation 作为 assistant 消息追加（角色错了，模型会以为是自己说的）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The loop is simple: for up to max-steps iterations, call the model with the message history, parse the reply into either a final answer, a tool call, or a parse error. For a tool call, look it up in a registry and run it inside a try-except, so any exception becomes an observation with an actionable message rather than crashing the loop. Truncate long observations, append them as a new message, and continue. If we hit the step limit, return gracefully with the trace. For testing I use a scripted mock model, so the whole loop is deterministic and I can assert on each step.</p></div>
+  <div class="exercise deep"><div class="ex-head"><b>练习 11.1</b> · 难度 ★★</div><p>给 <code>run_agent</code> 加上"重复调用检测"：如果同一个 (tool, args) 组合被调用第 3 次，不执行工具，而是返回 observation <code>"Error: repeated call; try a different approach"</code>。写一个测试。</p><details><summary>提示</summary><div class="inner">用 <code>collections.Counter</code>，key 用 <code>(name, json.dumps(args, sort_keys=True))</code>（dict 不可哈希，并且要对键排序以保证相同参数得到相同 key）。</div></details><details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">from collections import Counter
+# 在 run_agent 开头: seen = Counter()
+# 在 kind == "action" 分支里:
+key = (name, json.dumps(args, sort_keys=True))
+seen[key] += 1
+if seen[key] &gt;= 3:
+    obs = "Error: repeated call; try a different approach"
+elif name not in TOOLS:
+    ...
+# 测试: 脚本让模型连续 3 次调用 lookup(population_austin)，断言第 3 个 obs 以 "Error: repeated" 开头</code></pre>
+    </div></details></div>
+  <div class="exercise deep"><div class="ex-head"><b>练习 11.2</b> · 难度 ★★</div><p>把文本格式的 Action 换成"并行 function calling"：模型一次返回一个 JSON 列表 <code>[{"id": "c1", "name": ..., "args": {...}}, ...]</code>，你要并发执行（可用 <code>concurrent.futures.ThreadPoolExecutor</code>），并把结果按 id 回传。考虑：某一个调用失败时其他调用怎么办？</p><details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">from concurrent.futures import ThreadPoolExecutor
+
+def run_one(call):
+    try:
+        fn = TOOLS[call["name"]]
+        return {"id": call["id"], "content": fn(**call["args"])}
+    except Exception as e:                      # 单个失败不影响其他
+        return {"id": call["id"], "content": f"Error: {type(e).__name__}: {e}", "is_error": True}
+
+def run_parallel(calls, max_workers=8):
+    with ThreadPoolExecutor(max_workers) as ex:
+        return list(ex.map(run_one, calls))    # map 保持输入顺序；每个结果带 id</code></pre>
+    <p>要点：每个结果带 id；单个失败只影响自己的结果；有副作用、相互依赖的调用不应并行（可以让工具声明 <code>parallel_safe</code>）。</p>
+    </div></details></div>
+</section>
+
+<section class="concept" id="c-sim">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>模拟：复合误差、重试、best-of-k + verifier</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用几行代码把 §7 和 §5 的结论变成数字：\(p^n\) 衰减表；重试如何改变它；以及 verifier 不完美时 best-of-k 的上限 \(q\,\mathrm{TPR}/(q\,\mathrm{TPR}+(1-q)\,\mathrm{FPR})\)。</p><p class="en">Turn the compounding-error and verifier-ceiling arguments into concrete numbers.</p></div>
+  <div class="deep">
+    <p><b>best-of-k 策略的定义</b>：依次检查 k 个独立样本，返回第一个被 verifier 接受的；如果都没被接受，返回第 1 个样本。设单样本被接受的概率 \(a = q\,\mathrm{TPR} + (1-q)\,\mathrm{FPR}\)，则</p>
+    $$ P(\text{correct}) = \big(1-(1-a)^k\big)\cdot\frac{q\,\mathrm{TPR}}{a} + (1-a)^k \cdot \frac{q(1-\mathrm{TPR})}{1-a} $$
+    <p>第一项：至少一个被接受时，第一个被接受的样本正确的概率是 \(q\,\mathrm{TPR}/a\)（各样本独立同分布）；第二项：全部被拒绝时，回退的样本在"被拒绝"条件下正确的概率。\(k\to\infty\) 时第二项消失，得到上限。完美 verifier（TPR=1, FPR=0）时第一项化为 \(1-(1-q)^k\)，等于 pass@k。代码同时用蒙特卡洛验证了解析式。</p>
+  </div>
+  <details class="deep" open><summary>代码：sim.py（已运行）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+from math import comb
+
+# 1) 复合误差: 每步成功率 p, n 步全部成功的概率 p**n
+ps = [0.90, 0.95, 0.99, 0.999]
+ns = [10, 50, 100, 500]
+print("p \\ n " + "".join(f"{n:&gt;9}" for n in ns))
+for p in ps:
+    print(f"{p:&lt;6}" + "".join(f"{p**n:&gt;9.3f}" for n in ns))
+
+# 要让 n 步整体成功率 &gt;= 0.5, 每步需要的 p
+for n in ns:
+    print(f"n={n:&gt;4}: need p &gt;= {0.5**(1/n):.5f}")
+
+# 2) 每步可以检测错误并重试 r 次 (独立重试, 检测完美): 有效每步成功率 1-(1-p)^(r+1)
+p, n = 0.95, 100
+for r in [0, 1, 2, 3]:
+    pe = 1 - (1 - p) ** (r + 1)
+    print(f"retries={r}: step={pe:.6f}  task={pe**n:.4f}")
+
+# 3) best-of-k + verifier (蒙特卡洛 vs 解析)
+rng = np.random.default_rng(0)
+def best_of_k(q, k, tpr, fpr, trials=200_000):
+    """q: 单次尝试正确率; verifier 对正确答案以 tpr 判通过, 对错误答案以 fpr 误判通过。
+    策略: 依次检查 k 个样本, 返回第一个通过 verifier 的; 都不通过则返回第 1 个样本。"""
+    correct = rng.random((trials, k)) &lt; q
+    accept = np.where(correct, rng.random((trials, k)) &lt; tpr, rng.random((trials, k)) &lt; fpr)
+    any_acc = accept.any(axis=1)
+    first = accept.argmax(axis=1)
+    chosen_correct = np.where(any_acc, correct[np.arange(trials), first], correct[:, 0])
+    return chosen_correct.mean()
+
+def best_of_k_exact(q, k, tpr, fpr):
+    a = q * tpr + (1 - q) * fpr          # 单个样本被接受的概率
+    p_acc_correct = q * tpr / a if a &gt; 0 else 0
+    p_none = (1 - a) ** k
+    # 没有任何被接受时，回退到第1个样本；条件是它未被接受
+    q_given_rej = q * (1 - tpr) / (1 - a) if a &lt; 1 else 0
+    return (1 - p_none) * p_acc_correct + p_none * q_given_rej
+
+def pass_at_k(q, k): return 1 - (1 - q) ** k
+
+q = 0.3
+print(f"\nq={q}")
+print(f"{'k':&gt;3} {'pass@k':&gt;8} {'perfect':&gt;8} {'tpr.9/fpr.1':&gt;12} {'tpr.9/fpr.3':&gt;12}")
+for k in [1, 2, 4, 8, 16, 32]:
+    perf = best_of_k_exact(q, k, 1.0, 0.0)
+    g = best_of_k_exact(q, k, 0.9, 0.1)
+    b = best_of_k_exact(q, k, 0.9, 0.3)
+    mc = best_of_k(q, k, 0.9, 0.1)
+    assert abs(mc - g) &lt; 0.005, (k, mc, g)
+    assert abs(perf - pass_at_k(q, k)) &lt; 1e-12
+    print(f"{k:&gt;3} {pass_at_k(q,k):&gt;8.3f} {perf:&gt;8.3f} {g:&gt;12.3f} {b:&gt;12.3f}")
+# 极限: k-&gt;inf 时 = P(correct | accepted) = q*tpr/(q*tpr+(1-q)*fpr)
+for tpr, fpr in [(0.9, 0.1), (0.9, 0.3)]:
+    lim = q * tpr / (q * tpr + (1 - q) * fpr)
+    print(f"limit tpr={tpr} fpr={fpr}: {lim:.3f}")
+
+# 4) pass@k vs pass^k
+print("\npass@k vs pass^k, per-trial success s")
+for s in [0.6, 0.8, 0.9]:
+    print(s, [(k, round(1 - (1 - s) ** k, 3), round(s ** k, 3)) for k in [1, 4, 8]])
+
+# 无偏估计 pass^k: C(c,k)/C(n,k) ; pass@k: 1 - C(n-c,k)/C(n,k)
+def pass_hat_k(n, c, k): return comb(c, k) / comb(n, k)
+def pass_at_k_est(n, c, k): return 1 - comb(n - c, k) / comb(n, k)
+assert abs(pass_hat_k(8, 6, 1) - 0.75) &lt; 1e-12
+print("n=8,c=6:", pass_at_k_est(8, 6, 4), pass_hat_k(8, 6, 4))
+print("ok")</code></pre>
+    <p>输出：</p>
+<pre><code class="language-text">p \ n        10       50      100      500
+0.9       0.349    0.005    0.000    0.000
+0.95      0.599    0.077    0.006    0.000
+0.99      0.904    0.605    0.366    0.007
+0.999     0.990    0.951    0.905    0.606
+n=  10: need p &gt;= 0.93303
+n=  50: need p &gt;= 0.98623
+n= 100: need p &gt;= 0.99309
+n= 500: need p &gt;= 0.99861
+retries=0: step=0.950000  task=0.0059
+retries=1: step=0.997500  task=0.7786
+retries=2: step=0.999875  task=0.9876
+retries=3: step=0.999994  task=0.9994
+
+q=0.3
+  k   pass@k  perfect  tpr.9/fpr.1  tpr.9/fpr.3
+  1    0.300    0.300        0.300        0.300
+  2    0.510    0.510        0.468        0.426
+  4    0.760    0.760        0.652        0.526
+  8    0.942    0.942        0.767        0.560
+ 16    0.997    0.997        0.793        0.562
+ 32    1.000    1.000        0.794        0.562
+limit tpr=0.9 fpr=0.1: 0.794
+limit tpr=0.9 fpr=0.3: 0.563
+
+pass@k vs pass^k, per-trial success s
+0.6 [(1, 0.6, 0.6), (4, 0.974, 0.13), (8, 0.999, 0.017)]
+0.8 [(1, 0.8, 0.8), (4, 0.998, 0.41), (8, 1.0, 0.168)]
+0.9 [(1, 0.9, 0.9), (4, 1.0, 0.656), (8, 1.0, 0.43)]
+n=8,c=6: 1.0 0.21428571428571427
+ok</code></pre>
+  </div></details>
+  <div class="deep">
+    <p><b>读表</b>：</p>
+    <ul>
+      <li>完美 verifier 下 best-of-k = pass@k，k=8 时已达 94%。</li>
+      <li>TPR 0.9 / FPR 0.1 时，k=8 为 77%，之后几乎不再增长（上限 79%）；FPR 0.3 时上限只有 56%，k=4 之后就平了。</li>
+      <li><b>结论</b>：verifier 的假阳性率是 test-time scaling 的天花板；在 FPR 高的情况下增加 k 几乎没用，应该投资 verifier。</li>
+    </ul>
+  </div>
+  <div class="exercise deep"><div class="ex-head"><b>练习 11.3</b> · 难度 ★★★</div><p>用 <b>多数投票</b>代替 verifier：每题有一个正确答案（概率 \(q\)）和若干错误答案。分别模拟 (a) 错误答案均匀分散在 10 个选项上；(b) 有一个"诱人的错误答案"占 \(0.4\)，正确答案占 \(0.3\)。画出投票准确率随 k 的变化，解释为什么 (b) 中准确率随 k 下降。</p><details><summary>参考答案</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+from collections import Counter
+rng = np.random.default_rng(0)
+
+def vote_acc(probs, k, trials=20000):
+    """probs[0] = 正确答案的概率；其余为各错误答案的概率。平票时随机打破。"""
+    probs = np.asarray(probs) / np.sum(probs)
+    wins = 0
+    for _ in range(trials):
+        s = rng.choice(len(probs), size=k, p=probs)
+        c = Counter(s.tolist()); top = max(c.values())
+        winners = [a for a, v in c.items() if v == top]
+        wins += rng.choice(winners) == 0
+    return wins / trials
+
+uniform  = [0.3] + [0.07] * 10                 # 错误答案分散
+tempting = [0.3, 0.4] + [0.3 / 6] * 6          # 一个诱人错误答案占 0.4
+for k in [1, 5, 15, 45]:
+    print(k, round(vote_acc(uniform, k), 3), round(vote_acc(tempting, k), 3))
+# (a) 随 k 上升趋近 1（正确答案是众数）；(b) 随 k 下降趋近 0（错误答案是众数）</code></pre>
+    <p>解释：多数投票收敛到模型输出分布的众数。众数正确时，样本越多越确定；众数错误时，样本越多越确定地选错。这就是 Chen et al. (2024) 观察到"更多调用对难题有害"的机制。</p>
+    </div></details></div>
+</section>
+
+<!-- ============================ §12 ============================ -->
+<h2 class="sec" id="s-research"><span class="num">§12 · RESEARCH DISCUSSION</span>研究讨论题（1 分钟英文回答）</h2>
+<p class="sec-intro">RS 面试的开放讨论。每题给出一个约 1 分钟的英文回答骨架：先表态，再给 2–3 个理由/证据，最后给一个你会做的实验。练习时计时，出声说。</p>
+
+<section class="concept" id="c-rq">
+  <div class="concept-head"><span class="pri p1">★</span><h3>12 道高频研究讨论题</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>回答模板：Position → Evidence/Reasoning → Caveat → Experiment I'd run。面试官看的是你的判断力和把问题变成实验的能力，而不是"标准答案"。</p><p class="en">Position, evidence, caveat, and the experiment you would run.</p></div>
+  <div class="followups"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">讨论题</span><ol>
+    <li><b>Why do agents fail on long-horizon tasks, and what's the most promising fix?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>I'd split failures into three kinds: per-step errors that compound, state and context problems — forgetting what was done, context rot — and verification failures, especially declaring success too early. The p-to-the-n math says per-step accuracy alone can't get you to long horizons; what changes the curve is detecting and recovering from errors. So I think the most promising direction is training for recovery: RL environments where the agent has to notice a failing test, roll back, and try a different approach, combined with externalized state so a fresh context can resume. The experiment I'd run is a survival analysis over milestones, then an intervention where I restore the correct state at a checkpoint and see whether failures are cumulative or local.</p></div></div></details></li>
+    <li><b>Should memory management live in the harness or be learned by the model?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>Short term, harness; long term, increasingly the model. Harness-level compaction and note files are cheap, debuggable and work today. But the harness has to guess what's important, and the model is in a much better position to know which details will matter later. The Bitter Lesson-style trend is that stronger models absorb scaffolding. I'd test this by RL-training a model with a write-note and a summarize tool and a hard context budget, and comparing it to a fixed compaction rule at equal tokens — measuring success rate and how often it repeats previously failed attempts after compaction.</p></div></div></details></li>
+    <li><b>Are multi-agent systems fundamentally better than a single agent, or just a way to spend more compute?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>Mostly a way to spend compute, with one real structural advantage: context isolation. Anthropic found token usage explained most of the variance in their research eval, and controlled studies show big gains on decomposable tasks but large losses on sequential ones. Debate often doesn't beat self-consistency at matched compute. But parallel subagents each get a clean context window, which a single agent can't easily replicate. So the fair experiment is equal-token comparisons, plus ablations that isolate each ingredient — just context isolation, just parallelism, just diverse prompts — to see which one actually carries the gain.</p></div></div></details></li>
+    <li><b>How would you do credit assignment in multi-turn agent RL?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>I'd start with trajectory-level group-normalized advantages, because they're stable and need no critic, and make sure there's signal through curriculum and difficulty filtering. Then the natural next step is turn-level credit: treat each assistant turn as an action and either train a turn-level value function or estimate per-turn values with Monte Carlo rollouts from intermediate states, which is feasible if the environment can be snapshotted. Turn-level is a good match because the decision unit is the tool call, and the horizon shrinks from tens of thousands of tokens to tens of turns. I'd compare sample efficiency and final success against the trajectory-level baseline, and check that the learned values actually identify the key turns on hand-labeled trajectories.</p></div></div></details></li>
+    <li><b>Can an agent improve itself without external feedback?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>Not reliably, in my view. Huang et al. showed intrinsic self-correction on reasoning doesn't help and can hurt, and the follow-up survey reached a similar conclusion. Self-improvement works when there's an asymmetry where verifying is easier than generating — tests, compilers, proof checkers, environment state. Agents are actually a good setting because the environment provides that feedback. So I'd reframe the question as: how far can we push self-improvement with cheap, partial verifiers, and how do we stop the agent from exploiting their blind spots? An experiment would be self-training loops with verifiers of controlled false-positive rates to measure where improvement stalls.</p></div></div></details></li>
+    <li><b>What's wrong with current agent benchmarks, and what would you build?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>Four problems: contamination, since tasks like SWE-bench come from public repos; grader errors — OpenAI's audit found most of the hard remaining SWE-bench Verified problems had flawed tests or descriptions; harness and cost confounds, since scores are reported with different scaffolds and budgets; and a focus on capability rather than reliability. I'd build a benchmark with private, regularly refreshed tasks, adversarially tested graders, a standard harness track, mandatory cost reporting, and pass-hat-k alongside pass-at-one. I'd also include tasks that need interaction with an underspecified user, because real work is rarely well-specified.</p></div></div></details></li>
+    <li><b>How would you detect and prevent reward hacking when training coding agents with RL?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>Prevention first: hidden tests run in a clean environment the agent can't write to, read-only test directories, no access to git history beyond the base commit, and network restrictions. Detection second: monitor trajectories for edits to test files, special-casing of test inputs, or suspicious exits, and spot-check the highest-reward episodes by hand. I'd track the gap between the training reward and a held-out, stricter grader — when they diverge, something is being exploited. I'd use the monitor mainly to filter data rather than as a reward penalty, so I'm not training the model to hide the behavior.</p></div></div></details></li>
+    <li><b>Is the METR time-horizon trend meaningful, and what would make you doubt it?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>I think it's one of the more meaningful agent metrics because it uses a model-independent unit — human time — and fits a clean logistic per model. The trend has been remarkably consistent. What would make me doubt it: the tasks are well-specified, automatically scored software tasks, so the horizon may be much shorter on messy real work; the 80 percent horizon is several times shorter, which matters for deployment; human time mixes intellectual difficulty with mechanical effort that's cheap for models; and the task suite has to keep supplying longer tasks to measure the frontier. I'd want to see the same trend replicate on a different task distribution with real-world ambiguity.</p></div></div></details></li>
+    <li><b>Function calling with JSON or code as actions — which would you bet on?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>For capable models in a sandbox, I'd bet on code. Code gives you loops, conditionals, variables and composition for free, so one action can do the work of many JSON calls, and the intermediate data doesn't have to pass through the context. Models have also seen far more code than any particular tool-call format. JSON calls win where you need tight permissions, auditability and simple typed interfaces — like customer-facing agents touching real accounts. A reasonable hybrid is typed tools exposed as a code API inside a sandbox. I'd compare them on the same tasks for success, turns, tokens, and the rate of unsafe actions.</p></div></div></details></li>
+    <li><b>How do you make an agent reliable enough for production when it's 80% accurate?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>Eighty percent per attempt is about 17 percent pass-hat-8, so you can't just ship it. I'd narrow the task scope and turn parts of it into workflows, add verification at every step where it's cheap, use retries with diversity where errors are detectable, and route low-confidence or high-stakes cases to a human. I'd also measure reliability directly — pass-hat-k on a realistic eval — and look at the failure distribution, because often a few failure modes account for most of the errors and can be fixed with better tool design or error messages.</p></div></div></details></li>
+    <li><b>What's the role of RL versus SFT in building agents?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>SFT on trajectories is the efficient way to teach the format, the tools and reasonable default strategies, but it suffers from distribution shift — the model only sees expert states and never learns to recover from its own mistakes. On-policy RL trains on the model's own states, including the bad ones, and optimizes the actual outcome, so it's where recovery, persistence and efficient exploration come from. In practice it's SFT for warm-start, then RL in sandboxed environments with verifiable rewards. The open questions are credit assignment over long trajectories, environment scale, and how much RL improves the pass-at-one versus genuinely expanding what the model can solve.</p></div></div></details></li>
+    <li><b>How should an agent decide when to ask the user a clarifying question?</b><details><summary>1 分钟回答</summary><div class="inner"><div class="box say"><span class="lbl">Say it in English</span><p>It's a value-of-information decision: ask when the expected cost of acting on the wrong interpretation exceeds the cost of interrupting the user. That depends on ambiguity, on how reversible the next action is, and on how expensive the task is. Current agents tend to either over-ask or, more often, plow ahead on a guess. I'd train this with environments that have simulated users holding hidden preferences, like tau-bench style setups, and a reward that charges a small cost per question but a large cost for irreversible wrong actions. Then I'd measure calibration — whether questions are concentrated on genuinely ambiguous tasks.</p></div></div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================ CHEAT SHEET ============================ -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚看这一页。</p>
+
+<table>
+  <tr><th>主题</th><th>必须记住</th></tr>
+  <tr><td>Agent 定义</td><td>LLM + tools + memory + loop；模型决定控制流 = agent，代码写死 = workflow；POMDP + 稀疏终局奖励</td></tr>
+  <tr><td>Workflow 5 模式</td><td>prompt chaining、routing、parallelization（sectioning/voting）、orchestrator-workers、evaluator-optimizer；建议：simplicity、transparency、ACI + poka-yoke</td></tr>
+  <tr><td>Harness</td><td>能力 = model × harness；比较模型时固定 harness，报告步数/尝试/成本</td></tr>
+  <tr><td>ReAct</td><td>Thought → Action → Observation；比 CoT 少幻觉，比纯 Act 会规划；缺点：贪心无回溯、上下文膨胀</td></tr>
+  <tr><td>Function calling</td><td>JSON Schema 声明 → 模型输出 call(id) → 应用执行 → tool_result(id)；strict = constrained decoding；并行调用需独立</td></tr>
+  <tr><td>MCP</td><td>JSON-RPC 2.0；stdio / Streamable HTTP；server: tools/resources/prompts；M×N → M+N；2025-12 捐给 Linux Foundation 的 AAIF</td></tr>
+  <tr><td>CodeAct</td><td>代码作为动作：组合、控制流、少轮次；需要沙箱</td></tr>
+  <tr><td>RAG</td><td>chunk → bi-encoder embed → ANN（+BM25 hybrid）→ cross-encoder rerank；先评 recall 再评 faithfulness；lost in the middle</td></tr>
+  <tr><td>Context engineering</td><td>最小高信号 token 集；compaction、structured notes、sub-agents、just-in-time retrieval；context rot；保持前缀稳定以用 prompt cache</td></tr>
+  <tr><td>自我纠错</td><td>无外部反馈 → 通常无效甚至有害（Huang 2023）；有 verifier 或经 RL 训练 → 有效</td></tr>
+  <tr><td>Verifier 上限</td><td>\(\lim_{k\to\infty} = q\,\mathrm{TPR}/(q\,\mathrm{TPR}+(1-q)\,\mathrm{FPR})\)；q=0.3, TPR=0.9, FPR=0.1 → 0.79；FPR=0.3 → 0.56</td></tr>
+  <tr><td>复合误差</td><td>\(p^n \approx e^{-n(1-p)}\)；0.99^100 ≈ 0.37；0.95^100 ≈ 0.006；一次重试：0.95 → 0.9975/步 → 100 步 0.78</td></tr>
+  <tr><td>METR</td><td>50% horizon = 模型 50% 成功的任务的人类耗时；logistic in log t；2025 论文 ~7 个月翻倍；TH 1.1（2026-01）2023 后 ~4.3 个月；80% horizon 短数倍</td></tr>
+  <tr><td>多智能体</td><td>价值：并行、上下文隔离、去相关、专业化；必须等预算对比；可分解任务有利、顺序任务有害；投票众数错误时 k↑ 反而变差</td></tr>
+  <tr><td>MAST</td><td>14 种失败、3 类：系统设计、agent 间不对齐、任务验证</td></tr>
+  <tr><td>Agent RL</td><td>梯度只含模型生成 token（环境转移不含 θ）→ mask 工具输出（保留 end-of-turn token）；保留 rollout token id；轨迹/回合/token 级 advantage；零方差组 → 课程；异步 rollout → staleness + IS 修正</td></tr>
+  <tr><td>Reward hacking</td><td>改测试、特判、exit(0)、读答案、骗 judge；隐藏测试 + 干净环境重评 + 轨迹监控 + 抽检</td></tr>
+  <tr><td>pass@k / pass^k</td><td>\(1-(1-s)^k\) vs \(s^k\)；无偏：\(1-\binom{n-c}{k}/\binom{n}{k}\) 与 \(\binom{c}{k}/\binom{n}{k}\)；s=0.8：pass^8 ≈ 0.17</td></tr>
+  <tr><td>Benchmark 数字</td><td>SWE-bench 2,294 题/12 仓库；Verified 500 题（2026-02 OpenAI 弃用，推荐 Pro）；SWE-Bench Pro 1,865 题/41 仓库；Terminal-Bench 2.0 89 题；OSWorld 369 题；GAIA 466 题；τ-bench 用 pass^k</td></tr>
+  <tr><td>评估方法</td><td>污染、flaky、方差（N=500 时 SE ≈ 2.2 点）、成本-准确率曲线、harness 敏感性、评分器审计</td></tr>
+  <tr><td>安全</td><td>间接 prompt injection；私密数据 + 不可信内容 + 外传通道；系统层防御（CaMeL、最小权限、HITL）最可靠</td></tr>
+</table>
+
+<h3 style="margin-top:28px">高频面试题清单</h3>
+<table>
+  <tr><th>#</th><th>问题</th><th>答案在</th></tr>
+  <tr><td>1</td><td>What is an agent? How is it different from a workflow?</td><td><a href="#c-def">定义</a> · <a href="#c-workflow">Agent vs Workflow</a></td></tr>
+  <tr><td>2</td><td>Explain ReAct. Why does interleaving reasoning and acting help?</td><td><a href="#c-react">ReAct</a></td></tr>
+  <tr><td>3</td><td>How does function calling work under the hood?</td><td><a href="#c-fc">Function calling</a></td></tr>
+  <tr><td>4</td><td>What is MCP and why does it matter?</td><td><a href="#c-mcp">MCP</a></td></tr>
+  <tr><td>5</td><td>Design the memory system for an agent running for hours.</td><td><a href="#c-memtypes">记忆</a> · <a href="#c-context">Context engineering</a></td></tr>
+  <tr><td>6</td><td>Walk me through a RAG pipeline. Bi-encoder vs cross-encoder?</td><td><a href="#c-rag">RAG</a></td></tr>
+  <tr><td>7</td><td>Can LLMs self-correct?</td><td><a href="#c-selfcorrect">自我纠错</a> · <a href="#c-verifier">Verifier</a></td></tr>
+  <tr><td>8</td><td>When do multi-agent systems help?</td><td><a href="#c-mas-when">多智能体</a> · <a href="#c-mast">MAST</a></td></tr>
+  <tr><td>9</td><td>Why do agents fail on long tasks? Give numbers.</td><td><a href="#c-compound">复合误差</a> · <a href="#c-metr">METR</a> · <a href="#c-state">长程工程</a></td></tr>
+  <tr><td>10</td><td>How is multi-turn agent RL different from single-turn RLVR?</td><td><a href="#c-mtrl">多轮 RL</a> · <a href="#c-adv">Advantage 与 masking</a></td></tr>
+  <tr><td>11</td><td>Why mask tool outputs in the loss?</td><td><a href="#c-adv">Masking</a> · <a href="#c-mtrl">推导</a></td></tr>
+  <tr><td>12</td><td>How would you build RL environments for coding agents?</td><td><a href="#c-env">环境设计</a> · <a href="#c-hack">Reward hacking</a></td></tr>
+  <tr><td>13</td><td>What are the problems with SWE-bench?</td><td><a href="#c-benchmarks">Benchmarks</a> · <a href="#c-evalmethod">评估方法论</a></td></tr>
+  <tr><td>14</td><td>pass@k vs pass^k?</td><td><a href="#c-passk">pass^k</a></td></tr>
+  <tr><td>15</td><td>What is indirect prompt injection and how do you defend?</td><td><a href="#c-injection">Prompt injection</a> · <a href="#c-sandbox">沙箱</a></td></tr>
+  <tr><td>16</td><td>Write a minimal agent loop.</td><td><a href="#c-loop">ReAct 代码</a></td></tr>
+</table>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m10" data-title="模块 10 自测卡片"></div>
+<div class="footer-nav"><a href="m09-distributed.html">← 09 分布式训练与效率</a><a href="m11-interp.html">11 可解释性 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m10.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
