@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN" data-root=".">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interview Prep · Kaijing Ma</title>
+<meta name="description" content="Research Scientist interview preparation notes: Python, PyTorch, LLM fundamentals, post-training, reasoning, systems, coding, and research discussion.">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-module="index">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="https://mkj69.github.io/">← Home</a><a href="review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div>
+      <p class="rail-label">Start</p>
+      <nav>
+        <a href="index.html" class="active"><span class="num">··</span>路线图与学习计划</a>
+        <a href="review.html"><span class="num">↻</span>间隔重复复习</a>
+      </nav>
+    </div>
+    <div>
+      <p class="rail-label">Modules</p>
+      <nav id="module-nav"></nav>
+    </div>
+    <div class="rail-footer">
+      <a href="https://mkj69.github.io/">← mkj69.github.io</a><br>
+      Living notebook · Oct 2026
+    </div>
+  </aside>
+
+  <main>
+    <div class="page">
+      <section class="hero">
+        <div class="eyebrow">Research Scientist · Internship Interview Prep</div>
+        <h1 class="title">Interview <em>Prep</em>,<br>built for recall.</h1>
+        <p class="lede">为 Research Scientist 实习面试准备的学习笔记。用中文讲清原理，用英文练习作答。目标不是"读过"，而是在面试现场<strong>能从空白开始说出来、写出来</strong>。</p>
+        <p class="stat" id="overall-stat" style="font:12px var(--mono);color:var(--muted)"></p>
+      </section>
+
+      <h2 class="sec" id="how"><span class="num">00 · HOW TO USE</span>这套笔记怎么用</h2>
+      <p class="sec-intro">每个知识点都按同一个结构组织。结构本身就是学习方法：先抓住一句话，再理解，再用英文说出来，最后接受追问。</p>
+      <div class="how-grid">
+        <div><span>01 · 一句话</span><b>绿色框：30 秒版本</b><p>中文一句 + 英文一句。时间不够时只刷这一层。顶部"速记模式"会把其他内容全部隐藏。</p></div>
+        <div><span>02 · 讲解</span><b>正文：为什么</b><p>直觉、原理、和其他概念的联系。理解了"为什么"，追问时才不会卡住。</p></div>
+        <div><span>03 · 代码/推导</span><b>折叠块：需要时再展开</b><p>推导和代码默认折叠。先自己在纸上推、在空白文件里写，卡住了再展开对照。</p></div>
+        <div><span>04 · Say it</span><b>蓝色框：英文标准回答</b><p>面试是英文的。这一段是可以直接说出口的 1–2 分钟回答，建议出声读几遍。</p></div>
+        <div><span>05 · 追问链</span><b>面试官接下来会问什么</b><p>面试官很少只问一个问题。每个追问先自己回答，再展开思路对照。</p></div>
+        <div><span>06 · 卡片</span><b>主动回忆 + 间隔重复</b><p>每个模块末尾有自测卡。标记"不会 / 模糊 / 会了"，系统按遗忘曲线安排复习。进度只存在你自己的浏览器里。</p></div>
+      </div>
+
+      <div class="callout">
+        <b>三条最重要的原则。</b>
+        <ol style="margin:8px 0 0">
+          <li><strong>练习时关掉 AI 补全。</strong>手感退化的原因就是补全，恢复的唯一方法是自己从空白文件写。读懂参考代码不等于会写。</li>
+          <li><strong>先回忆，再看答案。</strong>每张卡、每个追问都先自己说出来（最好出声、用英文），再点开。这一步比反复阅读有效得多。</li>
+          <li><strong>每天先清复习队列。</strong>每天开始学新内容前，先花 15–20 分钟在"间隔重复复习"页把到期的卡清掉。</li>
+        </ol>
+      </div>
+
+      <h2 class="sec" id="plan"><span class="num">01 · STUDY PLAN</span>十周学习计划（完整版）</h2>
+      <p class="sec-intro">按每天约 3 小时估计。顺序的原则是：先恢复手感，再学最高频的 Transformer 和你的主线方向 post-training/RL，系统类和加分项放后面。算法题从第 2 周开始每天穿插 1–2 道，不单独占用整块时间。</p>
+      <div class="table-wrap">
+      <table class="plan-table">
+        <thead><tr><th>时间</th><th>主线内容</th><th>Coding 穿插</th><th>本周检验标准</th></tr></thead>
+        <tbody>
+          <tr><td>第 1 周</td><td>00 Python 重建 · 01 PyTorch 前半（张量、广播、索引）</td><td>模块 0 的全部练习</td><td>不查资料写出 BFS、堆、字典计数；能解释 view 和 reshape 的区别</td></tr>
+          <tr><td>第 2 周</td><td>01 PyTorch 后半（autograd、训练循环）· 03 深度学习基础</td><td>每天 1–2 道算法题（双指针、哈希、栈）</td><td>30 分钟内从空白文件写出 MLP 训练循环；手推 softmax+CE 梯度</td></tr>
+          <tr><td>第 3 周</td><td>02 数学与经典 ML · 04 Transformer 前半（attention、位置编码）</td><td>手写 softmax、LayerNorm、attention</td><td>能推导为什么除以 √d；能讲清 RoPE 的相对位置性质</td></tr>
+          <tr><td>第 4 周</td><td>04 Transformer 后半（参数/FLOPs 估算、MoE、FlashAttention、tokenizer）</td><td>手写 MHA/GQA、RoPE、mini-GPT</td><td>给定配置，3 分钟内估算参数量和训练 FLOPs</td></tr>
+          <tr><td>第 5 周</td><td>06 RL 基础 → RLHF → PPO</td><td>算法：二分、树、BFS/DFS</td><td>独立推导策略梯度定理和 baseline 无偏性</td></tr>
+          <tr><td>第 6 周</td><td>06 DPO / GRPO / RLVR · 07 推理与测试时计算</td><td>手写 PPO、DPO、GRPO loss</td><td>从 KL 约束 RL 目标推导出 DPO loss</td></tr>
+          <tr><td>第 7 周</td><td>05 预训练 · 08 推理与解码系统</td><td>KV cache 生成、top-k/top-p 采样</td><td>算出 7B 模型 4k 上下文的 KV cache 大小</td></tr>
+          <tr><td>第 8 周</td><td>09 分布式训练 · 10 Agents · 13 评估与实验</td><td>算法：DP、回溯、堆</td><td>估算训练 7B 模型的显存；讲清 ZeRO-1/2/3</td></tr>
+          <tr><td>第 9 周</td><td>16 研究讨论 · 11 可解释性 · 12 生成模型 · 18 Behavioral</td><td>BPE、micrograd、AdamW</td><td>用英文 5 分钟讲完一篇论文并接受批判</td></tr>
+          <tr><td>第 10 周</td><td>全面复习 + 模拟面试</td><td>限时混合练习</td><td>每个模块的卡片 80% 以上标记为"会了"</td></tr>
+        </tbody>
+      </table>
+      </div>
+
+      <h4>每天的节奏（约 3 小时）</h4>
+      <ul>
+        <li><strong>20 分钟</strong>：复习到期卡片（先做这个）</li>
+        <li><strong>90 分钟</strong>：学新内容。先看一句话和讲解，再合上页面，自己用中文复述一遍</li>
+        <li><strong>40 分钟</strong>：写代码。ML 手写题或算法题，从空白文件开始，关掉补全</li>
+        <li><strong>15 分钟</strong>：把今天学的 2–3 个"Say it"段落出声用英文讲一遍，最好录音回听</li>
+        <li><strong>5 分钟</strong>：给今天模块的卡片打第一次分</li>
+      </ul>
+
+      <h2 class="sec" id="roadmap-sec"><span class="num">02 · ROADMAP</span>全部模块</h2>
+      <p class="sec-intro">优先级：<span class="pri p1">★ 必须</span> 几乎每场 RS 面试都会碰到；<span class="pri p2">☆ 应该</span> 大概率被问，答不好会扣分；<span class="pri p3">○ 加分</span> 有余力再看，或特定组才问。模块会逐步上线。</p>
+      <div id="roadmap"></div>
+
+      <div class="footer-nav">
+        <a href="https://mkj69.github.io/">← 回到主页</a>
+        <a href="modules/m00-python.html">从模块 00 开始 →</a>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="assets/modules.js"></script>
+<script src="assets/cards/m00.js"></script>
+<script src="assets/cards/m01.js"></script>
+<script src="assets/cards/m02.js"></script>
+<script src="assets/cards/m03.js"></script>
+<script src="assets/cards/m04.js"></script>
+<script src="assets/cards/m05.js"></script>
+<script src="assets/cards/m06.js"></script>
+<script src="assets/cards/m07.js"></script>
+<script src="assets/cards/m08.js"></script>
+<script src="assets/cards/m09.js"></script>
+<script src="assets/cards/m10.js"></script>
+<script src="assets/cards/m11.js"></script>
+<script src="assets/cards/m12.js"></script>
+<script src="assets/cards/m13.js"></script>
+<script src="assets/cards/m14.js"></script>
+<script src="assets/cards/m15.js"></script>
+<script src="assets/cards/m16.js"></script>
+<script src="assets/cards/m18.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
