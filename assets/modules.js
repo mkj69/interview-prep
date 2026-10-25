@@ -71,7 +71,7 @@ window.MODULES = [
     title: '算法题（按题型）',
     desc: '约 90 题精选，每类给 Python 模板和代表题。练习时关掉 AI 补全。',
     topics: '双指针 · 滑动窗口 · 单调栈 · 二分答案 · BFS/DFS · 拓扑 · 并查集 · 堆 · 回溯 · DP · Trie' },
-  { id: 'm16', num: '16', phase: 'p4', pri: 1, status: 'planned', file: 'modules/m16-research.html',
+  { id: 'm16', num: '16', phase: 'p4', pri: 1, status: 'ready', file: 'modules/m16-research.html',
     title: '研究讨论轮',
     desc: '5 分钟讲论文、批判论文、现场提 idea、必读论文清单、研究品味类问题。',
     topics: '论文讲述模板 · 批判框架 · idea 生成 · 30–50 篇必读 · 开放问题' },

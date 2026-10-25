@@ -1,0 +1,1109 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11 · 可解释性 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m11">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 11 · Phase 2 · LLM 核心知识</div>
+<h1 class="title">可解释性：打开<em>黑箱</em>的工具箱</h1>
+<p class="lede">Residual stream、logit lens、probing、activation patching、superposition 与 SAE、steering、经典电路。目标不是成为 interp 研究者，而是被问到时能连续、准确地聊 15 分钟，并且能把这些工具和你自己的方向（推理、RL、agents）连起来。</p>
+
+<div class="callout"><b>这一章的目标。</b>
+学完你应该能：(1) 用 residual stream 的语言描述一个 Transformer 在“做什么”，说清 QK/OV circuit、direct logit attribution 和 logit lens；(2) 区分<strong>相关性证据</strong>（probing）和<strong>因果证据</strong>（patching、ablation、steering），并说出每种方法的坑；(3) 从 toy model 讲到 SAE 的目标函数、scaling monosemanticity、transcoder / attribution graph，以及 2025 年对 SAE 的批评；(4) 解释 steering vector 和 fine-tuning 的取舍；(5) 现场讲 induction head 的两步机制；(6) 用英文回答 8 个以上开放研究题。<br><br>
+<b>建议顺序：</b>§2 residual stream → §4 因果干预 → §5 superposition/SAE → §6 steering，这四节是讨论的骨架（标 ★）。§3 probing 很短但必问“correlation vs causation”。§7 经典电路挑 induction head 精读。§9 的两个 numpy 小实验建议亲手跑一遍：自己看到 SAE 把 48 个叠加的特征拆出来，比读十篇博客更有印象。<br><br>
+<b>和其他模块的关系：</b>依赖 <a href="m04-transformer.html">04 Transformer</a>（attention、LayerNorm、残差）；steering 与 <a href="m06-rl-posttraining.html">06 Post-training</a> 的对齐方法是“同一个目标的两种手段”；CoT faithfulness 与 <a href="m07-reasoning.html">07 推理</a> 相关；实验设计的严谨性见 <a href="m13-eval.html">13 评估</a>。延伸阅读：<a href="https://mkj69.github.io/steerability/" target="_blank" rel="noreferrer">Steerability Research Map</a>（整理了 prompting、activation intervention、偏好学习、模型编辑等 steering 方法的证据地图）。</div>
+
+<!-- ============================== §1 ============================== -->
+<h2 class="sec" id="s-why"><span class="num">§1 · WHY &amp; LEVELS</span>为什么做可解释性</h2>
+<p class="sec-intro">先有一个“地图”：可解释性想回答什么问题、在哪个层次上回答、背后最重要的假设是什么。面试官问“你怎么看 interpretability”时，这一节就是你的开场。</p>
+
+<section class="concept" id="c-goals">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>目标与层次：从“看哪里”到“机制是什么”</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>可解释性想把模型内部的计算翻译成人能检验的概念与因果机制，用途是调试、安全审计、可控性和科学理解。</p><p class="en">Interpretability tries to turn a model's internal computation into human-checkable concepts and causal mechanisms — for debugging, auditing, control, and science.</p></div>
+  <div class="deep">
+    <p><strong>为什么要做？</strong>四个常见动机，面试时能按这个顺序说：</p>
+    <ol>
+      <li><strong>安全与审计</strong>：行为评估只能看到模型“说了什么”，看不到“为什么”。如果模型在评估时表现良好但内部有别的目标（deception、sleeper agent），只有看内部才可能发现。</li>
+      <li><strong>调试与科学理解</strong>：模型为什么会 hallucinate、为什么某个能力在训练中突然出现（phase change）、CoT 写的推理是不是模型真正用的推理。</li>
+      <li><strong>可控性（steering）</strong>：如果找到了“概念在哪里”，就能直接在 activation 上编辑行为，而不必重新训练。</li>
+      <li><strong>改进训练</strong>：用内部信号做 data attribution、发现 spurious correlation、监控训练过程（例如 persona 漂移）。</li>
+    </ol>
+    <p><strong>层次划分</strong>（从粗到细）：</p>
+    <div class="table-wrap"><table>
+      <tr><th>层次</th><th>问的问题</th><th>代表方法</th></tr>
+      <tr><td>行为层 (behavioral)</td><td>输入改变时输出怎么变</td><td>counterfactual prompts、eval</td></tr>
+      <tr><td>归因层 (attribution)</td><td>输出依赖哪些输入 token / 组件</td><td>saliency、integrated gradients、direct logit attribution</td></tr>
+      <tr><td>表示层 (representation)</td><td>某个概念有没有被编码、编码在哪</td><td>linear probe、logit lens、RepE</td></tr>
+      <tr><td>机制层 (mechanistic)</td><td>哪些组件按什么算法组合产生行为</td><td>activation / path patching、circuits、SAE + attribution graphs</td></tr>
+    </table></div>
+    <p>两种研究风格：<strong>bottom-up</strong>（mechanistic interpretability，从神经元、head、feature 开始逆向工程算法）和 <strong>top-down</strong>（representation engineering，从高层概念如 honesty 出发找它在 activation 空间的方向）。前者解释更完整但难以扩展；后者更实用但机制不清楚。</p>
+    <div class="box why"><span class="lbl">直觉</span>可以类比神经科学：probing 像“记录脑区活动看和刺激是否相关”，patching/ablation 像“损伤或刺激某个脑区看行为变化”，circuits 像“画出神经回路图”。不同的是，我们对模型有完美的观测和干预能力，所以可以做到神经科学做不到的精细因果实验。</div>
+    <p><strong>评价一个解释的好坏</strong>：faithfulness（解释是否真的反映模型计算，通常用干预验证）、completeness（是否覆盖了大部分效应）、minimality（是否没有多余组件）、以及对人是否可理解。IOI 论文明确用了前三个标准。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把“看起来合理的可视化”当成解释。attention pattern、saliency map 只是相关性信号，没有经过干预验证的“故事”可能是 interpretability illusion。另一个误区是认为 interp 只服务于安全：在面试中把它和你的方向（推理、RL）联系起来更加分，例如“用 probe 检测 reward hacking”、“用 patching 检查 CoT 是否被真正使用”。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I think of interpretability at a few levels. At the representation level, we ask whether a concept is encoded and where — that's probing or the logit lens. At the mechanistic level, we ask which components implement a behavior and how they compose, and there we need causal tools like activation patching. The main motivations are auditing models for things behavior can't reveal, like hidden objectives, debugging failures like hallucination, and steering models directly through their activations. The key standard for any explanation is faithfulness: it has to survive interventions, not just look plausible.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why can't we just read the attention patterns to understand a model?</b><details><summary>思路</summary><div class="inner">attention 只说明“信息从哪里来”，不说明“搬了什么、怎么用”。OV circuit 决定搬什么；某个 head 的输出也可能被后面层抵消；而且 attention 到某个 token 的 residual，该位置的 residual 早已混合了很多 token 的信息。所以 attention 权重最多是一个假设生成工具，结论要靠 patching 验证。</div></details></li>
+    <li><b>Is mechanistic interpretability going to scale to frontier models?</b><details><summary>思路</summary><div class="inner">平衡回答：乐观面是 SAE 已经扩展到 Claude 3 Sonnet、GPT-4 规模，attribution graph 已经用在 Claude 3.5 Haiku 上；悲观面是重建误差大、每个 prompt 的图要人工解读、attention 机制没覆盖。我的观点可以是：完全逆向工程不现实，但“针对特定问题的 targeted interp”（例如检查有没有欺骗特征、审计隐藏目标）是可行且有价值的。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-lrh">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Linear Representation Hypothesis（线性表示假设）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>高层概念在 activation 空间里大致对应一个<strong>方向</strong>，概念强度对应在该方向上的投影大小；几乎所有 probe、steering、SAE 方法都建立在这个假设上。</p><p class="en">The linear representation hypothesis says high-level concepts correspond roughly to directions in activation space, which is the assumption behind probes, steering vectors, and SAEs.</p></div>
+  <div class="deep">
+    <p><strong>三种含义</strong>（<a href="https://arxiv.org/abs/2311.03658" target="_blank" rel="noreferrer">Park, Choe &amp; Veitch 2023</a> 把它们形式化并联系起来）：</p>
+    <ol>
+      <li><strong>Subspace / embedding 含义</strong>：成对的反事实差（例如 male→female 的各个词对）都平行于同一方向，经典例子是 word2vec 的 king − man + woman ≈ queen。</li>
+      <li><strong>Measurement（probing）含义</strong>：概念可以用一个线性 probe 从 activation 中读出：\( P(\text{concept}) = \sigma(w^\top h + b) \)。</li>
+      <li><strong>Intervention（steering）含义</strong>：沿着该方向加一个向量 \( h \leftarrow h + \alpha v \) 能改变这个概念而尽量不影响其他概念。</li>
+    </ol>
+    <p>他们还指出“方向之间是否正交”取决于用什么内积；在 unembedding 空间里用一个 <em>causal inner product</em>（使因果上可分离的概念正交）时，三种含义可以统一起来。</p>
+    <p><strong>为什么模型会倾向线性表示？</strong>直觉上：Transformer 的大部分操作（residual 相加、attention 的加权和、unembedding 的点积）都是线性的，后续层要“读”一个特征最便宜的方式就是做点积，所以线性编码最容易被下游使用。</p>
+    <p><strong>反例与边界</strong>：<a href="https://arxiv.org/abs/2405.14860" target="_blank" rel="noreferrer">Engels et al. 2024</a> 找到了<strong>多维、不可分解</strong>的特征，例如星期几、月份在 GPT-2 / Mistral 里排成一个<strong>圆</strong>，模型用这个圆做模运算类的任务（“周五之后两天是？”）。所以更准确的说法是“很多特征是线性子空间里的低维结构”，一维方向只是最常见的情形。</p>
+    <div class="box why"><span class="lbl">直觉</span>把 residual stream 想成一个高维“黑板”，每个特征是黑板上的一个方向。写入 = 加上该方向的向量；读出 = 和该方向做点积。只要方向之间近似正交，很多特征就能同时写在同一块黑板上而互不干扰——这正是 §5 superposition 的出发点。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) probe 能读出 ≠ 模型在用它（见 §3）；(2) “线性”不意味着“一维”或“全局一致”，同一个概念在不同层、不同上下文可能方向不同；(3) mean-difference 方向和 logistic-regression probe 方向一般不同，前者常常更适合 steering，后者在分类上更准但可能抓到与概念相关的干扰方向。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The linear representation hypothesis is the idea that concepts are encoded as directions in activation space. It has three faces: you can read the concept with a linear probe, counterfactual pairs differ along a shared direction, and adding that direction steers the concept. It's plausible because almost everything in a transformer reads from the residual stream with dot products. But it's not universal — for example, days of the week are represented on a circle, which is a two-dimensional, non-separable feature.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If a probe finds a direction, how would you check it is the direction the model actually uses?</b><details><summary>思路</summary><div class="inner">做干预：沿方向加/减（steering）或把该方向投影掉（directional ablation），看下游行为是否按预期改变且其他能力不受影响；也可以 patch 该方向上的分量（clean→corrupted）。如果 probe 方向干预无效而 mean-diff 方向有效，说明 probe 学到的是“可读但不被使用”的方向。</div></details></li>
+    <li><b>Why might mean-difference directions steer better than logistic regression directions?</b><details><summary>思路</summary><div class="inner">logistic regression 会利用协方差结构：如果某个与概念相关的干扰维度方差大，probe 会给它负权重来“抵消噪声”，得到的 \(w \approx \Sigma^{-1}\Delta\mu\)，这个方向分类最好但不是“概念本身的位移方向”。steering 要的是“把概念 A 的样本变成概念 B 的样本需要移动的方向”，就是 \(\Delta\mu\)。Marks &amp; Tegmark 的 mass-mean probing 正是这个观察。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================== §2 ============================== -->
+<h2 class="sec" id="s-resid"><span class="num">§2 · RESIDUAL STREAM</span>Residual stream 视角与读出工具</h2>
+<p class="sec-intro">这是 mechanistic interpretability 的“坐标系”。来自 Elhage et al. 2021, <a href="https://transformer-circuits.pub/2021/framework/index.html" target="_blank" rel="noreferrer">A Mathematical Framework for Transformer Circuits</a>。掌握之后，你可以把任何一个 Transformer 改写成“很多条路径之和”，DLA、logit lens、circuits 都是在这个框架里做的事。</p>
+
+<section class="concept" id="c-residual">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Residual stream 是通信通道</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>每一层 attention 和 MLP 都从 residual stream <strong>读</strong>（经过 LayerNorm 的线性投影），再把输出<strong>加</strong>回去；最终 residual 是 embedding 加上所有组件输出的和。</p><p class="en">Every attention head and MLP reads from the residual stream and adds its output back, so the final residual is just the embedding plus a sum of all component outputs.</p></div>
+  <div class="deep">
+    <p>Pre-LN Transformer 的一层：</p>
+    $$ x_{\ell}^{\text{mid}} = x_{\ell} + \sum_{h} \text{Attn}_{\ell,h}\big(\text{LN}(x_{\ell})\big), \qquad x_{\ell+1} = x_{\ell}^{\text{mid}} + \text{MLP}_{\ell}\big(\text{LN}(x_{\ell}^{\text{mid}})\big) $$
+    <p>展开到最后一层：</p>
+    $$ x_{L} = \underbrace{W_E\,t + p}_{\text{embedding}} + \sum_{\ell}\sum_{h} o_{\ell,h} + \sum_{\ell} m_{\ell}, \qquad \text{logits} = W_U\,\text{LN}_f(x_L) $$
+    <p>由此得到几个关键视角：</p>
+    <ul>
+      <li><strong>Residual stream 没有特权基（no privileged basis）</strong>：所有读写都是线性投影，如果对 residual 做任意旋转 \(R\)，同时把所有 \(W_{\text{in}} \to W_{\text{in}}R^\top\)、\(W_{\text{out}} \to R W_{\text{out}}\)，模型函数不变。所以看 residual 的单个坐标没有意义，要看<strong>方向</strong>。相比之下，MLP 的 hidden neuron 经过逐元素非线性，存在特权基，所以“看单个神经元”至少有理由。</li>
+      <li><strong>组件之间通过 residual 通信</strong>：第 3 层的 head 写入一个方向，第 7 层的 head 通过它的 \(W_Q/W_K/W_V\) 读这个方向，两者就“连上”了。这种连接叫 composition。</li>
+      <li><strong>带宽瓶颈</strong>：\(d_{\text{model}}\) 通常只有几千维，但要承载远多于此的特征、以及跨很多层的信息，所以模型会使用 superposition，并且会有专门“清理/擦除”信息的组件（一些 MLP neuron 和 head 会写入负向来删除某些方向）。</li>
+      <li><strong>多条路径的集合</strong>：因为每层都是“加”，模型可以近似看成指数多条路径（经过或绕过每个组件）的集合。很多路径很浅，这也解释了为什么删掉中间某层，模型常常还能工作（以及 self-repair 现象）。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>把 residual stream 想成一条总线（bus）或共享内存：每个模块从总线上读需要的子空间，算完把结果写回总线。模块之间不直接相连，只通过总线交流。这个视角下，“一个电路”就是一组在总线上读写相互匹配的模块。</div>
+    <p><strong>LayerNorm 的麻烦</strong>：LN 除以 \(\|x - \bar x\|\)，是非线性的。实践中常把 LN 的 scale 当作在给定输入上冻结的常数（“freeze LN”），这样整个读出变成线性的；这是 DLA 和 attribution graph 的标准近似。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 以为 residual 的某一维对应某个概念——没有特权基，这样理解基本是错的（实际中会出现少数 “massive activation” 维度，那是另一回事）；(2) 忘记 Post-LN 模型（原始 Transformer、BERT）里 residual 每层都被归一化，这个“加法分解”不再干净成立，主流 LLM 都是 Pre-LN 或其变体，所以分析可以做。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The residual stream view says every attention head and MLP reads from a shared vector via a linear projection and writes its output back by addition. So the final residual is just the embedding plus a sum of every component's output, and the logits are a linear readout of that, up to the final LayerNorm. That makes the model decomposable into paths, and it means components communicate by writing to and reading from subspaces of the stream. One consequence is that the residual stream has no privileged basis, so we should think in directions, not individual dimensions.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does the residual stream not have a privileged basis but MLP neurons do?</b><details><summary>思路</summary><div class="inner">residual 只经过线性读写（和 LN 的整体缩放），可以被任意正交旋转吸收进权重而不改变函数；MLP hidden 经过逐元素的 GELU/SwiGLU，旋转后非线性作用的结果不同，所以坐标轴是“特殊”的。注意 RMSNorm/LN 的逐维 gain 和 Adam 的逐坐标更新会让 residual 有一点“弱特权”，这也是 massive activations 出现在特定维度的原因之一。</div></details></li>
+    <li><b>What is self-repair, and why does it complicate ablation studies?</b><details><summary>思路</summary><div class="inner">当你 ablate 某个组件，后面的组件会部分补偿它的作用（例如 IOI 中的 backup name mover heads，或 LN 的重新缩放）。结果是 ablation 测得的效应低估了组件在正常运行时的真实贡献。应对：同时看 direct effect（DLA）和 total effect（patching），或用 path patching 只测特定路径。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-qkov">
+  <div class="concept-head"><span class="pri p1">★</span><h3>QK circuit 与 OV circuit</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>一个 attention head 可以拆成两个独立的低秩矩阵：<strong>QK</strong> 决定“往哪看”（attention pattern），<strong>OV</strong> 决定“看到之后搬什么”（写入 residual 的内容）。</p><p class="en">Each attention head factors into a QK circuit that decides where to attend and an OV circuit that decides what information gets moved once it attends.</p></div>
+  <div class="deep">
+    <p>记单个 head 的权重为 \(W_Q, W_K, W_V \in \mathbb{R}^{d_{\text{head}}\times d_{\text{model}}}\)，\(W_O \in \mathbb{R}^{d_{\text{model}}\times d_{\text{head}}}\)。对 residual 位置 \(i\)（query）和 \(j\)（key）：</p>
+    $$ \text{score}_{ij} = \frac{(W_Q x_i)^\top (W_K x_j)}{\sqrt{d_{\text{head}}}} = \frac{x_i^\top \underbrace{W_Q^\top W_K}_{W_{QK}} \, x_j}{\sqrt{d_{\text{head}}}}, \qquad A = \text{softmax}_j(\text{score}) $$
+    $$ o_i = \sum_j A_{ij}\, W_O W_V x_j = \sum_j A_{ij}\, \underbrace{W_O W_V}_{W_{OV}}\, x_j $$
+    <p>关键观察：</p>
+    <ul>
+      <li>\(W_{QK} = W_Q^\top W_K\) 和 \(W_{OV} = W_O W_V\) 都是 \(d_{\text{model}}\times d_{\text{model}}\)、秩 ≤ \(d_{\text{head}}\) 的矩阵。\(W_Q, W_K\) 单独没有意义（可以插入任意可逆矩阵 \(M\)：\(W_Q\to M^{-\top}W_Q\)，\(W_K\to M W_K\) 不变），只有乘积有意义。</li>
+      <li><strong>Attention pattern 是唯一的非线性</strong>：给定 pattern \(A\)，head 的输出关于输入是线性的。所以“冻结 attention pattern”后整个模型的路径分析变成线性代数。</li>
+      <li>在 1 层、attention-only 模型里，可以把 embedding 和 unembedding 乘进去，得到 token 层面的可读矩阵：
+      \( \text{QK}_{\text{tok}} = W_E^\top W_{QK} W_E \)（哪个 query token 想看哪个 key token），
+      \( \text{OV}_{\text{tok}} = W_U W_{OV} W_E \)（attend 到 token \(b\) 时会提高哪些输出 token 的 logit）。例如 OV 矩阵对角线为正的 head 是 <strong>copying head</strong>（看到什么就预测什么）。</li>
+    </ul>
+    <p><strong>Composition（跨层组合）</strong>：第 2 层的 head 读取的 residual 里包含第 1 层 head 的输出 \(W_{OV}^{(1)}x\)，可以通过三种方式使用：</p>
+    <div class="table-wrap"><table>
+      <tr><th>类型</th><th>后层 head 的哪部分读前层输出</th><th>效果</th><th>例子</th></tr>
+      <tr><td>Q-composition</td><td>query</td><td>改变“我想找什么”</td><td>—</td></tr>
+      <tr><td>K-composition</td><td>key</td><td>改变“我能被怎样找到”</td><td>induction head 读 previous-token head 的输出</td></tr>
+      <tr><td>V-composition</td><td>value</td><td>搬运的内容本身已经是被搬运过的信息（“虚拟 head”）</td><td>多跳信息传递</td></tr>
+    </table></div>
+    <p>可以用 \(\| W_{QK}^{(2)\top} W_{OV}^{(1)} \|_F\) 之类的 composition score 粗略衡量两个 head 的连接强度。</p>
+  </div>
+  <details class="deep"><summary>推导：为什么只有乘积 \(W_Q^\top W_K\) 有意义</summary><div class="inner">
+    <p>对任意可逆 \(M \in \mathbb{R}^{d_{\text{head}}\times d_{\text{head}}}\)，令 \(W_Q' = M^{-\top} W_Q\)，\(W_K' = M W_K\)。则</p>
+    $$ W_Q'^\top W_K' = W_Q^\top M^{-1} M W_K = W_Q^\top W_K. $$
+    <p>attention score 完全不变，所以单独看 \(W_Q\) 或 \(W_K\) 的某一行没有意义，就像 residual stream 没有特权基一样。同理 \(W_V' = N W_V,\; W_O' = W_O N^{-1}\) 不改变 \(W_{OV}\)。这也解释了为什么分析时要对 \(W_{QK}\)、\(W_{OV}\) 做 SVD 或看它们的特征值：例如 OV 矩阵（乘上 \(W_E, W_U\) 后）特征值大多为正，说明这个 head 在做 copying。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 把 attention pattern 当作“重要性”：一个 head 强烈 attend 到某处，但若它的 OV 写入的方向下游不用，影响为零；(2) 忽略 attention sink：很多 head 在“不需要做事”时会把注意力放在 BOS 或第一个 token 上，这是一种 no-op，不代表 BOS 很重要；(3) 混淆 \(W_{OV}\) 的方向约定（有的代码是行向量，\(x W_V W_O\)），写公式时说清楚即可。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A useful way to think about an attention head is as two separate circuits. The QK circuit, W_Q transpose times W_K, is a bilinear form that decides which source positions each destination attends to. The OV circuit, W_O times W_V, is a linear map that decides what gets written into the residual stream from the attended position. Only these products are meaningful, since you can insert any invertible matrix between W_Q and W_K. Heads in different layers can compose through queries, keys, or values — induction heads, for example, use K-composition with an earlier previous-token head.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Given a one-layer attention-only transformer, how would you find copying heads?</b><details><summary>思路</summary><div class="inner">计算每个 head 的 \(W_U W_{OV} W_E\)（vocab × vocab），看其对角线是否显著大于非对角（或计算特征值中正实部的比例）。正对角说明“attend 到 token b 会提高预测 b 的 logit”。然后在真实文本上验证：ablate 后重复 token 的预测是否变差。</div></details></li>
+    <li><b>Why is the attention pattern the main nonlinearity you have to deal with in circuit analysis?</b><details><summary>思路</summary><div class="inner">给定 pattern，attention 输出 \(\sum_j A_{ij} W_{OV} x_j\) 关于 \(x\) 线性；residual 是加法；unembedding 线性；剩下的非线性只有 softmax（决定 A）、MLP 激活和 LN。很多分析方法（DLA、attribution graph）都选择冻结 attention pattern 和 LN 分母，代价是解释不了“为什么 attend 到那里”（QK 机制），这也是 Anthropic attribution graph 明确列出的局限。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-dla">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Direct Logit Attribution (DLA)</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>因为最终 residual 是各组件输出之和，把每个组件的输出（经冻结的 LN 缩放）点乘到目标 token 的 unembedding 方向上，就得到它对该 logit 的<strong>直接</strong>贡献。</p><p class="en">Direct logit attribution projects each component's output, through a frozen final LayerNorm, onto the unembedding direction of a target token to measure its direct contribution.</p></div>
+  <div class="deep">
+    <p>设 \(x_L = \sum_c o_c\)（\(c\) 遍历 embedding、所有 head、所有 MLP）。把最终 LN 写成 \(\text{LN}(x) = \gamma \odot \frac{x - \mu(x)}{\sigma(x)} + \beta\)，<strong>把 \(\sigma(x_L)\) 视为常数</strong>（它是在这次前向里算出来的标量），则 LN 关于 \(x\) 是仿射的：</p>
+    $$ \text{logit}_t = W_U[t]^\top \text{LN}(x_L) = \sum_c \underbrace{W_U[t]^\top \Big(\gamma \odot \frac{o_c - \mu(o_c)}{\sigma(x_L)}\Big)}_{\text{DLA}_c(t)} + \text{const}. $$
+    <p>实践中更常用 <strong>logit difference</strong>：在 IOI 任务里 \(u = W_U[\text{IO}] - W_U[\text{S}]\)，DLA 衡量每个 head 把答案往正确名字推了多少。用 logit diff 而不是单个 logit，是因为很多组件会同时提高所有名字（或所有 token）的 logit，差分消掉这种公共项。</p>
+    <p><strong>DLA 能回答什么、不能回答什么：</strong></p>
+    <ul>
+      <li>能：哪些组件<strong>直接</strong>写入了答案方向（通常是最后几层的 head / MLP，例如 name mover heads）。</li>
+      <li>不能：<strong>间接效应</strong>。一个早层 head 可能对 logit 的直接贡献为零，但它的输出被后面的 head 读取（例如 S-inhibition heads），这需要 activation / path patching。</li>
+      <li>冻结 LN 是近似：当 ablate 大组件导致 \(\sigma\) 显著变化时，DLA 和真实效应会有偏差。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 把 DLA 当作 total effect；(2) 忘记减去均值 \(\mu(o_c)\) 或忽略 \(\gamma\)，得到错误数值；(3) 只看单个 logit，被“所有候选一起涨”的公共分量误导。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Because the final residual stream is a sum of component outputs, if I freeze the scale of the final LayerNorm, the logits become linear in each component's output. Direct logit attribution then just dots each head's or MLP's output with the unembedding direction of the answer — usually a logit difference between the correct and a distractor token. It's cheap and tells you who writes the answer directly. But it misses indirect effects, where an early head matters only because later heads read its output, so I'd always pair it with activation patching.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>A head has large positive DLA but ablating it barely changes the output. What's going on?</b><details><summary>思路</summary><div class="inner">最可能是 self-repair / 冗余：其他 head（backup heads）在它被删除后接管，或 LN 重新缩放补偿；也可能另一个组件同时写入相反方向，两者在正常运行时部分抵消。可以用 path patching 只切断这个 head 到 logit 的直接路径，比较 direct vs total effect。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-lens">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Logit lens 与 Tuned lens</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Logit lens 把中间层的 residual 直接接上最终 LN 和 unembedding，看“如果现在停下来，模型会预测什么”；tuned lens 为每层学一个仿射变换再解码，更准确、偏差更小。</p><p class="en">The logit lens decodes intermediate residual streams with the final unembedding to see what the model would predict at each layer; the tuned lens learns a per-layer affine translator first, making it more faithful.</p></div>
+  <div class="deep">
+    <p><strong>Logit lens</strong>（nostalgebraist, 2020 年的一篇 LessWrong 博客）：</p>
+    $$ \text{logits}_{\ell} = W_U\, \text{LN}_f(x_{\ell}) $$
+    <p>在 GPT-2 上可以看到预测随层数“逐渐成形”：早层像 bigram，后层逐渐接近最终答案。它的合理性来自 residual stream 视角——后面的层只是在 \(x_\ell\) 上继续加东西，如果各层“说同一种语言”，中间状态就应该能被同一个 unembedding 解读。</p>
+    <p><strong>问题</strong>：早层的表示空间和最终层不一致（basis drift），某些模型（tuned lens 论文中举了 BLOOM、GPT-Neo 系列、OPT-125M）logit lens 效果很差；输出会偏向某些高频 token（bias）。</p>
+    <p><strong>Tuned lens</strong>（<a href="https://arxiv.org/abs/2303.08112" target="_blank" rel="noreferrer">Belrose et al. 2023</a>）：为每层学习一个 translator \((A_\ell, b_\ell)\)，冻结原模型，最小化与最终输出分布的 KL：</p>
+    $$ \text{logits}^{\text{tuned}}_{\ell} = W_U\,\text{LN}_f(A_\ell x_\ell + b_\ell), \qquad \min_{A_\ell,b_\ell}\ \mathbb{E}\big[\mathrm{KL}\big(p_{\text{final}} \,\|\, p_{\ell}\big)\big]. $$
+    <p>效果：预测随层数更平滑地收敛、对很多模型都有效；还可以用来检测 prompt injection 之类的异常（中间层预测轨迹异常）。</p>
+    <p><strong>研究中的用途</strong>：看推理“在第几层完成”（例如多跳事实回忆时，中间实体何时出现）、早退（early exit）/ 自适应计算的可行性、多语言模型是否在中间层“用英语思考”（有研究发现 Llama-2 处理非英语输入时中间层解码出的 token 偏向英语）。和你的 latent reasoning / looped LM 方向也相关：可以用 lens 看每次循环后预测是否在改进。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 把 logit lens 解码出的 token 当作“模型在想这个词”——它只是线性读出，可能被 basis drift 扭曲；(2) tuned lens 的 translator 本身有容量，可能“加进”了模型并未在该层计算的信息（和 probe 的容量问题同理），所以 tuned lens 结论也要做因果验证；(3) logit lens 只适用于 residual stream，不适用于单个组件的输出（那是 DLA）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The logit lens takes the residual stream at an intermediate layer and decodes it with the model's final LayerNorm and unembedding, as if the model stopped there. It works because later layers only add to the residual stream, so the representation stays roughly in the output basis. But it can be biased or fail entirely on some models because early layers use a different basis. The tuned lens fixes this by learning a per-layer affine map trained to match the final distribution in KL, which gives much smoother and more reliable layer-by-layer predictions.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How could you use the logit lens to study whether a model does multi-hop reasoning internally?</b><details><summary>思路</summary><div class="inner">例如 “The capital of the state containing Dallas is” → Austin。用 lens（或 probe）在各层、各位置看中间实体 “Texas” 是否在答案出现之前就能被解码出来；然后做因果检验：把中间表示换成另一个州（patch “California” 的表示），看答案是否变成 Sacramento。Anthropic 2025 的 attribution graph 研究正是在 Claude 3.5 Haiku 上用这个例子展示了内部的两跳推理。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================== §3 ============================== -->
+<h2 class="sec" id="s-probe"><span class="num">§3 · PROBING</span>Probing：信息“在不在”</h2>
+<p class="sec-intro">Probing 是最便宜、最常用的工具，也是最容易过度解读的工具。面试中几乎一定会追问“probe 准确率高说明了什么”。</p>
+
+<section class="concept" id="c-probe">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Linear probe：定义、训练与解读</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>冻结模型，在某层 activation 上训练一个小分类器（通常是线性的）预测某个属性；高准确率说明该信息<strong>可以被线性读出</strong>，不说明模型<strong>使用</strong>了它。</p><p class="en">A probe is a small classifier trained on frozen activations; high accuracy shows the information is linearly decodable, not that the model uses it.</p></div>
+  <div class="deep">
+    <p><strong>做法</strong>：收集数据 \(\{(h_i^{(\ell)}, y_i)\}\)，\(h\) 是第 \(\ell\) 层某位置的 residual，\(y\) 是属性标签（词性、真假、棋盘格状态、“这道题模型会不会答对”……）。训练</p>
+    $$ \hat y = \sigma(w^\top h + b), \qquad \min_{w,b}\ \sum_i \text{BCE}(\hat y_i, y_i) + \lambda\|w\|_2^2 $$
+    <p>然后在 held-out 数据上报告准确率 / AUROC，通常画一条“准确率 vs 层数”曲线，看信息在第几层出现、在哪里最强。</p>
+    <p><strong>几种 probe 方向的求法</strong>：</p>
+    <ul>
+      <li><strong>Logistic regression</strong>：分类最准，\(w \propto \Sigma^{-1}(\mu_1-\mu_0)\)（在高斯同协方差假设下）。</li>
+      <li><strong>Mass-mean / difference of means</strong>：\(w = \mu_1 - \mu_0\)。分类稍弱但更接近“概念的因果方向”，steering 常用这个。</li>
+      <li><strong>PCA on contrast pairs</strong>：对正负样本对的差做 PCA 取第一主成分（RepE 的 reading vector）。</li>
+      <li><strong>无监督</strong>：CCS（<a href="https://arxiv.org/abs/2212.03827" target="_blank" rel="noreferrer">Burns et al. 2022</a>）利用“一句话和它的否定概率之和应为 1”的一致性约束找真值方向，不需要标签。后续工作发现 CCS 找到的方向可能只是最显著的特征，而不一定是“真假”。</li>
+    </ul>
+    <p><strong>为什么用线性 probe 而不是 MLP probe？</strong>表达能力越强的 probe 越能“自己算出”答案。极端情况下，一个足够大的 MLP probe 能从任何包含输入信息的表示里解出任何可计算属性——这时你测的是 probe 的能力，不是表示的结构。线性 probe 的结论更强：“信息以下游可直接读取的形式存在”。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 准确率高 ⇒ 模型在用（错：相关不等于因果）；(2) 准确率低 ⇒ 信息不存在（错：可能是非线性编码，Othello-GPT 就是例子）；(3) 不报告 baseline：随机初始化模型、embedding 层、控制任务上的 probe 准确率；(4) 训练/测试数据有词汇泄漏，probe 其实学的是表面 token 特征。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A linear probe is a classifier trained on frozen activations to predict some property, like whether a statement is true. If it gets high held-out accuracy, the information is linearly decodable at that layer. But that's a correlational result: the model may never read that direction. So I'd always report baselines, like the same probe on a randomly initialized model or on a control task, and then confirm with an intervention — ablating or steering along the probe direction and checking that behavior changes as predicted.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your probe for "truthfulness" gets 95% accuracy. Name three alternative explanations.</b><details><summary>思路</summary><div class="inner">(1) 它学到的是与真假相关的表面特征（句子长度、否定词、特定实体、高频 vs 低频）；(2) 它学到的是“模型认为常见/可信”或“人类会同意”而非真值本身（Geometry of Truth 中区分了 true 和 likely）；(3) 数据集特异：换一个数据分布方向就不迁移。检验：跨数据集泛化、控制变量的配对数据（只改真假不改其他）、因果干预（沿方向加减看模型对陈述真假的判断是否翻转）。</div></details></li>
+    <li><b>How would you probe a reasoning model to predict whether its final answer will be correct, and what would you use it for?</b><details><summary>思路</summary><div class="inner">在 CoT 中间若干位置取 activation，用最终答案是否正确作标签训练 probe；看在第几步之前就能预测（说明模型“提前知道”）。用途：early stopping / 自适应 test-time compute（预测会错时多采样）、作为 verifier/PRM 的廉价替代、检测 overthinking。注意控制题目难度这个混杂变量（probe 可能只是读出了“题目难不难”）。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-control">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Correlation vs causation：控制任务、selectivity 与 probe 容量</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>好的 probing 实验要同时证明两件事：信息确实在表示里（不是 probe 自己学出来的，用 control task 检验），以及模型确实用它（用干预检验）。</p><p class="en">Good probing needs two checks: control tasks to show the probe isn't just memorizing, and interventions to show the model actually uses the information.</p></div>
+  <div class="deep">
+    <p><strong>Control tasks</strong>（<a href="https://arxiv.org/abs/1909.03368" target="_blank" rel="noreferrer">Hewitt &amp; Liang 2019</a>）：构造一个“只能靠记忆”的任务——例如给每个<strong>词类型</strong>随机分配一个标签（同一个词总是同一个标签，但标签与语言学性质无关）。probe 在控制任务上的准确率反映它的记忆能力。定义</p>
+    $$ \text{selectivity} = \text{Acc}_{\text{real task}} - \text{Acc}_{\text{control task}} $$
+    <p>好的 probe 应该 selectivity 高：在真实任务上高，在控制任务上低。他们发现 MLP probe 往往准确率略高但 selectivity 明显更低，而线性 probe 选择性更好；dropout 等常见正则化未必能提高 selectivity。</p>
+    <p><strong>其他基线</strong>：随机初始化的同结构模型（衡量“架构 + probe”本身能做到多少）、仅用 token embedding、打乱标签。另一个思路是 MDL probing：用描述长度（probe 学习的“难易程度”）代替准确率。</p>
+    <p><strong>从相关到因果的三种干预</strong>：</p>
+    <ol>
+      <li><strong>Directional ablation</strong>：把 activation 投影到 probe 方向的正交补 \(h \leftarrow h - (\hat w^\top h)\hat w\)，看任务表现是否下降。</li>
+      <li><strong>Steering</strong>：\(h \leftarrow h + \alpha \hat w\)，看行为是否按预期变化（Othello-GPT 中修改棋盘表示后，模型预测的合法走法随之改变）。</li>
+      <li><strong>Counterfactual patching</strong>：把 clean 输入在该方向上的分量换进 corrupted 输入的前向里。</li>
+    </ol>
+    <p>还要注意 INLP / LEACE 这类“概念擦除”方法：如果擦除后模型行为不变，说明该线性信息不是必要的；如果 probe 仍能用别的方向读出，说明信息有冗余编码。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只做 ablation 不做 steering（或反之）。ablation 证明“必要性”（necessary），steering / patching 证明“充分性”（sufficient），两者都做证据才完整。另外 ablation 可能把 activation 推出分布（off-distribution），导致“破坏”而非“去除概念”，见 §4 的 ablation 对比。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The worry with probing is that a flexible probe can learn the task itself rather than read it off the representation. Hewitt and Liang's fix is a control task — random labels assigned per word type — and you report selectivity, the gap between real-task and control-task accuracy. Linear probes tend to be much more selective than MLP probes. But even a selective probe is still correlational, so the next step is an intervention: project out the direction to test necessity, and add it to test sufficiency.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why can ablating a probe direction fail to change behavior even if the model uses that concept?</b><details><summary>思路</summary><div class="inner">(1) 冗余编码：概念在多个方向/多层都有，删一个还有别的；(2) 时序：概念在早层被读取后已经写进别的特征，你在晚层删除为时已晚；(3) probe 方向和模型使用的方向不同（只是相关），删错了方向；(4) self-repair。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-probe-examples">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>代表性例子：Othello-GPT 与 Truth directions</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Othello-GPT 显示只用走法序列训练的模型内部形成了棋盘状态的“世界模型”，并且用“我的/对手的”棋子而非“黑/白”时可以线性读出；truth direction 工作显示真假陈述在中层呈现线性可分结构。</p><p class="en">Othello-GPT showed a sequence model learns a board-state world model that becomes linearly decodable once expressed as "mine vs. theirs"; truth-direction work found true and false statements separate linearly in middle layers.</p></div>
+  <div class="deep">
+    <p><strong>Othello-GPT</strong>（<a href="https://arxiv.org/abs/2210.13382" target="_blank" rel="noreferrer">Li et al. 2022</a>）：在合法 Othello 走法序列上训练一个 GPT（从没见过棋盘）。</p>
+    <ul>
+      <li>它们发现用<strong>非线性（MLP）probe</strong> 能高精度读出每格是黑/白/空，线性 probe 效果差；</li>
+      <li>用梯度修改中间 activation 使 probe 认为“棋盘变了”，模型预测的合法走法也随之改变——这是<strong>因果</strong>证据，说明世界模型被使用。</li>
+      <li>后续 <a href="https://arxiv.org/abs/2309.00941" target="_blank" rel="noreferrer">Nanda, Lee &amp; Wattenberg 2023</a> 发现换一种表示就是线性的：模型表示的是“当前要走的一方的棋子 vs 对方的棋子”（mine / theirs），而不是黑 / 白。用线性 probe 读出后，简单的向量加法就能干预模型。</li>
+    </ul>
+    <p>教训：<strong>probe 失败可能是因为你选错了概念的坐标</strong>，而不是信息不存在；线性表示假设在“正确的变量”下往往成立。</p>
+    <p><strong>Truth directions</strong>：</p>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2310.06824" target="_blank" rel="noreferrer">Marks &amp; Tegmark, The Geometry of Truth</a>：用简单、无歧义的真/假陈述（如 “城市 X 位于国家 Y”），在 LLaMA-2 的中层看到真假沿一个方向线性分开；不同数据集的方向随规模增大越来越一致；mass-mean probe 方向的因果干预效果优于 logistic regression 方向；并区分了“真”和“可能/常见”。</li>
+      <li>CCS（Burns et al.）：无监督找真值方向。</li>
+      <li>ITI（§6）用 probe 选出与 truthfulness 相关的 head，再在推理时沿方向平移。</li>
+    </ul>
+    <p>相关安全应用：Anthropic 的 <a href="https://www.anthropic.com/research/probes-catch-sleeper-agents" target="_blank" rel="noreferrer">defection probes</a> 在人为植入后门的 sleeper agent 模型上，用一个非常通用的对比问题对（“你在做危险的事吗？是/否”）得到的线性方向就能很好地检测“即将触发后门行为”的输入（报告的 AUROC 很高）。作者也提醒：这是在人造模型上的结果，自然出现的欺骗未必同样容易检测。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把 Othello-GPT 说成“LLM 有世界模型”的直接证明。它是一个合成、封闭的小世界；它证明的是“next-token 预测<strong>可以</strong>诱导出世界状态的内部表示”，而不是所有 LLM 对真实世界都有一致的模型。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Othello-GPT is the classic probing case study. A GPT trained only on move sequences turned out to encode the board state: nonlinear probes could read it, and editing the representation changed the model's predicted legal moves, which is causal evidence. Later work showed the representation is actually linear if you probe for "my pieces versus the opponent's pieces" instead of black versus white. The lesson I take is that a failed linear probe may just mean you picked the wrong variable, not that the information isn't there.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you design a probing study to test whether an LLM tracks the state of a long-horizon agent task?</b><details><summary>思路</summary><div class="inner">定义可验证的状态变量（例如文件系统里有哪些文件、子目标完成情况、剩余预算），在 agent 轨迹每一步取 activation 训练 probe；做跨任务泛化测试；控制基线（只用最近 observation 的 token 特征能否预测）；最后干预：改变 probe 方向上的“已完成”状态，看 agent 是否重复或跳过步骤。失败案例分析：状态 probe 精度下降的时刻是否与 agent 出错的时刻吻合。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================== §4 ============================== -->
+<h2 class="sec" id="s-causal"><span class="num">§4 · CAUSAL INTERVENTIONS</span>因果干预：patching、ablation 与电路发现</h2>
+<p class="sec-intro">Mechanistic interpretability 的核心方法论：把模型当作一个可以任意干预的因果图。这一节是讨论中最“硬核”的部分，必须能讲清楚 clean / corrupted、denoising / noising、metric 的选择，以及各方法的成本。</p>
+
+<section class="concept" id="c-patching">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Activation patching / causal tracing</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用两个只差一点的输入（clean / corrupted）分别跑模型，把其中一个运行中某组件的 activation 换成另一个运行中的值，看输出 metric 恢复（或破坏）了多少，从而定位哪些组件对这个行为是因果关键的。</p><p class="en">Activation patching runs the model on a clean and a corrupted prompt, swaps one component's activation from one run into the other, and measures how much of the behavior is restored or destroyed.</p></div>
+  <div class="deep">
+    <p><strong>标准流程</strong>：</p>
+    <ol>
+      <li>构造 clean 输入 \(x_c\)（如 “When Mary and John went to the store, John gave a drink to” → Mary）和 corrupted 输入 \(x_*\)（只改关键信息，如把名字换掉，使答案变化）。</li>
+      <li>选 metric \(m\)：通常用 logit difference \( \text{logit}(\text{correct}) - \text{logit}(\text{wrong}) \)，比概率更线性、更不容易饱和。</li>
+      <li>跑三次：clean run、corrupted run，以及“patched run”：在 corrupted 前向里，把组件 \(c\) 的 activation 替换成 clean run 中的值。</li>
+      <li>归一化效应：
+      $$ \text{effect}(c) = \frac{m(\text{patched}) - m(x_*)}{m(x_c) - m(x_*)} \in [0, 1] \text{ (通常)} $$
+      1 表示这个组件单独就恢复了全部行为。</li>
+    </ol>
+    <p><strong>两个方向</strong>（<a href="https://arxiv.org/abs/2404.15255" target="_blank" rel="noreferrer">Heimersheim &amp; Nanda 2024</a> 对此有详细讨论）：</p>
+    <div class="table-wrap"><table>
+      <tr><th></th><th>Denoising（clean → corrupted）</th><th>Noising（corrupted → clean）</th></tr>
+      <tr><td>做法</td><td>在 corrupted 运行中恢复一个组件的 clean 值</td><td>在 clean 运行中把一个组件换成 corrupted 值</td></tr>
+      <tr><td>回答</td><td>这个组件是否<strong>足够</strong>（sufficient）恢复行为</td><td>这个组件是否<strong>必要</strong>（necessary）</td></tr>
+      <tr><td>对 AND / OR 结构</td><td>AND 电路（需要多个组件同时）中单个组件效应小</td><td>OR 电路（冗余备份）中单个组件效应小</td></tr>
+    </table></div>
+    <p><strong>Causal tracing</strong>（ROME 论文，<a href="https://arxiv.org/abs/2202.05262" target="_blank" rel="noreferrer">Meng et al. 2022</a>）是一个早期变体：corruption 用的是对主语 token 的 embedding 加<strong>高斯噪声</strong>，然后逐层、逐位置恢复 clean 的 hidden state。他们发现事实回忆（“The Space Needle is in” → Seattle）高度依赖<strong>中间层 MLP 在主语最后一个 token 处</strong>的计算，据此提出 MLP 是 key-value 式事实存储的假设，并据此做模型编辑（§6）。</p>
+    <p><strong>Corruption 的选择很重要</strong>：高斯噪声会把 activation 推出训练分布，效应可能来自“模型被搞坏了”。现在更推荐<strong>对称的 counterfactual prompt</strong>（STR：symmetric token replacement，换一个同类名字/城市），保证 corrupted run 仍是自然输入。</p>
+    <p><strong>粒度</strong>：可以 patch 整层 residual（按位置画热力图）、单个 head 输出、单个 MLP、单个 neuron、SAE feature，或某个子空间方向。常见做法是先粗后细：先 residual × 位置，找到关键层和位置；再 head 级别；最后 path patching。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 用概率做 metric 导致饱和（已经 0.99 的概率怎么 patch 都看不出差异）；(2) 只做一个方向就下结论；(3) corrupted prompt 改变了 token 长度导致位置对不上；(4) 单个 patch 效应小就判定“不重要”，忽略了 AND 结构和冗余；(5) 把 patching 的结果泛化到别的 prompt 分布——电路是针对任务分布的。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Activation patching is the core causal tool. I build a clean prompt and a minimally different corrupted prompt with a different answer, pick a metric like the logit difference, and then, for each component, run the corrupted prompt but restore that component's activation from the clean run. The fraction of the logit difference recovered tells me whether that component is sufficient to carry the relevant information. Doing it the other way — noising — tests necessity. I prefer counterfactual prompts over Gaussian noise for the corruption, because noise can push activations off-distribution.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why use logit difference rather than probability as the patching metric?</b><details><summary>思路</summary><div class="inner">logit diff 关于残差是线性的（冻结 LN 时），组件贡献近似可加，归一化效应有意义；概率经过 softmax，在接近 0 或 1 时饱和，小的内部变化看不出来，大的变化也被压缩。logit diff 也消除了“所有 token 一起涨”的公共分量。缺点是它不看其他 token，所以有时还要看 KL 或交叉熵。</div></details></li>
+    <li><b>Denoising shows no single head recovers much, but noising shows several heads each destroy the behavior. What structure does that suggest?</b><details><summary>思路</summary><div class="inner">AND 结构：行为需要多个组件同时正确（串联/联合），单独恢复一个不够，但破坏任意一个都会失败。反过来（denoising 单个有效、noising 单个无效）提示 OR 结构 / 冗余备份。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-pathpatch">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Path patching 与 direct / indirect effect</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Activation patching 测的是一个组件的总效应；path patching 只替换“从组件 A 到组件 B（或到 logit）”这一条路径上传递的信号，用来确定电路的边。</p><p class="en">Path patching restricts the intervention to a specific path — from component A to component B or to the logits — so you can identify edges of a circuit, not just important nodes.</p></div>
+  <div class="deep">
+    <p>为什么需要它：head A 的效应可能通过很多下游路径体现，单纯 patch A 不知道“它影响了谁”。Path patching（<a href="https://arxiv.org/abs/2211.00593" target="_blank" rel="noreferrer">Wang et al. 2022, IOI</a>；<a href="https://arxiv.org/abs/2304.05969" target="_blank" rel="noreferrer">Goldowsky-Dill et al. 2023</a>形式化）：</p>
+    <ol>
+      <li>把 A 的输出设为 corrupted 值；</li>
+      <li>把所有<strong>不在目标路径上</strong>的其他组件冻结为它们在 clean run 中的值（这样 A 的变化只能通过目标路径传播）；</li>
+      <li>只让接收方 B 重新计算（B 读到的 residual 中，A 的贡献是 corrupted 的）；把 B 的新输出 patch 回 clean run，测 metric。</li>
+    </ol>
+    <p>由此可以区分：</p>
+    <ul>
+      <li><strong>Direct effect</strong>：A → logits 的直接路径（等价于 DLA 的因果版本）。</li>
+      <li><strong>Indirect effect</strong>：A → B → … → logits。IOI 中，S-inhibition heads 几乎没有 direct effect，但通过 name mover heads 的 query（Q-composition）产生大的 indirect effect。</li>
+    </ul>
+    <p>这与因果推断中的 natural direct / indirect effect 概念对应（Vig et al. 2020 将其引入 NLP 可解释性的 causal mediation analysis）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>Path patching 的组合数很大（每对组件 × 每个位置），手工做只适合小模型和小任务；另外“冻结其他组件”本身会改变 LN 统计等，细节实现容易出错——用 TransformerLens / nnsight 这类库的 hook 来做。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Plain activation patching tells you a component matters, but not through which route. Path patching isolates an edge: you corrupt the sender, freeze everything else to its clean value, and let only the receiver recompute, so the corruption can only travel along that one path. That separates a head's direct effect on the logits from its indirect effect through later heads. In the IOI circuit, for example, the S-inhibition heads have almost no direct effect but a large indirect effect via the queries of the name mover heads.</p></div>
+</section>
+
+<section class="concept" id="c-atp">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Attribution patching：一阶近似的 patching</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>用梯度做线性近似：effect ≈ (∂metric/∂activation) · (clean − corrupted)，一次前向 + 一次反向就能估计所有组件的 patching 效应。</p><p class="en">Attribution patching approximates every patching effect at once with a first-order Taylor expansion: the gradient of the metric times the activation difference.</p></div>
+  <div class="deep">
+    <p>对组件 activation \(a\)，在 corrupted run 处做一阶 Taylor 展开：</p>
+    $$ m\big(a \leftarrow a_c\big) \approx m(a_*) + \nabla_a m\big|_{a_*}^{\top}\,(a_c - a_*) $$
+    $$ \Rightarrow\quad \widehat{\text{effect}}(a) = \nabla_a m\big|_{a_*}^{\top}\,(a_c - a_*) $$
+    <p>成本：activation patching 需要“每个组件一次前向”，组件数 \(N\) 很大（所有 neuron、所有 SAE feature）时不可行；attribution patching 只需 clean 前向、corrupted 前向 + 反向 <strong>共约 3 次</strong>就得到全部 \(N\) 个估计。（这和 integrated gradients 是同一家族的思想；IG 沿路径积分梯度，可以视为更准但更贵的版本。）</p>
+    <p><strong>什么时候不准</strong>：metric 关于 activation 非线性强时。典型例子是 attention softmax 饱和——在 corrupted run 中某个 head 几乎不 attend 某位置，梯度接近 0，但 patch 进 clean 值后 attention 会大幅改变。DeepMind 的 <a href="https://arxiv.org/abs/2403.00745" target="_blank" rel="noreferrer">AtP*（Kramár et al. 2024）</a> 针对这两种失败模式（attention 饱和、直接/间接效应相互抵消）提出修正：对 QK 部分重新计算 attention softmax，并用 GradDrop 缓解抵消。<a href="https://arxiv.org/abs/2310.10348" target="_blank" rel="noreferrer">Syed et al. 2023</a> 显示用 attribution patching 做边级别的电路发现（EAP）比 ACDC 快得多且效果相当或更好。</p>
+    <p>在 §9 的 numpy 实验里可以看到：对“输出线性依赖”的最后一层，attribution patching 与真实 patching <strong>完全相等</strong>；对隔着一层 ReLU 的第一层，两者相关但不完全一致（实验中相关系数约 0.82）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把 attribution patching 的分数当真值。正确用法是“用它快速筛选候选组件，再用真实 patching 验证 top-k”。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Attribution patching is a gradient-based approximation to activation patching. Instead of one forward pass per component, you take the gradient of the metric at the corrupted run and dot it with the difference between clean and corrupted activations — a first-order Taylor estimate of each patch. That gives estimates for every neuron or feature from a couple of forward passes and one backward pass. It breaks down where the model is very nonlinear, like saturated attention softmaxes, so I'd use it to shortlist candidates and verify the top ones with real patching.</p></div>
+</section>
+
+<section class="concept" id="c-ablation">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Ablation：zero、mean、resample</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Ablation 就是“删掉”一个组件看行为变化；关键在于用什么值替代：zero 最粗暴、容易离开分布，mean 更温和，resample（用另一个输入的 activation）最接近“去除任务相关信息而保持分布”。</p><p class="en">Ablation removes a component's contribution, and the choice of replacement value matters: zero ablation is off-distribution, mean ablation is gentler, and resample ablation best preserves the activation distribution.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>方法</th><th>替换值</th><th>优点</th><th>问题</th></tr>
+      <tr><td>Zero ablation</td><td>0</td><td>最简单</td><td>0 对很多组件来说是从未出现过的值（例如有偏置的 head 输出），测到的是“破坏”效应，会高估重要性</td></tr>
+      <tr><td>Mean ablation</td><td>在数据集上的平均 activation</td><td>保留“常数部分”，只去掉随输入变化的信息</td><td>平均值本身可能不是一个合理的点（多峰分布的均值落在空隙里）；对哪个数据集求均值会影响结论</td></tr>
+      <tr><td>Resample ablation</td><td>另一个随机输入（通常来自同任务分布）的 activation</td><td>保持在分布内；Causal Scrubbing 的基础</td><td>方差大，需要对多个样本平均；结论依赖于重采样分布的选择</td></tr>
+      <tr><td>Directional ablation</td><td>投影掉某个方向</td><td>针对单个概念</td><td>只去除线性部分；方向找错就没有意义</td></tr>
+    </table></div>
+    <p>例子：§9 的 MLP 实验中，对同一个关键神经元，zero ablation 把 metric 从 1.01 拉到 0.10，而 mean ablation 只降到 0.83——差异完全来自替换值的选择。</p>
+    <p><strong>Causal scrubbing</strong>（Redwood Research, 2022）把 resample ablation 系统化：给定一个“哪些组件只依赖输入的哪些特征”的假设，对所有假设认为无关的部分做重采样，如果 metric 保持不变，假设得到支持。</p>
+    <p><strong>Ablation vs patching</strong>：ablation 不需要构造配对的 corrupted 输入，但回答的问题更模糊（“这个组件对任何事情重要吗”）；patching 精确地问“对于区分 clean 和 corrupted 的那一点信息，这个组件重要吗”。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>在 IOI 之类研究中报告“删掉这些 head 性能下降 X%”时不说明用的是哪种 ablation；不同 ablation 得到的“电路”可能明显不同。面试中被问到时，先反问 / 说明用的是哪种。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Ablation means knocking out a component and measuring the change, and the replacement value really matters. Zero ablation is simple but often pushes activations far off-distribution, so it can overstate importance. Mean ablation keeps the constant part and removes only the input-dependent information. Resample ablation swaps in the activation from a different input and stays on-distribution, which is why causal scrubbing builds on it. I'd always report which one I used, because the circuits you find can differ.</p></div>
+</section>
+
+<section class="concept" id="c-circuit-discovery">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>电路发现：IOI 案例与 ACDC</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>电路 = 模型计算图中实现某个行为的一个稀疏子图；IOI 是手工发现的代表（GPT-2 small 中 26 个 head、7 类），ACDC 把“逐条删边看 metric 变化”自动化。</p><p class="en">A circuit is a sparse subgraph that implements a behavior; IOI was found by hand in GPT-2 small, and ACDC automates the search by pruning edges that barely change the output.</p></div>
+  <div class="deep">
+    <p><strong>IOI（Indirect Object Identification，<a href="https://arxiv.org/abs/2211.00593" target="_blank" rel="noreferrer">Wang et al. 2022</a>）</strong>：任务 “When Mary and John went to the store, John gave a drink to ___” → Mary。在 GPT-2 small 中找到的电路（26 个 head，分 7 类）的主干算法：</p>
+    <ol>
+      <li><strong>Duplicate token heads / induction heads</strong>：在第二个 “John” 处发现 “John 之前出现过”。</li>
+      <li><strong>S-inhibition heads</strong>：把“John 是重复的主语（S）”这条信息写到最后位置，<strong>改变 name mover 的 query</strong>，使其不 attend John。</li>
+      <li><strong>Name mover heads</strong>：在最后位置 attend 所有名字，但因为 John 被抑制，主要 attend Mary，并通过 OV 把 “Mary” 复制到输出。</li>
+      <li>另有 <strong>backup name movers</strong>（主 name mover 被删时接管 → self-repair 的例子）和 <strong>negative name movers</strong>（写入负向，降低过度自信，后来被理解为 copy suppression）。</li>
+    </ol>
+    <p>他们用 faithfulness / completeness / minimality 三个标准评估电路，并承认电路并不完全满足 completeness。</p>
+    <p><strong>ACDC</strong>（<a href="https://arxiv.org/abs/2304.14997" target="_blank" rel="noreferrer">Conmy et al. 2023</a>）：从完整计算图出发，按逆拓扑序遍历每条边，把它替换成 corrupted 值（即 patch 掉），若 metric（如 KL 到原模型输出）变化小于阈值 \(\tau\)，就永久删除这条边。它能重新发现 IOI、greater-than 等任务的大部分已知电路组件。缺点：每条边一次前向，计算量大；对阈值和 metric 敏感；倾向漏掉“相互抵消”的组件。后续用 attribution patching 做边筛选（EAP）以加速。</p>
+    <p><strong>从组件电路到特征电路</strong>：head 和 neuron 是多义的（§5），所以更新的方向是在 SAE/transcoder 的特征上做电路发现（<a href="https://arxiv.org/abs/2403.19647" target="_blank" rel="noreferrer">Sparse Feature Circuits, Marks et al. 2024</a>），以及 Anthropic 2025 的 attribution graphs。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把 “26 个 head” 背成“IOI 电路就是这 26 个 head 而且是完整的”。实际上：这是在特定模板分布上找到的、用 mean ablation 定义的、不完全的电路。被问到时提到这些限定条件，显得你理解方法论。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The IOI paper is the canonical hand-found circuit. In GPT-2 small, duplicate-token and induction heads notice that "John" appears twice; S-inhibition heads move that fact to the final position and change the queries of name mover heads so they avoid John; and name movers then copy "Mary" to the output. They also found backup name movers that take over when the main ones are ablated. ACDC automates this kind of search by iterating over edges and pruning any whose removal changes the output by less than a threshold, but it's expensive and sensitive to the metric.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What are the main limitations of circuit-style explanations?</b><details><summary>思路</summary><div class="inner">(1) 任务特定：只在窄模板分布上成立；(2) 组件多义：head 在别的任务上做完全不同的事；(3) 不完整：常常只解释部分 logit diff；(4) 劳动密集，难扩展到大模型；(5) 对 ablation 方式和 metric 敏感；(6) 解释的是“这个分布上的平均行为”，不是单个输入。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================== §5 ============================== -->
+<h2 class="sec" id="s-sae"><span class="num">§5 · SUPERPOSITION &amp; SAE</span>Superposition 与稀疏自编码器</h2>
+<p class="sec-intro">2023–2025 年 interp 最热的主线：神经元多义是因为 superposition；用 dictionary learning（SAE）把 activation 分解成稀疏、可解释的特征；再在特征上做电路（transcoder、attribution graph）。同时也要知道 2025 年对 SAE 的有力批评——面试官很可能问“你怎么看 SAE”。</p>
+
+<section class="concept" id="c-poly">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Polysemanticity（多义神经元）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>很多神经元会对多个毫不相关的概念激活（例如同时响应学术引用、韩文文本和 HTTP 请求），所以“一个神经元 = 一个概念”的分析单位不成立。</p><p class="en">Many neurons fire for several unrelated concepts, so individual neurons are not a reliable unit of analysis.</p></div>
+  <div class="deep">
+    <p>在视觉模型（Olah et al. Circuits 系列）和语言模型中都观察到：有一些单义神经元（曲线检测器、某种语言的神经元），但大量神经元是多义的。可能的原因：</p>
+    <ol>
+      <li><strong>Superposition</strong>：模型要表示的特征数远多于神经元数，于是用“几乎正交”的方向在同一空间叠加更多特征（主流解释，见下一个概念）。</li>
+      <li>特征本身与神经元基不对齐（即使没有 superposition，特征也可能是神经元的线性组合）。</li>
+    </ol>
+    <p>后果：直接看单个神经元或 head 的“激活最大样本”会得到混杂的解释；需要找到一个更好的基——这就是 dictionary learning / SAE 的动机。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Polysemanticity means a single neuron responds to several unrelated things — say, academic citations, Korean text, and HTTP requests. It makes neuron-level analysis misleading. The leading explanation is superposition: the model wants to represent far more features than it has neurons, so it packs them into nearly orthogonal directions, and each neuron ends up participating in many features.</p></div>
+</section>
+
+<section class="concept" id="c-superposition">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Toy Models of Superposition</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>当特征足够<strong>稀疏</strong>时，模型会把 \(n\) 个特征压进 \(m &lt; n\) 维里，代价是少量干扰；ReLU 等非线性能把小的干扰滤掉，使这种压缩划算。</p><p class="en">When features are sparse, a model can store more features than dimensions by using nearly orthogonal directions, accepting small interference that a nonlinearity can filter out.</p></div>
+  <div class="deep">
+    <p><strong>设置</strong>（<a href="https://arxiv.org/abs/2209.10652" target="_blank" rel="noreferrer">Elhage et al. 2022</a>）：输入 \(x \in \mathbb{R}^n\)，每个特征以概率 \(1-S\) 非零（\(S\) 是稀疏度），重要性权重 \(I_i\)。模型</p>
+    $$ h = W x \in \mathbb{R}^m,\qquad x' = \text{ReLU}(W^\top h + b) = \text{ReLU}(W^\top W x + b),\qquad L = \sum_i I_i\, \mathbb{E}\,(x_i - x'_i)^2 $$
+    <p>\(W\) 的第 \(i\) 列 \(W_i\) 就是特征 \(i\) 在隐藏空间中的方向。</p>
+    <p><strong>主要发现</strong>：</p>
+    <ul>
+      <li><strong>密集特征</strong>（\(S \approx 0\)）：模型像 PCA，只表示最重要的 \(m\) 个特征，其余丢弃，没有 superposition。</li>
+      <li><strong>稀疏特征</strong>（\(S \to 1\)）：模型开始把更多特征放进去，\(W_i\) 之间不再正交。原因：特征 \(i\) 和 \(j\) 同时激活的概率是 \((1-S)^2\)，比单独激活的 \(1-S\) 小得多；当只有 \(i\) 激活时，\(j\) 的输出读到的干扰是 \(W_j^\top W_i x_i\)，如果这是负的或很小，ReLU（配合负偏置）能把它截成 0。</li>
+      <li><strong>线性模型不会 superposition</strong>：没有非线性就无法滤除干扰，最优解就是 PCA。</li>
+      <li><strong>相变</strong>：随稀疏度和相对重要性变化，“是否表示某特征 / 是否叠加”呈现明显的 phase change。</li>
+      <li><strong>几何结构</strong>：叠加的特征形成规则多面体——例如两个特征反向共享一维（antipodal pair）、三个特征在 2D 中成三角形、5 个在 2D 中成五边形，以及四面体等结构；每个特征的 “dimensionality” 取 1, 1/2, 2/3, 2/5 ... 等离散值。</li>
+      <li>还有 computation in superposition（在叠加状态下计算，例如算 \(|x|\)）以及与对抗样本的可能联系。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>高维空间里，“几乎正交”的方向数量随维度<strong>指数</strong>增长（Johnson–Lindenstrauss 的直觉）。如果每个时刻只有少数特征是激活的，那么偶尔的干扰代价很小，而多表示很多特征的收益很大——就像一个压缩感知（compressed sensing）系统：稀疏信号可以从比信号维度少得多的线性测量中恢复。</div>
+    <p><strong>对可解释性的意义</strong>：如果 superposition 是真的，那么“正确的分析单位”是 activation 空间中一个过完备（overcomplete）的方向字典，而不是神经元；这直接导向 SAE。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 把 superposition 和 polysemanticity 当成同义词：前者是表示策略（假说），后者是观察到的现象；(2) 认为 superposition 只发生在 MLP neuron 里——residual stream 同样有（甚至更严重，因为它要承载所有层的信息）；(3) 忘了它依赖<strong>稀疏性</strong>这个前提。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Toy Models of Superposition trains a tiny ReLU autoencoder to compress n sparse features into fewer dimensions. When features are dense, it behaves like PCA and keeps only the most important ones. But when features are sparse, it packs more features than dimensions into nearly orthogonal directions, because two features rarely co-occur, and the ReLU filters out the small interference when only one is active. A linear model can't do this. The features even arrange into regular geometric shapes, like antipodal pairs and pentagons, with sharp phase transitions between regimes.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why does a purely linear model not use superposition?</b><details><summary>思路</summary><div class="inner">线性模型 \(x' = W^\top W x\)，干扰项 \(W_j^\top W_i x_i\) 无法被滤掉，期望损失中会出现所有 \((W_j^\top W_i)^2\) 的交叉项；最优解是让 \(W^\top W\) 成为最重要 \(m\) 个特征上的投影（PCA / Eckart–Young），叠加只会增加误差。非线性 + 负偏置可以把“小的负干扰”截成 0，这才让叠加有利可图。</div></details></li>
+    <li><b>How does superposition relate to compressed sensing?</b><details><summary>思路</summary><div class="inner">压缩感知：k-稀疏的 n 维信号可以从约 \(O(k \log(n/k))\) 个随机线性测量中恢复（需要 L1 / 迭代算法解码）。superposition 中“编码”是线性的 \(Wx\)，“解码”是一层 ReLU——比 L1 求解弱得多，所以能容纳的特征数比压缩感知理论上限少，但思想一致：稀疏让低维存储成为可能。SAE 的 encoder 正是在尝试做这个解码。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-sae">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Sparse Autoencoder：目标函数与训练细节</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>SAE 在某层 activation 上学一个过完备字典：encoder 输出稀疏的非负系数 \(z\)，decoder 用 \(z\) 线性重建 \(x\)；损失 = 重建误差 + 稀疏惩罚，每个 decoder 列就是一个“特征方向”。</p><p class="en">An SAE learns an overcomplete dictionary on a layer's activations: a sparse non-negative code reconstructs the input linearly, trained with reconstruction loss plus a sparsity penalty, and each decoder column is a feature direction.</p></div>
+  <div class="deep">
+    <p><strong>标准（ReLU + L1）形式</strong>（Anthropic, <a href="https://transformer-circuits.pub/2023/monosemantic-features/" target="_blank" rel="noreferrer">Towards Monosemanticity, 2023</a>；同期 Cunningham et al. 2023）：</p>
+    $$ z = \text{ReLU}\big(W_{\text{enc}}(x - b_{\text{dec}}) + b_{\text{enc}}\big) \in \mathbb{R}^{M},\qquad \hat x = W_{\text{dec}}\, z + b_{\text{dec}} = b_{\text{dec}} + \sum_{i} z_i\, d_i $$
+    $$ \mathcal{L} = \mathbb{E}_x\Big[\ \|x - \hat x\|_2^2 \;+\; \lambda \sum_i z_i \,\|d_i\|_2 \Big] $$
+    <p>其中 \(M \gg d\)（扩张倍数常见 8×–256×，大模型上到数百万乃至千万级特征），\(d_i\) 是 \(W_{\text{dec}}\) 的第 \(i\) 列。</p>
+    <p><strong>关键细节（面试常追问）</strong>：</p>
+    <ul>
+      <li><strong>为什么要约束 decoder 列的范数？</strong>否则模型可以把 \(z\) 缩小 \(c\) 倍、把 \(d_i\) 放大 \(c\) 倍，重建不变而 L1 任意小——稀疏惩罚失效。做法：每步后把 \(d_i\) 归一化到单位范数，或把 \(\|d_i\|\) 乘进惩罚项（如上式）。</li>
+      <li><strong>Shrinkage</strong>：L1 会系统性地把激活值压小（为了减少惩罚，宁可重建得小一点），导致重建偏低。解决：Gated SAE（<a href="https://arxiv.org/abs/2404.16014" target="_blank" rel="noreferrer">Rajamanoharan et al. 2024</a>，把“是否激活”和“激活多大”分开）、TopK、JumpReLU。</li>
+      <li><strong>Dead latents</strong>：有些特征永远不激活。缓解：重采样（resampling）死特征、TopK 加辅助损失、合适的初始化（encoder 初始化为 decoder 转置）。</li>
+      <li><strong>评估指标</strong>：L0（每个输入平均激活特征数）、FVU / explained variance、<strong>downstream loss</strong>（把 SAE 重建 splice 回模型后语言模型 CE 损失上升多少——这是最重要的指标，因为小的 MSE 不代表保留了模型真正用到的信息）、可解释性（人工或 LLM 自动解释 + 打分）。</li>
+    </ul>
+    <p><strong>主要变体</strong>：</p>
+    <div class="table-wrap"><table>
+      <tr><th>变体</th><th>激活 / 稀疏方式</th><th>要点</th></tr>
+      <tr><td>ReLU + L1</td><td>\(\text{ReLU}\)，L1 惩罚</td><td>最早的标准做法；有 shrinkage</td></tr>
+      <tr><td>TopK（<a href="https://arxiv.org/abs/2406.04093" target="_blank" rel="noreferrer">Gao et al. 2024, OpenAI</a>）</td><td>只保留最大的 k 个 pre-activation</td><td>直接控制 L0、无需调 \(\lambda\)、更少 dead latents；在 GPT-4 上训练了 1600 万 latent 的 SAE，观察到干净的 scaling law</td></tr>
+      <tr><td>JumpReLU（<a href="https://arxiv.org/abs/2407.14435" target="_blank" rel="noreferrer">Rajamanoharan et al. 2024, GDM</a>）</td><td>\(z = h\cdot\mathbb{1}[h &gt; \theta]\)，每个特征可学阈值，直接惩罚 L0（用 straight-through estimator 求导）</td><td>Gemma Scope（<a href="https://arxiv.org/abs/2408.05147" target="_blank" rel="noreferrer">Lieberum et al. 2024</a>）在 Gemma 2 2B/9B 的所有层上都开源了这种 SAE</td></tr>
+      <tr><td>Gated</td><td>门控路径决定是否激活，幅度路径决定大小</td><td>缓解 shrinkage</td></tr>
+    </table></div>
+    <div class="box why"><span class="lbl">直觉</span>SAE 是在逆转 superposition：模型用 \(W\) 把稀疏特征压进低维空间，SAE 学一个“解压器”。§9 的实验里，48 个特征被压进 16 维，PCA 一个都找不回来（只有 16 个正交方向），而 TopK SAE 把 48 个全部找回（与真值方向的余弦中位数约 0.99）。</div>
+  </div>
+  <details class="deep"><summary>推导：L1 SAE 的梯度（§9 代码里手写的那几行）</summary><div class="inner">
+    <p>记 batch 大小 \(B\)，\(p = (x - b_{\text{dec}})W_{\text{enc}} + b_{\text{enc}}\)（行向量约定，代码中 \(W_{\text{enc}}\in\mathbb{R}^{d\times M}\)，\(W_{\text{dec}}\in\mathbb{R}^{M\times d}\)），\(z = \text{ReLU}(p)\)，\(e = zW_{\text{dec}} + b_{\text{dec}} - x\)，损失 \(L = \frac1B\sum_b \|e_b\|^2 + \frac{\lambda}{B}\sum_b\|z_b\|_1\)。</p>
+    <ol>
+      <li>\(\partial L/\partial \hat x = 2e/B\)。</li>
+      <li>\(\partial L/\partial W_{\text{dec}} = z^\top (2e/B)\)。</li>
+      <li>\(\partial L/\partial z = (2e/B)W_{\text{dec}}^\top + \frac{\lambda}{B}\,\text{sign}(z)\)。</li>
+      <li>\(\partial L/\partial p = \partial L/\partial z \odot \mathbb{1}[p&gt;0]\)。</li>
+      <li>\(\partial L/\partial W_{\text{enc}} = (x - b_{\text{dec}})^\top\, \partial L/\partial p\)，\(\partial L/\partial b_{\text{enc}} = \sum_b \partial L/\partial p\)。</li>
+      <li>\(b_{\text{dec}}\) 出现在两处（重建加回、encoder 输入减去），所以 \(\partial L/\partial b_{\text{dec}} = \sum_b 2e_b/B \;-\; \sum_b (\partial L/\partial p_b)\,W_{\text{enc}}^\top\)。</li>
+    </ol>
+    <p>TopK 版本只是把第 4 步的 mask 换成“是否属于 top-k”，并去掉 L1 项。</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 只报告 MSE 不报告 downstream CE loss；(2) 以为 SAE 特征就是“模型真正的特征”——SAE 特征受字典大小、稀疏度、训练数据影响（见下面的 feature splitting / absorption）；(3) 忘了 decoder 范数约束这个“作弊通道”。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>A sparse autoencoder is dictionary learning on activations. The encoder maps an activation to a much wider, sparse, non-negative code, and the decoder reconstructs the activation as a linear combination of learned feature directions. You train on reconstruction error plus a sparsity penalty — originally L1, and you have to constrain decoder norms or the model just shrinks the codes to dodge the penalty. L1 also causes shrinkage, which motivated TopK SAEs from OpenAI and JumpReLU SAEs from DeepMind. The metric I care most about is the downstream loss when you splice the reconstruction back into the model, not just MSE.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How do you choose the dictionary size and sparsity level?</b><details><summary>思路</summary><div class="inner">画 Pareto 前沿：L0 vs downstream CE loss（或 FVU），在不同字典大小下比较；更大的字典在同样 L0 下重建更好，但特征会 split 得更细。实际选择取决于用途：做电路分析要 L0 小（每个 token 几十个特征）以便人读；做 probing 可能需要更大字典。没有“正确的”字典大小，这本身是对 SAE 的一种批评。</div></details></li>
+    <li><b>Why apply the SAE encoder to x minus b_dec?</b><details><summary>思路</summary><div class="inner">\(b_{\text{dec}}\) 学到的是数据的“中心”（类似均值），先减去使 encoder 处理的是偏离中心的部分，特征方向以数据中心为原点，几何上更合理；也使 decoder 的重建 \(b_{\text{dec}} + \sum z_i d_i\) 在所有特征都不激活时输出中心点。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-scaling-mono">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Scaling Monosemanticity 与特征的性质</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Anthropic 2024 在 Claude 3 Sonnet 的中间层 residual 上训练了约 1M / 4M / 34M 特征的 SAE，发现大量抽象、多语言、多模态的可解释特征（包括安全相关特征），并且把特征“钳制”到高值能因果地改变行为（Golden Gate Claude）。</p><p class="en">Scaling Monosemanticity trained SAEs with up to about 34 million features on Claude 3 Sonnet and found abstract, multilingual, multimodal features — including safety-relevant ones — that causally steer behavior when clamped.</p></div>
+  <div class="deep">
+    <p>（<a href="https://transformer-circuits.pub/2024/scaling-monosemanticity/" target="_blank" rel="noreferrer">Templeton et al. 2024</a>）要点：</p>
+    <ul>
+      <li><strong>可扩展性</strong>：SAE 方法能用在生产级模型上，且他们观察到 SAE 训练的 scaling law（用于分配计算预算）。</li>
+      <li><strong>抽象性</strong>：同一个特征在不同语言、文本与图像中对同一概念激活（例如金门大桥特征对多种语言的描述和图片都激活）；有关于代码 bug、后门、欺骗、谄媚（sycophancy）、权力寻求、危险内容等安全相关的特征。</li>
+      <li><strong>因果性</strong>：把特征钳制（clamp）到很大的值能改变输出。公开演示的 “Golden Gate Claude” 把金门大桥特征调高后，模型在各种话题里都会提到金门大桥，甚至自称是那座桥。</li>
+      <li><strong>特征的完整性问题</strong>：即使是 34M 的字典，也只覆盖了模型知道的一部分概念；出现频率低的概念往往没有专属特征。</li>
+    </ul>
+    <p><strong>SAE 特征的几个“病理”现象</strong>（讨论 SAE 局限时一定要会说）：</p>
+    <ul>
+      <li><strong>Feature splitting</strong>：字典变大时，一个特征会分裂成多个更细的特征（例如 “数学” → “代数”、“几何” …）。说明特征粒度是字典大小的产物，不存在唯一的“正确特征集”。</li>
+      <li><strong>Feature absorption</strong>：一个一般特征（如“以字母 S 开头”）在某些具体 token 上不激活，因为那个 token 的专属特征“吸收”了这部分方向（稀疏惩罚鼓励只用一个特征）。结果是一般特征看起来可解释，却有无规律的漏检，不能放心用作分类器。</li>
+      <li><strong>Dark matter / 重建误差</strong>：SAE 无法解释的残差部分有时包含关键信息；splice SAE 后 CE loss 明显上升。</li>
+    </ul>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>说 “SAE 找到了 Claude 的所有概念”。正确说法：它找到了大量可解释特征，但字典不完整、特征粒度依赖超参、重建并不完美。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Scaling Monosemanticity showed that sparse autoencoders scale to a production model. Anthropic trained SAEs with up to roughly 34 million features on a middle layer of Claude 3 Sonnet and found features that are highly abstract — the same feature fires for a concept across languages and even in images — including safety-relevant ones like deception or sycophancy. Clamping a feature changes behavior, as in the Golden Gate Claude demo. But the dictionary is incomplete, features split as you scale the dictionary, and you get absorption, so there's no single canonical set of features.</p></div>
+</section>
+
+<section class="concept" id="c-transcoder">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Transcoders、Crosscoders 与 Attribution graphs</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>SAE 只分解“某一点的表示”；transcoder 用稀疏特征去<strong>近似 MLP 这个计算</strong>（输入 → 输出），从而能在特征之间画出线性的因果图；Anthropic 2025 用跨层 transcoder（CLT）构建 attribution graph，追踪 Claude 3.5 Haiku 在单个 prompt 上的计算。</p><p class="en">Transcoders replace an MLP with a sparse, interpretable approximation of its input-output map, which makes feature-to-feature circuits linear; Anthropic's 2025 attribution graphs use cross-layer transcoders to trace computations on individual prompts.</p></div>
+  <div class="deep">
+    <p><strong>为什么 SAE 不够</strong>：在两层 SAE 特征之间，中间还隔着 MLP 的非线性，“特征 A 怎么导致特征 B”不能直接从权重读出。</p>
+    <p><strong>Transcoder</strong>（<a href="https://arxiv.org/abs/2406.11944" target="_blank" rel="noreferrer">Dunefsky, Chlenski &amp; Nanda 2024</a>）：训练一个稀疏的宽 MLP，输入 MLP 的输入、预测 MLP 的输出：</p>
+    $$ z = \text{ReLU}(W_{\text{enc}}\, x_{\text{mlp-in}} + b),\qquad \widehat{\text{MLP}(x)} = W_{\text{dec}}\, z $$
+    <p>用 transcoder 替换 MLP 后，一个特征对另一个特征的影响 = (前者的 decoder 方向) 点乘 (后者的 encoder 方向)，即与输入无关的“虚拟权重”，加上输入相关的激活值，就可以做输入无关（weights-based）和输入相关的电路分析。</p>
+    <p><strong>Crosscoder</strong>（Anthropic, <a href="https://transformer-circuits.pub/2024/crosscoders/" target="_blank" rel="noreferrer">Sparse Crosscoders, 2024</a>）：一个字典同时读/写多层（或多个模型）的 activation。两个用途：(1) 跨层特征，处理同一特征在多层重复出现的问题；(2) <strong>model diffing</strong>：在 base 模型和 chat 模型上共同训练，找出只在某个模型存在的特征，用于研究 fine-tuning / RLHF 改变了什么——这和 post-training 研究直接相关。</p>
+    <p><strong>Attribution graphs / circuit tracing</strong>（Anthropic 2025，<a href="https://transformer-circuits.pub/2025/attribution-graphs/methods.html" target="_blank" rel="noreferrer">methods</a> 与 <a href="https://transformer-circuits.pub/2025/attribution-graphs/biology.html" target="_blank" rel="noreferrer">“biology” 论文</a>）：</p>
+    <ol>
+      <li>训练<strong>跨层 transcoder（CLT）</strong>：每个特征从某一层的 residual 读入，写到该层及之后所有层的 MLP 输出；所有层的特征联合训练。用 CLT 替换所有 MLP 得到 “replacement model”。</li>
+      <li>对一个具体 prompt 构建 <strong>local replacement model</strong>：冻结原模型在这次前向中的 attention pattern 和 LayerNorm 分母，并在每层每个位置加上一个<strong>误差节点</strong>（原 MLP 输出 − CLT 重建），使得输出与原模型完全一致。</li>
+      <li>冻结后剩下的非线性只有特征本身的激活，于是特征之间的<strong>直接效应是线性的</strong>：边权 = 源特征激活 × 虚拟权重。节点包括输入 token embedding、活跃特征、误差节点、输出 logit。</li>
+      <li>剪枝：只保留对目标 logit 影响最大的节点与边；然后人工把特征归组成“supernode”，并用干预（抑制/注入特征）验证图中假设。</li>
+    </ol>
+    <p>在 Claude 3.5 Haiku 上的案例（biology 论文）包括：两跳推理（Dallas → Texas → Austin，中间实体在内部出现）、写押韵诗时<strong>提前规划</strong>行尾的韵脚词、多语言共享的语言无关特征、加法中“粗略估计 + 精确末位”两条并行通路、“已知实体”特征抑制默认的“无法回答”回路（误触发时产生 hallucination）、CoT 有时与内部计算一致、有时是编造或由提示答案反推（unfaithful）。Anthropic 还开源了 <a href="https://www.anthropic.com/research/open-source-circuit-tracing" target="_blank" rel="noreferrer">circuit-tracer 工具</a>，可在 Neuronpedia 上为开源模型（如 Gemma）生成 attribution graph。</p>
+    <p><strong>他们自己列出的局限</strong>：attention 被冻结所以 QK 机制（为什么 attend 那里）没有被解释；误差节点（dark matter）可能藏着关键机制；不活跃特征与抑制作用难以体现；图仍然复杂、需要大量人工；replacement model 与原模型可能用不同机制得到相同输出（faithfulness 问题）；每张图只针对一个 prompt，全局电路仍难理解。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 把 attribution graph 说成“解释了模型完整的计算”——它是一个替代模型上的、局部的、带误差项的解释；(2) 混淆 transcoder（近似一个计算：输入 → 输出）和 SAE（近似一个表示：x → x）。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>SAEs decompose a representation at one point, but to get circuits you need to know how features cause other features, and the MLP nonlinearity gets in the way. Transcoders fix that by training a sparse, wide MLP to imitate the original MLP's input-output map, so feature-to-feature interactions become linear. Anthropic's 2025 circuit tracing work uses cross-layer transcoders, freezes attention patterns and normalization for a specific prompt, and adds error nodes so the replacement exactly matches the model. That gives an attribution graph of linear edges between features, which they used to show things like two-hop reasoning and planning rhyme words ahead in Claude 3.5 Haiku. The main gaps are that attention computations aren't explained and the error nodes can hide important mechanisms.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How could you use crosscoders to study what RL fine-tuning changes in a model?</b><details><summary>思路</summary><div class="inner">在 base 和 RL 后模型的同一层上训练一个共享字典的 crosscoder，每个特征有两套 decoder；比较两套 decoder 的范数：只在 RL 模型中范数大的是“新特征”（例如 reasoning 行为、反思、“wait” 相关特征），只在 base 中的是被抑制的特征。然后用 steering 验证这些特征是否因果地导致了 RL 后的行为。要注意已知的伪影：L1 训练会让某些共享特征被误判为“独有”，需要用 BatchTopK 等方法或额外检验。</div></details></li>
+    <li><b>Why is freezing the attention pattern acceptable, and what does it cost?</b><details><summary>思路</summary><div class="inner">对单个 prompt 来说，给定实际的 attention pattern，OV 路径是线性的，所以冻结后归因精确地反映“在这次运行中信息如何流动”。代价：解释不了 attention 为什么这样分配（QK 电路），而很多重要计算（如 induction、选择要复制哪个实体）恰恰发生在 QK 里；改变输入后 pattern 会变，所以图不能直接推广到其他 prompt。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-sae-critique">
+  <div class="concept-head"><span class="pri p1">★</span><h3>SAE 的局限与 2025 年的批评</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在多个实际下游任务上（OOD probing、steering），SAE 并不比简单基线（线性 probe、difference-in-means、prompting）更好；GDM 团队因此降低了基础 SAE 研究的优先级，但 SAE 仍是做探索、调试和 model diffing 的有用工具。</p><p class="en">On several practical tasks, SAEs have not beaten simple baselines like linear probes or difference-in-means steering, so the field now treats them as an exploratory tool rather than a universal solution.</p></div>
+  <div class="deep">
+    <p><strong>主要证据</strong>：</p>
+    <ul>
+      <li><strong>AxBench</strong>（<a href="https://arxiv.org/abs/2501.17148" target="_blank" rel="noreferrer">Wu et al. 2025, ICML</a>）：在概念检测和 steering 的大规模基准上，prompting 和微调方法最好；表示层方法中 difference-in-means 等简单方法表现很好，SAE 不具竞争力。</li>
+      <li><strong>Sparse probing case study</strong>（<a href="https://arxiv.org/abs/2502.16681" target="_blank" rel="noreferrer">Kantamneni et al. 2025</a>）：在数据稀缺、类别不平衡、标签噪声、分布偏移等困难设置下，基于 SAE 特征的 probe 并不稳定地优于直接在 activation 上训练的基线 probe。</li>
+      <li><strong>GDM 的负结果</strong>（<a href="https://www.alignmentforum.org/posts/4uXCAJNuPKtKBsi28/negative-results-for-saes-on-downstream-tasks" target="_blank" rel="noreferrer">Smith, Rajamanoharan et al. 2025</a>）：在“检测有害意图、并泛化到新 jailbreak”的 OOD probing 任务上，dense 线性 probe 近乎完美且 OOD 也很强，SAE probe 更差；SAE 在发现数据集中的虚假相关（spurious correlation）上有用。团队宣布降低基础 SAE 研究优先级，转向 model diffing、欺骗模型的可解释性等方向。</li>
+    </ul>
+    <p><strong>概念性批评</strong>：</p>
+    <ul>
+      <li>SAE 的目标（重建 + 稀疏）不等于“找到模型使用的变量”；特征依赖字典大小（splitting）、存在 absorption；重建误差可能包含关键信息。</li>
+      <li>SAE 特征是针对激活分布的统计结构，可能包含数据集的结构而非模型的计算结构（随机初始化模型上训练的 SAE 也能找到看似可解释的特征，这是一个重要的 sanity check）。</li>
+      <li>可解释性评估（LLM 自动解释）容易高估：解释可能只覆盖高激活样本。</li>
+    </ul>
+    <p><strong>平衡的结论</strong>：SAE 的优势在于<strong>无监督</strong>——当你不知道要找什么时（审计隐藏目标、发现训练数据问题、比较两个模型），它能给出假设。Anthropic 的 <a href="https://arxiv.org/abs/2503.10965" target="_blank" rel="noreferrer">hidden objectives 审计实验</a>中，部分审计团队使用 SAE 找到了与隐藏目标相关的训练数据。当你已经知道要找什么概念时，用有监督的线性 probe 或 diff-in-means 通常更便宜也更好。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>两种极端：“SAE 解决了可解释性” 或 “SAE 没用”。面试中给出有条件的判断：“对已知概念的检测与控制，简单基线更好；对未知行为的发现，SAE 仍有独特价值。”</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I think the honest picture in 2025 is mixed. When you know the concept you care about, simple supervised baselines like linear probes or difference-in-means steering tend to match or beat SAEs — AxBench showed this for steering, and DeepMind reported that dense probes beat SAE probes on out-of-distribution harmful-intent detection, which led them to deprioritize fundamental SAE work. The conceptual issues are real too: feature splitting, absorption, and reconstruction error. Where SAEs still shine is unsupervised discovery — auditing for hidden objectives, spotting spurious correlations, or diffing a base and a fine-tuned model.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Design an experiment to test whether SAE features are more useful than raw activations for detecting reward hacking.</b><details><summary>思路</summary><div class="inner">构造带标签的 reward hacking 轨迹（例如修改测试用例 vs 真正修 bug）。基线：raw activation 上的 logistic probe、diff-in-means、prompt 一个 LLM 监控 CoT。SAE 方法：在 SAE 特征上的稀疏 probe（k = 1..64）、以及无监督（不用标签）地找与 hacking 相关的特征。评估：in-distribution AUROC，以及 OOD（新的任务类型、新的 hacking 方式）AUROC，样本量曲线（少数据时 SAE 是否更好）。另外看可解释性收益：SAE probe 能否揭示 spurious cue。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================== §6 ============================== -->
+<h2 class="sec" id="s-steer"><span class="num">§6 · STEERING</span>Steering：在 activation 上改行为</h2>
+<p class="sec-intro">Steering 是 interp 中最“实用”、和 post-training 最接近的部分。核心问题：怎么找方向、加在哪、加多少、和 fine-tuning 比有什么优缺点。延伸阅读：<a href="https://mkj69.github.io/steerability/" target="_blank" rel="noreferrer">Steerability Research Map</a>。</p>
+
+<section class="concept" id="c-actadd">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Activation addition 与 Contrastive Activation Addition (CAA)</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>取两组对比输入在某层 residual 上的平均差作为 steering vector，推理时在每个位置加上 \(\alpha v\)，就能增强或减弱某种行为，无需任何梯度训练。</p><p class="en">Activation steering takes the mean difference in residual activations between contrasting prompts and adds a scaled copy at inference time to strengthen or suppress a behavior, with no training.</p></div>
+  <div class="deep">
+    <p><strong>ActAdd</strong>（<a href="https://arxiv.org/abs/2308.10248" target="_blank" rel="noreferrer">Turner et al. 2023</a>）：用<strong>一对</strong> prompt（如 “Love” vs “Hate”）在某层的 activation 差作为向量，加到新输入的前几个位置上，改变生成文本的情感/主题。</p>
+    <p><strong>CAA</strong>（<a href="https://arxiv.org/abs/2312.06681" target="_blank" rel="noreferrer">Rimsky (Panickssery) et al. 2023</a>）：在 Llama 2 Chat 上，用<strong>大量</strong>多选题对：同一个问题，答案字母分别对应“表现出行为”（如 sycophancy）和“不表现”，取答案字母位置 residual 的平均差：</p>
+    $$ v_\ell = \frac{1}{|D|}\sum_{(p,\,c^+,\,c^-)\in D} \Big[h_\ell(p, c^+) - h_\ell(p, c^-)\Big] $$
+    <p>推理时对用户 prompt 之后的所有位置做 \(h_\ell \leftarrow h_\ell + \alpha\, v_\ell\)，\(\alpha&gt;0\) 增强、\(\alpha&lt;0\) 抑制。研究的行为包括谄媚、幻觉、拒答、corrigibility、生存本能等；在多选和开放式生成上都有效，并且能叠加在 fine-tuning 和 system prompt 之上进一步起作用。</p>
+    <p><strong>实践要点</strong>：</p>
+    <ul>
+      <li><strong>选层</strong>：通常中间层（约 1/3 到 2/3 深度）效果最好；太早信息还没形成，太晚来不及影响。用层扫描 + 行为评估选。</li>
+      <li><strong>选强度</strong> \(\alpha\)：太小无效，太大破坏流畅性和能力。需要同时测目标行为和通用能力（如 MMLU、perplexity）。</li>
+      <li><strong>Mean-difference 的好处</strong>：对很多配对求平均，抵消了与概念无关的变化（话题、长度），只留下共同的“行为方向”。</li>
+    </ul>
+    <p><strong>相关：Directional ablation</strong>。<a href="https://arxiv.org/abs/2406.11717" target="_blank" rel="noreferrer">Arditi et al. 2024</a> 发现在多个开源 chat 模型中，拒答由<strong>单一方向</strong>介导：用有害/无害指令的平均差得到方向 \(\hat r\)，把它从所有层的 residual 中投影掉（\(h \leftarrow h - \hat r\hat r^\top h\)）就几乎消除拒答，加上它则使模型拒绝无害请求；还可以把投影直接“烧”进权重（weight orthogonalization）。这既是 steering 有效性的强证据，也说明开源权重模型的安全训练很容易被移除。</p>
+    <p><strong>Persona vectors</strong>（<a href="https://arxiv.org/abs/2507.21509" target="_blank" rel="noreferrer">Chen et al. 2025, Anthropic</a>）：自动从一段特质描述（如 evil、sycophancy、hallucination 倾向）生成对比数据，提取方向，用于监控部署中的人格漂移、预测哪些训练数据会导致不良人格变化，并在训练中通过 steering 预防这种漂移。</p>
+  </div>
+  <details class="deep"><summary>代码：用 PyTorch forward hook 做 CAA（示意，未在本环境运行 torch）</summary><div class="inner">
+<pre><code class="language-python">import torch
+
+@torch.no_grad()
+def mean_diff_vector(model, layer, pos_batches, neg_batches):
+    """Residual-stream mean difference at the last token, layer `layer`."""
+    acts = {}
+    def grab(_m, _inp, out):
+        acts["h"] = (out[0] if isinstance(out, tuple) else out)[:, -1, :]
+    handle = model.model.layers[layer].register_forward_hook(grab)
+    def mean_act(batches):
+        total, n = 0, 0
+        for ids in batches:
+            model(ids); total = total + acts["h"].sum(0); n += ids.shape[0]
+        return total / n
+    v = mean_act(pos_batches) - mean_act(neg_batches)
+    handle.remove()
+    return v
+
+def add_steering(model, layer, v, alpha):
+    def hook(_m, _inp, out):
+        if isinstance(out, tuple):
+            return (out[0] + alpha * v,) + out[1:]
+        return out + alpha * v
+    return model.model.layers[layer].register_forward_hook(hook)
+
+# h = add_steering(model, 13, v, alpha=-4.0)   # suppress the behaviour
+# ... model.generate(...) ...
+# h.remove()</code></pre>
+    <p>（HF Llama 风格模型的 decoder layer 返回 tuple，第 0 个元素是 hidden states；不同库结构略有不同。）</p>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 只报告“目标行为变了”而不报告能力损失；(2) 只在多选题上评估（CAA 在多选上的效果往往比开放生成好）；(3) 用很少的对比对，方向混进了话题等无关信息；(4) 忽略 steering 的可靠性问题：同一向量对不同输入效果方差很大，有些输入甚至反向。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Contrastive activation addition builds a steering vector from paired examples that differ only in the target behavior — say, a sycophantic versus a non-sycophantic answer to the same question. You take the mean difference of residual activations at some middle layer, then at inference time add a scaled copy to every position after the prompt. A positive coefficient increases the behavior, a negative one suppresses it, and no gradient training is involved. The main knobs are which layer and how large a coefficient, and you always have to measure capability side effects alongside the target behavior.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What does the "refusal is a single direction" result imply for open-weight model safety?</b><details><summary>思路</summary><div class="inner">安全行为在表示上很“浅”：一个 rank-1 的权重修改就能移除拒答，几乎不损害其他能力。所以对开源权重模型，单靠 RLHF 拒答训练无法防止有意的滥用；需要更深的防护（数据过滤、unlearning、tamper-resistant training）。同时也是可解释性的正面例子：一个简单的线性结构解释了一个重要行为。</div></details></li>
+    <li><b>How would you combine steering with RL training?</b><details><summary>思路</summary><div class="inner">几种思路：(1) 训练中加 steering 来“预防”不良漂移（persona vectors 的 preventative steering）；(2) 用 probe/steering 方向作为辅助奖励或正则（惩罚 RL 过程中某个方向的投影增大，例如 sycophancy）；(3) 用 steering 做 exploration（在 rollout 时加入多样性方向）；(4) 监控：RL 训练中跟踪关键方向的投影，作为 reward hacking 的早期信号。风险：对 probe 方向做优化会让模型“绕过” probe（Goodhart），所以监控信号最好不直接用于训练。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-repe-iti">
+  <div class="concept-head"><span class="pri p1">★</span><h3>RepE 与 ITI</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RepE 是“自顶向下”的框架：用对比刺激读出高层概念（honesty、power-seeking）的方向，再用它控制模型；ITI 在少数被 probe 选出的 attention head 上沿“真实性”方向平移，提升 TruthfulQA 表现。</p><p class="en">Representation engineering reads high-level concepts from contrastive stimuli and uses those directions to control the model; inference-time intervention shifts a few probe-selected attention heads along a truthfulness direction.</p></div>
+  <div class="deep">
+    <p><strong>RepE</strong>（<a href="https://arxiv.org/abs/2310.01405" target="_blank" rel="noreferrer">Zou et al. 2023</a>）：</p>
+    <ul>
+      <li><strong>Reading</strong>（LAT, Linear Artificial Tomography）：设计刺激模板（如 “Pretend you're an honest/dishonest person…”），收集 activation，对配对差做 PCA 得到 reading vector；可以用来监测说谎、情绪、权力欲等。</li>
+      <li><strong>Control</strong>：沿 reading vector 加减；或用 LoRRA（low-rank representation adaptation）把控制“训练”进权重。</li>
+      <li>理念：以表示（population-level）而非神经元/电路为分析单位，类比认知神经科学的 Hopfieldian 视角（对比 Sherringtonian 的“神经元-回路”视角）。</li>
+    </ul>
+    <p><strong>ITI</strong>（<a href="https://arxiv.org/abs/2306.03341" target="_blank" rel="noreferrer">Li et al. 2023</a>）：</p>
+    <ol>
+      <li>在 TruthfulQA 上，对<strong>每个 attention head</strong> 的输出训练线性 probe 区分真/假回答；</li>
+      <li>选 probe 准确率最高的 top-K 个 head；</li>
+      <li>推理时只在这些 head 的输出上，沿“真实性方向”（他们比较后选择 mass-mean shift 方向）加 \(\alpha\sigma\)（\(\sigma\) 是该方向上激活的标准差）。</li>
+    </ol>
+    <p>在 LLaMA 上大幅提升 TruthfulQA 的 truthfulness，同时在“真实性 vs 有用性（信息量）”之间存在可调的 trade-off。它比全层 steering 更精确、副作用更小，且只需几百个标注样本。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>ITI 的提升主要在 TruthfulQA 这种特定风格的数据上，泛化到其他事实性任务时效果减弱；而且“更真实”有时是因为模型更多地回答“I have no comment”。评价 steering 方法要看信息量/有用性的变化。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Representation engineering takes a top-down view: instead of reverse-engineering neurons, you elicit a high-level concept like honesty with contrastive prompts, extract a reading vector with PCA on the activation differences, and then use it both to monitor and to steer. Inference-time intervention is a more surgical version for truthfulness: it trains probes on every attention head, picks the few heads where truth is most linearly decodable, and shifts only those heads along the truthful direction at inference. It improved TruthfulQA a lot, with a tunable trade-off against informativeness.</p></div>
+</section>
+
+<section class="concept" id="c-rome">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>ROME / MEMIT：模型编辑</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>ROME 用 causal tracing 定位事实存储在中间层 MLP，然后把该 MLP 的输出投影矩阵当作线性 key-value 存储，做一次 rank-1 更新来改写单个事实；MEMIT 把它推广到同时编辑多层、成千上万个事实。</p><p class="en">ROME locates factual recall in mid-layer MLPs with causal tracing and rewrites one fact with a rank-one update treating the MLP as a key-value store; MEMIT scales this to thousands of edits across layers.</p></div>
+  <div class="deep">
+    <p><strong>ROME</strong>（<a href="https://arxiv.org/abs/2202.05262" target="_blank" rel="noreferrer">Meng et al. 2022</a>）：把 MLP 的第二个矩阵 \(W\) 看成联想记忆：key \(k\) = 主语最后 token 处 MLP 的 hidden（经过非线性后），value \(v = Wk\)。要把事实 (s, r, o) 改为 o*：</p>
+    <ol>
+      <li>计算主语的 key \(k_*\)（对多种前缀平均）；</li>
+      <li>用梯度优化找到一个 value \(v_*\)，使模型输出 o*；</li>
+      <li>求解带约束的最小二乘：在保持其他 key 的映射尽量不变的条件下令 \(\hat W k_* = v_*\)，闭式解是 rank-1 更新
+      $$ \hat W = W + \frac{(v_* - W k_*)\,(C^{-1}k_*)^\top}{(C^{-1}k_*)^\top k_*},\qquad C = \mathbb{E}[kk^\top]. $$</li>
+    </ol>
+    <p><strong>MEMIT</strong>（<a href="https://arxiv.org/abs/2210.07229" target="_blank" rel="noreferrer">Meng et al. 2022b</a>）把更新分摊到多个关键层，支持批量编辑数千条事实。</p>
+    <p><strong>争议</strong>：Hase et al. 2023 发现 causal tracing 的定位结果和“在哪层编辑效果最好”之间相关性很弱——<strong>定位（localization）不一定指导编辑</strong>。此外编辑后常出现泛化不足（换一种问法就失效、多跳推理不更新，ripple effect 问题）和对邻近事实的干扰。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>ROME uses causal tracing to find that factual recall depends on mid-layer MLPs at the subject's last token, and then treats the MLP's output matrix as a linear key-value memory: the key is the subject representation and the value encodes the attribute. A constrained least-squares problem gives a closed-form rank-one update that rewrites one fact while minimally disturbing others. MEMIT spreads the update across several layers to do thousands of edits. But later work showed that where tracing localizes a fact doesn't reliably predict where editing works best, and edits often fail to propagate to paraphrases or multi-hop questions.</p></div>
+</section>
+
+<section class="concept" id="c-steer-vs-ft">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Steering vs fine-tuning，以及失败模式</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Steering 便宜、可逆、可在推理时连续调节、可解释，但效果不稳定、容易损伤能力、只能改变模型已有的“方向”；fine-tuning 更可靠、能学新行为，但贵、不透明、可能有意外泛化。</p><p class="en">Steering is cheap, reversible, and tunable at inference time but less reliable and limited to directions the model already has; fine-tuning is more robust and can teach new behaviors but is costlier and less transparent.</p></div>
+  <div class="deep">
+    <div class="table-wrap"><table>
+      <tr><th>维度</th><th>Activation steering</th><th>Fine-tuning（SFT / RLHF / LoRA）</th><th>Prompting</th></tr>
+      <tr><td>成本</td><td>几十到几百个样本，无需训练</td><td>需要数据和训练</td><td>零</td></tr>
+      <tr><td>可逆 / 可调</td><td>推理时开关，强度连续可调</td><td>改变权重，难以局部撤销</td><td>可调但不精细</td></tr>
+      <tr><td>可靠性</td><td>输入间方差大；强度大时破坏流畅性</td><td>通常最好</td><td>易被覆盖（jailbreak）</td></tr>
+      <tr><td>能力副作用</td><td>常见（perplexity 上升、能力下降）</td><td>可控（但有 alignment tax）</td><td>小</td></tr>
+      <tr><td>能否学新能力</td><td>不能，只能放大/抑制已有表示</td><td>能</td><td>不能</td></tr>
+      <tr><td>可解释性</td><td>高：知道改了哪个方向</td><td>低</td><td>中</td></tr>
+    </table></div>
+    <p><strong>失败模式</strong>：</p>
+    <ol>
+      <li><strong>不可靠 / 高方差</strong>：同一向量对一部分输入有效，对另一部分无效甚至反向；在多选上有效、开放生成上弱（Tan et al. 2024 对 CAA 的可靠性和泛化做了系统分析）。</li>
+      <li><strong>能力退化</strong>：系数大时输出变得重复、不连贯；“steering 让模型变好”的结果有时只是“让模型变笨”。</li>
+      <li><strong>概念纠缠</strong>：方向混入相关概念（例如“诚实”方向也改变了情绪或拒答倾向）。</li>
+      <li><strong>分布外</strong>：加向量把 activation 推离分布，后续层的行为不可预测。</li>
+      <li><strong>评估陷阱</strong>：只用自动打分器评估“行为是否出现”，没有人工核查；没有和 prompting 基线对比（AxBench 显示 prompting 是很强的基线）。</li>
+    </ol>
+    <p><strong>什么时候选 steering</strong>：需要推理时可调、需要快速原型验证某个假设（“这个行为是否由这个方向介导”）、需要可解释的监控 + 控制一体化方案时。作为科学工具，steering 的最大价值是<strong>验证表示假设</strong>，而不一定是替代 fine-tuning 的产品方案。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I see steering and fine-tuning as complementary. Steering is cheap, reversible, and adjustable at inference time, and it's interpretable because you know exactly which direction you changed. But it's less reliable — effects vary a lot across inputs, large coefficients degrade fluency, and it can only amplify or suppress representations the model already has. Fine-tuning is more robust and can teach new behavior but is opaque and costly. Scientifically, steering is most valuable as a causal test of whether a direction really mediates a behavior, and any steering result should be compared against a prompting baseline and reported with capability side effects.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Your steering vector reduces sycophancy by 40% on your eval. What would you check before believing it?</b><details><summary>思路</summary><div class="inner">(1) 能力：MMLU / perplexity / 回答长度和信息量是否下降（是否只是让模型更笨或更短）；(2) 基线：一句 system prompt 能否达到同样效果；(3) 泛化：在不同格式（开放式、多轮）、不同话题上是否有效；(4) 打分器偏差：人工抽查；(5) 方差：按输入看效果分布，是否少数样本主导；(6) 随机方向对照：同范数的随机向量是否也能产生“效果”。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================== §7 ============================== -->
+<h2 class="sec" id="s-circuits"><span class="num">§7 · CLASSIC CIRCUITS</span>经典电路</h2>
+<p class="sec-intro">面试中被要求“讲一个你熟悉的 circuit”时，首选 induction head：机制清楚、和 in-context learning 直接相关，并能自然引出 phase change、K-composition 等概念。</p>
+
+<section class="concept" id="c-induction">
+  <div class="concept-head"><span class="pri p1">★</span><h3>Induction heads：两步机制与 ICL</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Induction head 实现“如果之前见过 [A][B]，现在又看到 [A]，就预测 [B]”：一个 previous-token head 先把“我前面是谁”写进每个位置，induction head 再用 K-composition 找到“前一个 token 是当前 token”的位置，并把那里的 token 复制出来。</p><p class="en">An induction head implements "after [A][B] … [A], predict [B]": a previous-token head writes each token's predecessor into its residual, and the induction head uses K-composition to attend to the position after the earlier A and copy that token.</p></div>
+  <div class="deep">
+    <p><strong>机制（两层 attention-only 模型即可实现）</strong>：序列 “… Harry Potter … Harry ___”。</p>
+    <ol>
+      <li><strong>Previous-token head（第 1 层）</strong>：每个位置 \(j\) attend 到 \(j-1\)，把 token\(_{j-1}\) 的信息（OV）写进位置 \(j\) 的 residual。于是 “Potter” 所在位置的 residual 里多了“我前面是 Harry”。</li>
+      <li><strong>Induction head（第 2 层）</strong>：当前位置是第二个 “Harry”。它的 <strong>query</strong> = “我是 Harry”；它的 <strong>key</strong> 读的是第 1 层写入的“前一个 token 是谁”（这就是 <strong>K-composition</strong>）。所以 query “Harry” 与 key “我前面是 Harry” 匹配，attend 到 “Potter” 位置。</li>
+      <li>它的 <strong>OV circuit 是 copying</strong>：把 “Potter” 这个 token 的信息写到输出，提高预测 “Potter” 的 logit。</li>
+    </ol>
+    <p>即：QK 实现“找前缀匹配”（prefix matching），OV 实现“复制”（copying）。经验检测方法：在<strong>重复的随机 token 序列</strong>上，第二遍时 attention 呈现“偏移一位的对角线”（attend 到 \(i - T + 1\)，\(T\) 是重复周期），且第二遍的 loss 骤降。</p>
+    <p><strong>和 in-context learning 的关系</strong>（<a href="https://arxiv.org/abs/2209.11895" target="_blank" rel="noreferrer">Olsson et al. 2022, In-context Learning and Induction Heads</a>）：</p>
+    <ul>
+      <li>训练早期有一个 <strong>phase change</strong>：induction head 形成的同时，in-context learning score（序列后部 token 的 loss 减去前部 token 的 loss）急剧改善，训练 loss 曲线上出现一个小“鼓包”（bump）。</li>
+      <li>他们给出 6 条论据（共现、架构改动使 phase change 提前时 ICL 也提前、ablation 等），支持“induction heads 可能是大模型中大部分 ICL 的机制来源”——对小的 attention-only 模型证据强（因果），对大模型主要是相关性证据。</li>
+      <li>在大模型中，类似的 head 也做“模糊/抽象”的匹配（例如翻译时匹配语义相同的词、模式补全），可视为 induction 的推广。</li>
+    </ul>
+    <div class="box why"><span class="lbl">直觉</span>Induction 是最简单的“在上下文中查表”：用当前 token 作为 key 去上下文里找它上一次出现的位置，然后读出后继。为什么需要两层？因为单个 head 的 key 只能看到“这个位置的 token 本身”，而我们需要按“这个位置<strong>前一个</strong> token”来索引——这个信息必须由更早的一个 head 先搬过来。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>(1) 把 induction head 说成一层就能实现（单层 attention-only 模型只能做 skip-trigram，如 “A … B → B”，没有 K-composition）；(2) 说“ICL 完全由 induction head 实现”——Olsson 的结论对大模型是谨慎的“可能是主要机制”；(3) 把 previous-token head 和 induction head 的角色搞反。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>An induction head completes patterns like "Harry Potter ... Harry" with "Potter". It needs two heads in different layers. First, a previous-token head copies each token's predecessor into its residual stream, so the position of "Potter" now also encodes "preceded by Harry". Then the induction head, at the second "Harry", uses its query for "Harry" against keys that read that predecessor information — that's K-composition — so it attends to "Potter", and its OV circuit copies that token to the output. Olsson et al. showed these heads form in a sudden phase change that coincides with a jump in in-context learning ability.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you detect induction heads in a new model?</b><details><summary>思路</summary><div class="inner">输入一个随机 token 序列重复两遍（长度 T），对每个 head 计算 induction score：第二遍中位置 \(i\) 对位置 \(i-T+1\) 的平均 attention。分数高的是候选；再用 ablation 看第二遍 loss 是否明显上升；并检查 OV 矩阵是否是 copying（\(W_U W_{OV} W_E\) 对角正）。也要找对应的 previous-token head（attend 到 \(i-1\) 的分数高），并做 K-composition score 或 path patching 确认它们连接。</div></details></li>
+    <li><b>Why does the loss curve show a bump when induction heads form?</b><details><summary>思路</summary><div class="inner">induction 需要两个组件同时就位才有用（AND 结构），单独任何一个都几乎没有收益，所以梯度信号弱、学习慢；一旦两者开始协同，loss 快速下降，形成相变。这是“能力突然出现”的机制性例子，可以和 emergence、grokking 的讨论联系。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-copysupp">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>Copy suppression 与 IOI 回顾</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Copy suppression head（GPT-2 small 的 L10H7）在“前面层预测要出现某个上下文中已有的 token”时，attend 到那个 token 并<strong>降低</strong>它的 logit，起到校准、防止过度复制的作用。</p><p class="en">A copy suppression head attends to earlier tokens that earlier layers are predicting and lowers their logits, calibrating against naive copying.</p></div>
+  <div class="deep">
+    <p>（<a href="https://arxiv.org/abs/2310.04625" target="_blank" rel="noreferrer">McDougall et al. 2023</a>）机制：如果 residual 中已经在强烈预测 token T，且 T 出现在上下文中，这个 head 的 QK 让它 attend 到 T 的位置（query 读“当前预测”，key 读“token 身份”），OV 是<strong>负的 copying</strong>（对角为负），从而降低 T 的 logit。它解释了 IOI 中的 negative name mover，并且是 self-repair 的一个重要来源：当上游 head 被 ablate、预测变弱时，copy suppression 也减弱，部分抵消了 ablation 的影响。</p>
+    <p>这个工作的意义在于它试图<strong>完整</strong>解释一个 head 在整个训练分布上的行为（而不是在一个窄任务上），并报告了解释覆盖的比例。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Copy suppression is a head in GPT-2 small that does the opposite of an induction head. When earlier layers are confidently predicting a token that already appears in the context, this head attends to that earlier occurrence and writes a negative copy of it, lowering its logit. It acts as calibration against over-copying, it's the negative name mover in the IOI circuit, and it explains some self-repair, because when you ablate an upstream head the suppression weakens too.</p></div>
+</section>
+
+<section class="concept" id="c-grokking">
+  <div class="concept-head"><span class="pri p3">○</span><h3>Modular addition 与 grokking（Fourier 电路）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>在 \(a+b \bmod p\) 上训练的小 Transformer 学到了一个基于三角恒等式的算法：把输入嵌入为少数几个频率的 cos/sin，用乘法计算 \(\cos(w(a+b))\)，再通过 \(\cos(w(a+b-c))\) 在正确答案处取最大；grokking 是这个电路逐渐形成、记忆电路被清理的过程。</p><p class="en">A small transformer trained on modular addition learns a Fourier algorithm using trig identities, and grokking corresponds to gradually forming that circuit and then cleaning up the memorizing solution.</p></div>
+  <div class="deep">
+    <p>（<a href="https://arxiv.org/abs/2301.05217" target="_blank" rel="noreferrer">Nanda et al. 2023</a>，\(p = 113\)）算法：</p>
+    <ol>
+      <li>Embedding 把 \(a\) 映射为若干关键频率 \(w_k = 2\pi k/p\) 下的 \(\cos(w_k a), \sin(w_k a)\)；</li>
+      <li>Attention + MLP 用三角恒等式算 \(\cos(w_k(a+b)) = \cos w_k a\cos w_k b - \sin w_k a \sin w_k b\)（以及 sin）；</li>
+      <li>Unembedding 对每个候选 \(c\) 计算 \(\cos(w_k(a+b-c)) = \cos(w_k(a+b))\cos(w_k c) + \sin(w_k(a+b))\sin(w_k c)\)，对各频率求和后在 \(c \equiv a+b\) 处构造性叠加取最大。</li>
+    </ol>
+    <p>基于对机制的理解，他们定义了 progress measures（如 restricted loss：只保留关键频率时的损失；excluded loss：去掉关键频率后的损失），显示 grokking 分三阶段：<strong>记忆</strong> → <strong>电路形成</strong>（test loss 还高，但通用算法已在形成）→ <strong>清理</strong>（weight decay 移除记忆成分，test 准确率突然上升）。所以 grokking 的“突然”在内部其实是连续的。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Nanda and colleagues fully reverse-engineered a small transformer trained on modular addition. It embeds numbers as cosines and sines at a handful of frequencies, uses trig identities to compute the cosine of a plus b, and reads out the answer by checking which c maximizes the cosine of a plus b minus c. Using that understanding, they built progress measures showing grokking isn't sudden internally: the general circuit forms gradually during apparent overfitting, and weight decay then cleans up the memorization, which is when test accuracy jumps.</p></div>
+</section>
+
+<!-- ============================== §8 ============================== -->
+<h2 class="sec" id="s-safety"><span class="num">§8 · INTERP FOR SAFETY</span>可解释性与安全</h2>
+<p class="sec-intro">简要但要有立场。前沿实验室的面试官（尤其 Anthropic、GDM）可能会问“interp 对安全有什么实际用处”。</p>
+
+<section class="concept" id="c-deception">
+  <div class="concept-head"><span class="pri p3">○</span><h3>欺骗检测、sleeper agents 与审计</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>线性 probe 能在人造后门模型和部分欺骗场景中检测“有问题的意图”，SAE 能帮助审计隐藏目标；但这些结果大多在人为构造的 model organism 上，迁移到自然产生的欺骗仍是开放问题。</p><p class="en">Linear probes can flag backdoored or deceptive behavior in model organisms, and SAEs help audit hidden objectives, but whether this transfers to naturally arising deception is still open.</p></div>
+  <div class="deep">
+    <ul>
+      <li><strong>Sleeper agents</strong>（<a href="https://arxiv.org/abs/2401.05566" target="_blank" rel="noreferrer">Hubinger et al. 2024</a>）：故意训练带后门的模型（例如年份是 2024 时写有漏洞的代码），发现标准安全训练（SFT、RLHF、对抗训练）无法可靠移除后门，对抗训练甚至可能让模型更好地隐藏触发条件。后续的 <a href="https://www.anthropic.com/research/probes-catch-sleeper-agents" target="_blank" rel="noreferrer">defection probes</a> 显示简单线性 probe 能高精度检测这些模型何时将要“背叛”。</li>
+      <li><strong>欺骗 probe</strong>：Apollo Research 的 <a href="https://arxiv.org/abs/2502.03407" target="_blank" rel="noreferrer">Goldowsky-Dill et al. 2025</a> 在 Llama-3.3-70B 上训练线性 probe，检测在若干策略性欺骗场景（如内幕交易后隐瞒、故意在评估中表现差）中的欺骗回答，效果不错但存在误报，作者认为还不足以作为可靠的单独防线。</li>
+      <li><strong>审计隐藏目标</strong>（<a href="https://arxiv.org/abs/2503.10965" target="_blank" rel="noreferrer">Marks et al. 2025</a>）：Anthropic 训练一个有隐藏目标（迎合奖励模型的已知偏差）的模型，让多个团队“盲审”。有权重和训练数据访问权的团队成功找出了目标，其中使用了 SAE 特征、行为攻击和训练数据分析等方法。</li>
+    </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>On the safety side, the strongest results so far are on model organisms. Anthropic trained sleeper agents with backdoors that survived standard safety training, and then showed that simple linear probes could detect when those models were about to defect. Apollo found linear probes can catch strategic deception in a 70B model reasonably well, though with false positives. And in an auditing game, teams with access to model internals and data, using tools including SAEs, were able to uncover a deliberately hidden objective. The open question is whether this transfers to deception that emerges naturally rather than being trained in.</p></div>
+</section>
+
+<section class="concept" id="c-cot-monitor">
+  <div class="concept-head"><span class="pri p3">○</span><h3>CoT monitoring vs 看内部，以及 eval awareness</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>对推理模型，读 CoT 是一个便宜而有效的监控手段，但它可能不忠实、且在优化压力下可能被“隐藏”；内部表示（probe）是补充。模型越来越能察觉自己在被评估（eval awareness），这会削弱行为评估的可信度——这正是看内部的理由之一。</p><p class="en">Reading chain-of-thought is a cheap, useful monitor for reasoning models but can be unfaithful and fragile under optimization pressure; internal probes complement it, and growing evaluation awareness makes internals more important.</p></div>
+  <div class="deep">
+    <ul>
+      <li><strong>CoT monitorability</strong>：多家实验室研究者联合发表的立场文章（<a href="https://arxiv.org/abs/2507.11473" target="_blank" rel="noreferrer">Korbak et al. 2025</a>）认为，当模型需要“出声思考”才能完成困难任务时，CoT 提供了一个难得的监控窗口，但这个窗口是<strong>脆弱</strong>的：直接对 CoT 施加优化压力（例如惩罚“坏想法”）可能让模型学会隐藏意图而不是停止不良行为；架构变化（latent reasoning）也可能让它消失。建议开发者评估并保持可监控性。</li>
+      <li><strong>CoT faithfulness</strong>：attribution graph 研究显示 CoT 有时与内部计算一致，有时是编造或由提示的答案反推；这和 <a href="m07-reasoning.html">07 推理</a> 中的 faithfulness 讨论相同。</li>
+      <li><strong>Eval awareness</strong>：<a href="https://arxiv.org/abs/2505.23836" target="_blank" rel="noreferrer">Needham et al. 2025</a> 显示前沿模型能以明显高于随机的准确率区分评估样本和真实部署对话（但仍不及人类基线）。Anthropic 在 <a href="https://assets.anthropic.com/m/12f214efcc2f457a/original/Claude-Sonnet-4-5-System-Card.pdf" target="_blank" rel="noreferrer">Claude Sonnet 4.5 system card</a> 中报告模型更频繁地说出“我觉得我在被测试”，并用可解释性方法找到与“这是假的/测试场景”相关的内部特征；用 steering 抑制这些表示后，口头上的 eval awareness 下降，某些情况下不良行为有所增加。这是“用 interp 检验行为评估是否可信”的实际例子。</li>
+    </ul>
+    <p><strong>你的立场可以是</strong>：CoT 监控和内部监控是互补的“多层防御”。CoT 便宜、人类可读，但可能不忠实；probe 难以被模型有意“写出来”骗过，但需要标签且可能误报。关键研究问题是在训练中保持两者的可用性（不要对监控信号直接优化）。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For reasoning models, reading the chain of thought is currently one of our best monitoring tools, because hard tasks force the model to think out loud. But it's fragile: if you train directly against bad thoughts in the CoT, the model may learn to hide them rather than stop the behavior, and CoTs aren't always faithful anyway. Internal probes are a complementary layer that's harder for the model to game through its text. Evaluation awareness makes this more urgent — Anthropic used interpretability on Claude Sonnet 4.5 to find "this is a test" representations and showed that suppressing them changes behavior, which is a direct use of interpretability to check whether our evals can be trusted.</p></div>
+</section>
+
+<!-- ============================== §9 ============================== -->
+<h2 class="sec" id="s-code"><span class="num">§9 · CODE</span>动手：两个 numpy 小实验</h2>
+<p class="sec-intro">两个脚本都只依赖 numpy，CPU 上分别约 20 秒和不到 1 秒，已实际运行验证。建议先自己写一遍再对照。它们把 §4 和 §5 的概念变成可以“看到”的数字。</p>
+
+<section class="concept" id="c-code-sae">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>实验 1：在叠加特征上训练 SAE，恢复真值方向</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>造 48 个稀疏特征压进 16 维的数据，PCA 一个特征也找不回；L1 SAE 和 TopK SAE 能把绝大部分特征方向找回（余弦 &gt; 0.9）。</p><p class="en">On synthetic data with 48 sparse features in 16 dimensions, PCA recovers none of them while L1 and TopK SAEs recover most or all feature directions.</p></div>
+  <div class="deep">
+    <p><strong>设置</strong>：\(n = 48\) 个单位方向随机特征 \(f_i \in \mathbb{R}^{16}\)，每个以 4% 的概率激活、幅度 U(0.5, 1.5)，\(x = \sum_i c_i f_i\)（平均约 1.9 个特征同时激活）。SAE 字典大小 \(M = 96\)。评估每个真值特征与“最匹配的 decoder 行”的余弦。</p>
+    <p><strong>实际输出</strong>（seed 固定）：</p>
+<pre><code class="language-text">l1    FVU=0.190  L0=4.22  alive=63/96  recovered=42/48  median max-cos=0.965
+topk  FVU=0.104  L0=4.00  alive=73/96  recovered=48/48  median max-cos=0.988
+PCA baseline recovered=0/48  (only d=16 orthogonal directions)</code></pre>
+    <p><strong>值得观察的点</strong>：</p>
+    <ul>
+      <li>L1 SAE 的 \(\lambda\) 很敏感：我先试 \(\lambda = 0.003\) 时 MSE 几乎为 0，但 L0 ≈ 31（远超真实的 ~2），只恢复了 2–3/48 个特征——<strong>重建好 ≠ 找到了正确的特征</strong>。调到 \(\lambda=0.5\) 后 L0 降到约 4，恢复 42/48，但 FVU 上升到 0.19（shrinkage）。这就是 L1 的 trade-off。</li>
+      <li>TopK 直接设 \(k=4\)，不需要调 \(\lambda\)，恢复全部 48 个且 FVU 更低——对应 Gao et al. 的论点。</li>
+      <li>有 20–30 个 latent 是“死”的：字典是真值的 2 倍，多余的没被用上。真实 SAE 中 dead latents 也是主要工程问题。</li>
+    </ul>
+  </div>
+  <details class="deep"><summary>代码：sae_superposition.py（numpy，手写反向传播 + Adam）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+
+# ---------- 1. Synthetic data: n sparse features superposed in d &lt; n dims ----------
+rng = np.random.default_rng(0)
+d, n, p_active = 16, 48, 0.04                # 48 true features squeezed into 16 dims
+F_true = rng.normal(size=(n, d))
+F_true /= np.linalg.norm(F_true, axis=1, keepdims=True)   # unit feature directions
+
+def sample(B):
+    c = (rng.random((B, n)) &lt; p_active) * rng.uniform(0.5, 1.5, size=(B, n))
+    return c @ F_true, c                     # x = sum_i c_i f_i, shape (B, d)
+
+# ---------- 2. SAE  z = act(W_enc^T (x - b_dec) + b_enc),  x_hat = W_dec^T z + b_dec ----------
+def encode(x, P, kind, k):
+    pre = (x - P["b_dec"]) @ P["W_enc"] + P["b_enc"]
+    if kind == "l1":                         # ReLU SAE, sparsity from the L1 penalty
+        mask = pre &gt; 0
+    else:                                    # TopK SAE, keep k largest pre-activations
+        thr = np.partition(pre, -k, axis=1)[:, -k][:, None]
+        mask = (pre &gt;= thr) &amp; (pre &gt; 0)
+    return pre * mask, mask
+
+def train(kind, m=96, k=4, lam=0.5, lr=1e-2, steps=6000, B=1024, seed=1):
+    r = np.random.default_rng(seed)
+    W_enc = r.normal(scale=0.1, size=(d, m))
+    W_dec = W_enc.T / np.linalg.norm(W_enc.T, axis=1, keepdims=True)  # tied init
+    P = {"W_enc": W_enc, "b_enc": np.zeros(m), "W_dec": W_dec.copy(), "b_dec": np.zeros(d)}
+    M = {key: np.zeros_like(v) for key, v in P.items()}
+    V = {key: np.zeros_like(v) for key, v in P.items()}
+    for t in range(1, steps + 1):
+        x, _ = sample(B)
+        z, mask = encode(x, P, kind, k)
+        err = z @ P["W_dec"] + P["b_dec"] - x          # (B, d)
+        # loss = mean_b ||err||^2  (+ lam * mean_b ||z||_1 for the L1 SAE)
+        g_xhat = 2 * err / B
+        g_z = g_xhat @ P["W_dec"].T
+        if kind == "l1":
+            g_z = g_z + lam * np.sign(z) / B
+        g_pre = g_z * mask
+        G = {"W_dec": z.T @ g_xhat,
+             "W_enc": (x - P["b_dec"]).T @ g_pre,
+             "b_enc": g_pre.sum(0),
+             "b_dec": g_xhat.sum(0) - (g_pre @ P["W_enc"].T).sum(0)}
+        for key in P:                                    # Adam
+            M[key] = 0.9 * M[key] + 0.1 * G[key]
+            V[key] = 0.999 * V[key] + 0.001 * G[key] ** 2
+            P[key] -= lr * (M[key] / (1 - 0.9 ** t)) / (np.sqrt(V[key] / (1 - 0.999 ** t)) + 1e-8)
+        # unit-norm decoder rows: otherwise L1 is "cheated" by shrinking z and growing W_dec
+        P["W_dec"] /= np.linalg.norm(P["W_dec"], axis=1, keepdims=True)
+    return P
+
+# ---------- 3. Evaluate: does every true feature get its own latent? ----------
+def evaluate(P, kind, k=4):
+    x, c = sample(20000)
+    z, _ = encode(x, P, kind, k)
+    fvu = ((z @ P["W_dec"] + P["b_dec"] - x) ** 2).sum() / ((x - x.mean(0)) ** 2).sum()
+    best = (F_true @ P["W_dec"].T).max(1)            # best-matching latent per true feature
+    return dict(fvu=fvu, L0=(z &gt; 0).sum(1).mean(), alive=int((z &gt; 0).any(0).sum()),
+                recovered=int((best &gt; 0.9).sum()), median_cos=float(np.median(best)))
+
+if __name__ == "__main__":
+    for kind in ["l1", "topk"]:
+        res = evaluate(train(kind), kind)
+        print(f"{kind:5s} FVU={res['fvu']:.3f}  L0={res['L0']:.2f}  alive={res['alive']}/96  "
+              f"recovered={res['recovered']}/{n}  median max-cos={res['median_cos']:.3f}")
+        assert res["recovered"] &gt;= 0.8 * n
+    xs, _ = sample(20000)
+    _, _, Vt = np.linalg.svd(xs - xs.mean(0), full_matrices=False)
+    pca = int((np.abs(F_true @ Vt.T).max(1) &gt; 0.9).sum())
+    print(f"PCA baseline recovered={pca}/{n}  (only d={d} orthogonal directions)")
+    assert pca &lt;= 4</code></pre>
+  </div></details>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I like a toy check before trusting an SAE on a real model: generate sparse ground-truth features in superposition, train the SAE, and measure how many true directions it recovers. In my version, with 48 features in 16 dimensions, PCA recovers none, while a TopK SAE recovers all of them. It also shows the L1 failure mode clearly — with too small a penalty you get near-perfect reconstruction but dense, wrong features.</p></div>
+</section>
+
+<section class="concept" id="c-code-patch">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>实验 2：在小 MLP 上做 activation patching、attribution patching 与 ablation</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>训练一个 6→16→16→1 的 MLP 去拟合“比较 x0 和 x1”加“x2·x3”两个子任务；用交换 x0/x1 的 corrupted 输入做 patching，找出负责比较的神经元，并对比 attribution patching 与 zero / mean ablation。</p><p class="en">A tiny MLP solves two subtasks; patching with a counterfactual that swaps x0 and x1 localizes the comparison neurons, and we compare attribution patching and zero versus mean ablation.</p></div>
+  <div class="deep">
+    <p><strong>实际输出</strong>：</p>
+<pre><code class="language-text">test MSE 0.0004  (target variance 0.719)
+metric clean 1.013  corrupted -0.981
+layer1: top units [6, 8, 11, 2] restored [0.59, 0.4, 0.09, 0.04]  | corr(patch, AtP) = 0.824
+layer2: top units [1, 13, 6, 3] restored [0.31, 0.16, 0.15, 0.11]  | corr(patch, AtP) = 1.000
+|W1[x0]-W1[x1]| of top-3 units: [2.1, 1.52, 1.02]  median over all: 0.33
+ablate unit 6: zero -> 0.101, mean -> 0.825  (clean 1.013)
+OK</code></pre>
+    <p><strong>解读</strong>：</p>
+    <ul>
+      <li>第 1 层只有少数几个神经元（6、8）就恢复了大部分 logit 差，它们正是对 \(x_0 - x_1\) 权重最大的神经元——patching 定位到了“比较子任务”的组件，而负责 \(x_2x_3\) 的神经元效应≈0（因为 corrupted 输入没改 x2、x3，这正是 counterfactual 设计的作用：只测你关心的那一点信息）。</li>
+      <li>第 2 层到输出是线性的，所以 attribution patching = activation patching（相关系数 1.000，代码中有 assert）；第 1 层隔着一个 ReLU，近似误差出现（相关 0.82）。</li>
+      <li>单个神经元效应加起来不等于 1：存在交互（非线性），这也是为什么要做 path patching / 组合 patching。代码中验证了 patch <strong>整层</strong>能 100% 恢复（这一层是计算图的一个割）。</li>
+      <li>同一个神经元：zero ablation 把 metric 从 1.01 降到 0.10，mean ablation 只降到 0.83——替换值的选择会大幅改变“重要性”的结论。</li>
+    </ul>
+  </div>
+  <details class="deep"><summary>代码：toy_patching.py（numpy）</summary><div class="inner">
+<pre><code class="language-python">import numpy as np
+
+rng = np.random.default_rng(0)
+
+# ---------- 1. Train a tiny MLP: 6 -&gt; 16 -&gt; 16 -&gt; 1 ----------
+# Target mixes a "comparison" sub-task (x0 vs x1) and an unrelated "product" sub-task (x2*x3).
+def target(X):
+    return np.tanh(3 * (X[:, 0] - X[:, 1])) + 0.5 * X[:, 2] * X[:, 3]
+
+D, H = 6, 16
+P = {"W1": rng.normal(scale=0.5, size=(D, H)), "b1": np.zeros(H),
+     "W2": rng.normal(scale=0.3, size=(H, H)), "b2": np.zeros(H),
+     "w3": rng.normal(scale=0.3, size=H), "b3": np.zeros(1)}
+
+def forward(X, P, patch=None):
+    """patch = (layer, idx, values): overwrite hidden units idx of layer with values."""
+    h1 = np.maximum(X @ P["W1"] + P["b1"], 0)
+    if patch and patch[0] == 1:
+        h1 = h1.copy(); h1[:, patch[1]] = patch[2]
+    h2 = np.maximum(h1 @ P["W2"] + P["b2"], 0)
+    if patch and patch[0] == 2:
+        h2 = h2.copy(); h2[:, patch[1]] = patch[2]
+    y = h2 @ P["w3"] + P["b3"]
+    return y, h1, h2
+
+M = {k: np.zeros_like(v) for k, v in P.items()}; V = {k: np.zeros_like(v) for k, v in P.items()}
+for t in range(1, 4001):
+    X = rng.uniform(-1, 1, size=(256, D)); Y = target(X)
+    y, h1, h2 = forward(X, P)
+    g_y = 2 * (y - Y) / len(X)
+    g_h2 = np.outer(g_y, P["w3"]) * (h2 &gt; 0)
+    g_h1 = (g_h2 @ P["W2"].T) * (h1 &gt; 0)
+    G = {"w3": h2.T @ g_y, "b3": np.array([g_y.sum()]),
+         "W2": h1.T @ g_h2, "b2": g_h2.sum(0), "W1": X.T @ g_h1, "b1": g_h1.sum(0)}
+    for k in P:
+        M[k] = 0.9 * M[k] + 0.1 * G[k]; V[k] = 0.999 * V[k] + 0.001 * G[k] ** 2
+        P[k] -= 3e-3 * (M[k] / (1 - 0.9 ** t)) / (np.sqrt(V[k] / (1 - 0.999 ** t)) + 1e-8)
+Xt = rng.uniform(-1, 1, size=(4000, D))
+mse = ((forward(Xt, P)[0] - target(Xt)) ** 2).mean()
+print(f"test MSE {mse:.4f}  (target variance {target(Xt).var():.3f})")
+
+# ---------- 2. Clean / corrupted pair: corrupt = swap x0 and x1 (flip the comparison only) ----------
+N = 512
+X_clean = rng.uniform(-1, 1, size=(N, D)); X_clean[:, 0] = rng.uniform(0.3, 1, N); X_clean[:, 1] = rng.uniform(-1, -0.3, N)
+X_corr = X_clean.copy(); X_corr[:, [0, 1]] = X_clean[:, [1, 0]]
+y_clean, h1_c, h2_c = forward(X_clean, P)
+y_corr, h1_x, h2_x = forward(X_corr, P)
+metric = lambda y: y.mean()                  # metric = mean output (like a logit difference)
+m_clean, m_corr = metric(y_clean), metric(y_corr)
+print(f"metric clean {m_clean:.3f}  corrupted {m_corr:.3f}")
+
+# ---------- 3. Activation patching (denoising): run corrupted, restore ONE unit from clean ----------
+def patch_effect(layer, i):
+    src = h1_c if layer == 1 else h2_c
+    y, _, _ = forward(X_corr, P, patch=(layer, [i], src[:, [i]]))
+    return (metric(y) - m_corr) / (m_clean - m_corr)   # fraction of clean behaviour restored
+
+eff1 = np.array([patch_effect(1, i) for i in range(H)])
+eff2 = np.array([patch_effect(2, i) for i in range(H)])
+
+# ---------- 4. Attribution patching: first-order Taylor approximation, 1 fwd+bwd per run ----------
+# effect_i ~= (dmetric/dh_i at corrupted run) * (h_i_clean - h_i_corr)
+g_y = np.ones(N) / N                                   # d metric / d y
+g_h2 = np.outer(g_y, P["w3"])                          # d metric / d h2 (h2 is post-ReLU)
+g_h1 = ((g_h2 * (h2_x &gt; 0)) @ P["W2"].T)               # d metric / d h1
+atp2 = (g_h2 * (h2_c - h2_x)).sum(0) / (m_clean - m_corr)
+atp1 = (g_h1 * (h1_c - h1_x)).sum(0) / (m_clean - m_corr)
+
+for name, e, a in [("layer1", eff1, atp1), ("layer2", eff2, atp2)]:
+    top = np.argsort(-np.abs(e))[:4]
+    print(f"{name}: top units {top.tolist()} restored {np.round(e[top], 2).tolist()}  "
+          f"| corr(patch, AtP) = {np.corrcoef(e, a)[0, 1]:.3f}")
+
+# ---------- 5. Sanity checks on what patching found ----------
+# Layer-2 attribution is exact (output is linear in h2), so AtP == patching there.
+assert np.allclose(eff2, atp2, atol=1e-8)
+# Units with big layer-1 effects should be the ones that read x0 - x1 (not x2, x3).
+sel = P["W1"][0] - P["W1"][1]                          # sensitivity of each unit to x0-x1
+top1 = np.argsort(-np.abs(eff1))[:3]
+print("|W1[x0]-W1[x1]| of top-3 units:", np.round(np.abs(sel[top1]), 2).tolist(),
+      " median over all:", round(float(np.median(np.abs(sel))), 2))
+assert np.abs(sel[top1]).min() &gt; np.median(np.abs(sel))
+# Patching ALL layer-1 units restores the clean run completely (it is a cut of the graph).
+y_all, _, _ = forward(X_corr, P, patch=(1, list(range(H)), h1_c))
+assert np.isclose(metric(y_all), m_clean)
+
+# ---------- 6. Ablations: zero vs mean ablation of the top layer-1 unit, on clean inputs ----------
+u = top1[0]
+y_zero, _, _ = forward(X_clean, P, patch=(1, [u], np.zeros((N, 1))))
+mean_act = np.maximum(rng.uniform(-1, 1, size=(4000, D)) @ P["W1"] + P["b1"], 0)[:, u].mean()
+y_mean, _, _ = forward(X_clean, P, patch=(1, [u], np.full((N, 1), mean_act)))
+print(f"ablate unit {u}: zero -&gt; {metric(y_zero):.3f}, mean -&gt; {metric(y_mean):.3f}  (clean {m_clean:.3f})")
+print("OK")</code></pre>
+  </div></details>
+  <div class="exercise deep"><div class="ex-head"><b>练习 9.1</b> · 难度 ★★</div><p>把实验 2 改成 <strong>noising</strong> 方向：在 clean run 中把单个神经元换成 corrupted 值，计算 \((m_{\text{clean}} - m_{\text{patched}})/(m_{\text{clean}} - m_{\text{corr}})\)。与 denoising 结果比较，哪些神经元排名变了？为什么？</p><details><summary>提示</summary><div class="inner">复用 <code>forward(X_clean, P, patch=(1, [i], h1_x[:, [i]]))</code>。如果两个神经元在 ReLU 之后共同推动下一层的某个单元越过阈值（AND），denoising 单独恢复一个可能不够，而 noising 破坏任一个都会有效果。</div></details><details><summary>参考答案</summary><div class="inner"><pre><code class="language-python">noise1 = np.array([
+    (m_clean - metric(forward(X_clean, P, patch=(1, [i], h1_x[:, [i]]))[0]))
+    / (m_clean - m_corr) for i in range(H)])
+print(np.round(noise1, 2), np.argsort(-noise1)[:4])</code></pre><p>对于输出线性的第 2 层，noising 和 denoising 的效应完全相同（线性 ⇒ 可加）。在第 1 层，由于 ReLU，两者数值会不同；排名通常大致一致（主要组件相同），差异来自交互项。结论：报告 patching 结果时说明方向，并且两个方向都看。</p></div></details></div>
+  <div class="exercise deep"><div class="ex-head"><b>练习 9.2</b> · 难度 ★★</div><p>在实验 1 中，把稀疏度从 4% 提高到 30%（特征变得密集）。预测并验证：SAE 的恢复数会怎样变化？这和 Toy Models of Superposition 的哪个结论对应？</p><details><summary>提示</summary><div class="inner">平均同时激活的特征数从约 2 增至约 14，已经接近维度 16。</div></details><details><summary>参考答案</summary><div class="inner"><p>实测（30% 稀疏度，TopK k=4 或 k=14）：恢复数都降到 <strong>0/48</strong>；k=14 时 FVU 低至 0.002，重建几乎完美，但字典方向与真值特征不对应（余弦中位数约 0.6）。原因：特征不再稀疏，线性测量 \(x = Fc\) 无法唯一确定 \(c\)（压缩感知的条件不满足），干扰无法被 ReLU 滤除。对应 toy models 的结论：superposition 只在特征稀疏时是可行（也是可逆）的；稠密时模型本身也会倾向于只表示最重要的 \(d\) 个特征（PCA 式）。</p></div></details></div>
+  <div class="exercise deep"><div class="ex-head"><b>练习 9.3</b> · 难度 ★★★</div><p>在实验 2 中实现 directional steering：用 clean 与 corrupted 在第 1 层的平均差 \(v = \bar h_1^{\text{clean}} - \bar h_1^{\text{corr}}\)，在 corrupted run 上加 \(\alpha v\)（注意加完要保持 ReLU 后的非负性吗？）。画出 metric 随 \(\alpha\) 的曲线。</p><details><summary>提示</summary><div class="inner">在 <code>forward</code> 中增加一个 <code>steer</code> 参数，在 <code>h1</code> 计算之后执行 <code>h1 = h1 + alpha * v</code>。由于加在 ReLU 之后，下一层线性读取，不必再截断（截断会改变干预的性质）。</div></details><details><summary>参考答案</summary><div class="inner"><pre><code class="language-python">v = h1_c.mean(0) - h1_x.mean(0)
+def forward_steer(X, alpha):
+    h1 = np.maximum(X @ P["W1"] + P["b1"], 0) + alpha * v   # add after the ReLU
+    h2 = np.maximum(h1 @ P["W2"] + P["b2"], 0)
+    return h2 @ P["w3"] + P["b3"]
+for a in [0, 0.5, 1, 1.5, 2, 3, 5]:
+    print(a, round(metric(forward_steer(X_corr, a)), 3))</code></pre>
+<p>实际输出：α = 0, 0.5, 1, 1.5, 2, 3, 5 对应 metric ≈ −0.98, 0.28, 1.01, 1.77, 2.52, 4.03, 7.03。α = 1 时几乎正好恢复 clean 的 1.01（加的是平均差）；之后 metric 近似线性地<strong>继续增长、远超 clean 值</strong>，因为这个小网络的第二层 ReLU 大多处于激活区，没有饱和。这对应 LLM steering 中的“过冲”（overshoot）：强度过大时行为被推到训练分布从未出现的极端，在真实模型中表现为输出重复、不连贯。教训：steering 强度必须扫描，并同时监测目标行为和副作用。</p></div></details></div>
+</section>
+
+<!-- ============================== §10 ============================== -->
+<h2 class="sec" id="s-research"><span class="num">§10 · RESEARCH DISCUSSION</span>研究讨论题</h2>
+<p class="sec-intro">每题给出：中文思路要点 + 一段约 1 分钟的英文回答。练习时先用英文出声回答，再对照。好的回答结构：<strong>立场 → 理由/证据 → 局限 → 你会做的实验</strong>。</p>
+
+<section class="concept" id="c-rq">
+  <div class="concept-head"><span class="pri p1">★</span><h3>10 道开放讨论题（附 1 分钟英文回答）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>面试官想看的是：你能把方法和局限说准，有自己的判断，并能把 interp 和自己的研究方向（推理、RL、agents）连起来提出可执行的实验。</p><p class="en">Interviewers want precise methods and limitations, a clear opinion, and a concrete experiment that connects interpretability to your own area.</p></div>
+
+  <h4 id="rq1">Q1. Is mechanistic interpretability on track to be useful for safety of frontier models?</h4>
+  <div class="deep"><p>要点：区分“完全理解”（不现实）与“targeted 用途”（审计、检测、验证评估）；给证据（sleeper agent probes、隐藏目标审计、eval awareness steering）；指出挑战（dark matter、attention 未解释、劳动密集、SAE 不敌基线）。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'm cautiously optimistic, but about a narrower goal than full reverse-engineering. Complete understanding of a frontier model seems out of reach — attribution graphs still leave large error terms and don't explain attention, and each graph needs hours of human analysis. But targeted uses already work: linear probes catch backdoored sleeper agents, interpretability helped auditors uncover a hidden objective, and Anthropic used it to check whether evaluation awareness was affecting a model's safety results. So I think the near-term value is as a set of auditing and monitoring tools that complement behavioral evals, rather than as a proof that a model is safe.</p></div>
+
+  <h4 id="rq2">Q2. SAEs vs linear probes: when would you use which?</h4>
+  <div class="deep"><p>要点：已知概念 + 有标签 → probe / diff-in-means（便宜、强、OOD 好）；未知行为 / 发现 / model diffing → SAE。引用 AxBench、GDM 负结果。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If I know the concept and can get labels, I'd start with a linear probe or a difference-in-means direction — they're cheap and, in recent comparisons like AxBench and DeepMind's out-of-distribution probing study, they match or beat SAE-based methods. SAEs earn their keep when I don't know what I'm looking for: exploring what a model represents on some unusual input, finding spurious correlations in a dataset, or diffing a base and fine-tuned model to see what training changed. So it's supervised tools for detection and control, unsupervised dictionaries for discovery and hypothesis generation.</p></div>
+
+  <h4 id="rq3">Q3. How would you use interpretability to study what RL post-training changes in a model?</h4>
+  <div class="deep"><p>要点：crosscoder / model diffing（base vs RL 模型）；比较 activation 差的主方向；检查 RL 后新增的行为（反思、“wait”）是否对应少数方向（steering 验证）；看能力是“新学的”还是“放大已有的”（与 pass@k 争论相连：如果 RL 只是放大 base 中已有的方向，支持“RL 主要是重加权”的观点）。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'd frame it as model diffing. First, a cheap version: compute the mean activation difference between the base and RL'd model on the same prompts, layer by layer, and test whether a few directions explain most of it — then steer the base model with them to see if it reproduces RL behaviors like self-verification. A richer version trains a crosscoder on both models and looks for features that exist only in the RL model. This connects to the debate about whether RL teaches new capabilities or mostly reweights existing ones: if base-model steering along a few directions recovers most of the gains, that's evidence for reweighting.</p></div>
+
+  <h4 id="rq4">Q4. Can we trust chain-of-thought as an explanation of a reasoning model's behavior?</h4>
+  <div class="deep"><p>要点：部分可以；证据显示有时不忠实（提示答案反推、编造）；检验方法：干预 CoT（截断、插入错误、改写）看答案是否变化，probe 早期是否已知答案；保持 monitorability 的重要性。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Partially. For hard problems the model genuinely needs the CoT as working memory, so it carries real information, but there's good evidence it's not always faithful — models sometimes work backward from a hinted answer, or produce a plausible-looking derivation that doesn't match their internal computation. I'd test faithfulness causally: truncate or corrupt the CoT and see whether the answer changes, and probe the activations to see if the answer is already decodable before the reasoning is written. Practically, I think CoT is a valuable but fragile monitoring channel, and we should avoid training directly against it.</p></div>
+
+  <h4 id="rq5">Q5. Propose an interpretability project on long-horizon agents.</h4>
+  <div class="deep"><p>要点：问题 → 方法 → 评估。例：agent 失败前是否有内部信号（状态追踪 probe 衰减、“迷失”方向）；用 probe 预测失败并触发 replanning；因果验证（steer 状态表示）。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>One project I'd like is predicting agent failures from internals. Long-horizon agents often fail because they lose track of task state — which subgoals are done, what the environment looks like. I'd train linear probes on the residual stream to decode verifiable state variables at every step, and test whether probe accuracy drops before the agent makes an error. If it does, I'd use the probe as a trigger to re-summarize state or replan, and measure the gain in task success. The causal check is to steer the state representation — mark a subgoal as done when it isn't — and see whether the agent skips it.</p></div>
+
+  <h4 id="rq6">Q6. What's the difference between correlational and causal evidence in interpretability, and why does it matter?</h4>
+  <div class="deep"><p>要点：probe/attention/激活最大样本 = 相关；patching/ablation/steering = 因果；必要 vs 充分；interpretability illusions。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Correlational evidence says a representation co-varies with a concept — a probe can decode it, or a feature fires on certain examples. Causal evidence says the model actually uses it: changing the representation changes the output in the predicted way. It matters because high-dimensional activations contain lots of decodable information the model ignores, and plausible stories from attention maps or top-activating examples can be illusions. I try to show both necessity, through ablation or noising, and sufficiency, through patching or steering, and to use on-distribution interventions like resampling so I'm not just breaking the model.</p></div>
+
+  <h4 id="rq7">Q7. Why do you think features end up linear, and what would change your mind?</h4>
+  <div class="deep"><p>要点：线性读写是 Transformer 的原生操作；superposition 理论；反例（圆形特征）；会改变看法的证据：重要行为只能由非线性/多维结构解释、线性干预系统性失败。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The architecture strongly favors it: every component reads the residual stream with linear maps, so a feature that downstream layers can use cheaply should be a direction. Superposition theory adds that sparse features can share space as nearly orthogonal directions. And empirically, steering and directional ablation work surprisingly often, like the single refusal direction. What would change my mind is evidence that important behaviors depend on structures that linear tools systematically miss. We already know about circular features for days and months, so I'd say the right version is "low-dimensional linear subspaces", not "one direction per concept".</p></div>
+
+  <h4 id="rq8">Q8. How would you evaluate whether an interpretability method is actually good?</h4>
+  <div class="deep"><p>要点：ground truth（toy 模型、植入的电路/后门、model organism）；downstream 任务效用（AxBench 思路）；faithfulness 干预；与简单基线比较；sanity checks（随机模型）。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Three ways. First, ground truth: test on models where we planted the answer — synthetic superposition, compiled or trained-in circuits, or model organisms with a known backdoor — and check whether the method recovers it. Second, downstream utility: does it help on a task someone cares about, like detecting a hidden objective or steering a behavior, compared with strong simple baselines such as prompting or linear probes? Third, sanity checks: run it on a randomly initialized model or with shuffled labels, because some methods produce convincing-looking outputs regardless of what the model learned.</p></div>
+
+  <h4 id="rq9">Q9. Steering vectors or fine-tuning for controlling a deployed model's behavior?</h4>
+  <div class="deep"><p>要点：见 §6 对比表；部署通常用 fine-tuning + prompting；steering 适合可调控制、监控、快速验证；可靠性和副作用问题。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For a production behavior change, I'd usually rely on fine-tuning plus prompting, because they're more reliable across inputs and better studied. Steering is attractive when you want continuous, reversible control at inference time, or when the same direction doubles as a monitor — persona vectors are a good example, used both to detect drift and to prevent it during training. Its weaknesses are variance across inputs and capability degradation at high strength. So I see steering as a precise scientific tool and a complementary control knob, not a replacement for training.</p></div>
+
+  <h4 id="rq10">Q10. Could interpretability help with reward hacking in RL training?</h4>
+  <div class="deep"><p>要点：用 probe 检测 hacking 意图（作为监控而非奖励，避免 Goodhart）；model diffing 看 hacking 相关特征何时出现；用 SAE 发现奖励模型的 spurious features；风险：对 probe 直接优化会被绕过。</p></div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I think so, mainly as monitoring. You could train a probe on examples of known hacks, like editing tests instead of fixing code, and track its activation during RL to catch new hacks early. Interpretability on the reward model itself is also useful: SAE features or attribution can reveal spurious cues it rewards, like length or certain phrases. The big caveat is Goodhart's law — if you put the probe into the reward, the policy is optimized to evade it, possibly by obfuscating its internals. So I'd keep internal monitors out of the training signal and use them for detection and for deciding when to stop or fix the environment.</p></div>
+</section>
+
+<!-- ============================== CHEAT SHEET ============================== -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET 一页速查</span>一页速查</h2>
+<p class="sec-intro">面试前一晚看这一页。</p>
+<div class="table-wrap"><table>
+  <tr><th>主题</th><th>必须记住</th></tr>
+  <tr><td>Residual stream</td><td>\(x_L = \text{emb} + \sum \text{heads} + \sum \text{MLPs}\)；logits \(= W_U\text{LN}(x_L)\)；无特权基 → 看方向不看坐标</td></tr>
+  <tr><td>QK / OV</td><td>\(W_{QK} = W_Q^\top W_K\)（往哪看），\(W_{OV} = W_O W_V\)（搬什么）；秩 ≤ \(d_{\text{head}}\)；只有乘积有意义</td></tr>
+  <tr><td>Composition</td><td>Q / K / V-composition；induction = previous-token head + K-composition + copying OV</td></tr>
+  <tr><td>DLA</td><td>冻结 LN 尺度，组件输出 · \((W_U[\text{correct}] - W_U[\text{wrong}])\)；只测直接效应</td></tr>
+  <tr><td>Logit / tuned lens</td><td>\(W_U\text{LN}_f(x_\ell)\)；tuned：每层学 \(A_\ell x + b_\ell\)，最小化 KL 到最终分布</td></tr>
+  <tr><td>Probe</td><td>线性 probe；可读 ≠ 被使用；control task → selectivity = acc(real) − acc(control)</td></tr>
+  <tr><td>Patching</td><td>effect = \((m_{\text{patched}} - m_*)/(m_c - m_*)\)；denoising ≈ 充分性，noising ≈ 必要性；metric 用 logit diff；corruption 用反事实 prompt 而非高斯噪声</td></tr>
+  <tr><td>Attribution patching</td><td>\(\nabla_a m|_{*} \cdot (a_c - a_*)\)；~3 次 pass 估计全部组件；attention 饱和处不准（AtP*）</td></tr>
+  <tr><td>Ablation</td><td>zero（离分布）/ mean / resample（causal scrubbing）/ directional</td></tr>
+  <tr><td>电路</td><td>IOI：duplicate/induction → S-inhibition（改 name mover 的 Q）→ name movers；backup &amp; negative name movers；ACDC 自动删边</td></tr>
+  <tr><td>Superposition</td><td>稀疏 + 非线性 ⇒ 特征数 &gt; 维度；线性模型 = PCA 不叠加；几何：antipodal、三角形、五边形</td></tr>
+  <tr><td>SAE</td><td>\(z = \text{ReLU}(W_e(x - b_d) + b_e)\)，\(\hat x = W_d z + b_d\)，\(L = \|x-\hat x\|^2 + \lambda\sum z_i\|d_i\|\)；约束 decoder 范数；指标：L0、FVU、downstream CE</td></tr>
+  <tr><td>SAE 变体</td><td>TopK（OpenAI，GPT-4 上 16M latent）；JumpReLU（GDM，Gemma Scope）；Gated（缓解 shrinkage）</td></tr>
+  <tr><td>Scaling Monosemanticity</td><td>Claude 3 Sonnet 中间层，约 1M/4M/34M 特征；多语言多模态；安全相关特征；Golden Gate Claude</td></tr>
+  <tr><td>SAE 病理</td><td>feature splitting、absorption、dead latents、dark matter；2025：AxBench、GDM 负结果 → 已知概念用简单基线</td></tr>
+  <tr><td>Transcoder / CLT</td><td>近似 MLP 的输入→输出；attribution graph：冻结 attention 与 LN、加误差节点、边 = 激活 × 虚拟权重</td></tr>
+  <tr><td>Steering</td><td>CAA：\(v = \text{mean}(h^+ - h^-)\)，\(h \leftarrow h + \alpha v\)；中间层；拒答 = 单一方向（投影掉即失效）；ITI：top-K head 上平移 \(\alpha\sigma\)</td></tr>
+  <tr><td>ROME</td><td>MLP = key-value；rank-1 更新 \(\hat W = W + (v_* - Wk_*)(C^{-1}k_*)^\top / ((C^{-1}k_*)^\top k_*)\)；定位 ≠ 最佳编辑位置</td></tr>
+  <tr><td>Grokking</td><td>mod 113 加法：Fourier 频率 + 三角恒等式；记忆 → 电路形成 → 清理</td></tr>
+  <tr><td>安全</td><td>sleeper agent defection probes；欺骗 probe（有误报）；CoT monitorability 脆弱；eval awareness</td></tr>
+</table></div>
+
+<h4>高频面试题清单</h4>
+<ol>
+  <li>What is the residual stream view of a transformer? → <a href="#c-residual">Residual stream</a></li>
+  <li>Explain QK and OV circuits. → <a href="#c-qkov">QK/OV</a></li>
+  <li>What is the logit lens and why might it fail? → <a href="#c-lens">Logit lens</a></li>
+  <li>Your probe has high accuracy — what does that tell you? → <a href="#c-probe">Probe</a>、<a href="#c-control">Control tasks</a></li>
+  <li>Walk me through activation patching. Denoising vs noising? → <a href="#c-patching">Patching</a></li>
+  <li>What is attribution patching and when does it fail? → <a href="#c-atp">AtP</a></li>
+  <li>Zero vs mean vs resample ablation? → <a href="#c-ablation">Ablation</a></li>
+  <li>Describe the IOI circuit. → <a href="#c-circuit-discovery">IOI / ACDC</a></li>
+  <li>What is superposition and why does it happen? → <a href="#c-superposition">Toy Models</a></li>
+  <li>Write down the SAE objective. Why normalize decoder columns? → <a href="#c-sae">SAE</a></li>
+  <li>What are the limitations of SAEs? → <a href="#c-scaling-mono">Scaling Monosemanticity</a>、<a href="#c-sae-critique">SAE critiques</a></li>
+  <li>What are transcoders / attribution graphs? → <a href="#c-transcoder">Transcoders</a></li>
+  <li>How do steering vectors work? Steering vs fine-tuning? → <a href="#c-actadd">CAA</a>、<a href="#c-steer-vs-ft">vs FT</a></li>
+  <li>Explain induction heads. → <a href="#c-induction">Induction heads</a></li>
+  <li>How can interpretability help safety? → <a href="#c-deception">Deception</a>、<a href="#c-cot-monitor">CoT monitoring</a></li>
+</ol>
+
+<p style="font-size:13.5px;color:var(--muted)">工具与资源（自学用）：TransformerLens、nnsight、SAELens、Neuronpedia（在线浏览 SAE 特征和 attribution graph）、ARENA 课程的 interpretability 章节。</p>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m11" data-title="模块 11 自测卡片"></div>
+<div class="footer-nav"><a href="m10-agents.html">← 10 Agents</a><a href="m12-generative.html">12 生成模型补充 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m11.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
