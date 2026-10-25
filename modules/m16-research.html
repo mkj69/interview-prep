@@ -1,0 +1,959 @@
+<!doctype html>
+<html lang="zh-CN" data-root="..">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>16 · 研究讨论轮 · Interview Prep</title>
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+</head>
+<body data-module="m16">
+<div class="reading-progress"></div>
+<div class="mobile-head"><a href="../index.html">← 路线图</a><a href="../review.html">复习卡片</a></div>
+<div class="shell">
+  <aside class="rail">
+    <a class="brand" href="../index.html"><span class="brand-logo">Prep<i>.</i></span><small>RS INTERVIEW<br>NOTEBOOK</small></a>
+    <div><p class="rail-label">Modules</p><nav id="module-nav"></nav></div>
+    <div><p class="rail-label">On this page</p><nav class="toc" id="toc"></nav></div>
+    <div class="rail-footer"><a href="../review.html">↻ 间隔重复复习</a><br><a href="https://mkj69.github.io/">← mkj69.github.io</a></div>
+  </aside>
+  <main>
+    <div class="toolbar">
+      <button class="chip-btn" id="speed-toggle" type="button" aria-pressed="false">速记模式</button>
+      <button class="chip-btn" id="expand-toggle" type="button" aria-pressed="false">全部展开</button>
+      <span class="spacer"></span><span class="stat" id="deck-stat"></span>
+    </div>
+    <div class="page">
+
+<div class="eyebrow">Module 16 · Phase 4</div>
+<h1 class="title">研究讨论轮：<em>像研究者一样说话</em></h1>
+<p class="lede">Coding 轮考你能不能写，知识轮考你懂不懂，研究讨论轮（research discussion / research deep-dive）考的是：你是不是一个面试官愿意每周一起开组会的人。这一章把这类面试拆成可以练习的动作：讲论文、讲自己的研究、批判论文、现场提 idea、聊研究品味，并配一份核实过链接的必读论文清单和三段完整的英文模拟对话。</p>
+
+<div class="callout"><b>这一章的目标。</b>学完以后你应该能：(1) 用 5 分钟、固定结构讲清楚任何一篇论文（问题 → 方法 → 证据 → 局限 → 你的看法）；(2) 用一个通用模板准备 20 分钟和 45 分钟的研究 talk，并提前写好最难的 10 个追问的答案；(3) 用一张检查表在 10 分钟内找出一篇论文最重要的 3 个问题，并且说得礼貌、具体、可检验；(4) 在被问 "what would you do in a 12-week internship?" 时，按 "瓶颈 → 假设 → 最小实验 → 指标 → 风险 → 如何放大" 现场搭出一个可信的项目；(5) 熟悉 60 篇常被引用的论文的一句话贡献和常见追问。
+<br><br><b>建议顺序：</b>§1（知道在考什么）→ §2（讲论文，最常见）→ §5（提 idea，最能拉开差距）→ §4（批判）→ §3（准备自己的 talk）→ §6 / §8（品味与开放问题）→ §9（大声读模拟对话，最好录音）。§7 的论文清单当作词典，按需查。
+<br><br><b>和其他模块的关系：</b>这里不重复技术细节——DPO / GRPO 的推导在 <a href="m06-rl-posttraining.html">06</a>，test-time compute 在 <a href="m07-reasoning.html">07</a>，agents 在 <a href="m10-agents.html">10</a>，可解释性在 <a href="m11-interp.html">11</a>，评估与实验设计在 <a href="m13-eval.html">13</a>。本章教你<em>如何在讨论中使用</em>这些知识；英文表达的通用短语库在 <a href="m18-behavioral.html">18</a>。</div>
+
+<!-- ============================================================ §1 -->
+<h2 class="sec" id="s-what"><span class="num">§1 · WHAT IS BEING TESTED</span>研究轮在考什么</h2>
+<p class="sec-intro">先弄清楚"考卷"长什么样。不同公司、不同组的叫法和形式差别很大，下面只总结常见的模式；具体到某个面试，最可靠的信息来源永远是 recruiter——直接问"这一轮的形式是什么、多长、要不要准备 slides"完全正常。</p>
+
+<section class="concept" id="c-formats">
+  <div class="concept-head"><span class="pri p1">★</span><h3>研究轮的五种常见形式</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>研究轮大致有五种：讲自己的研究（talk）、深挖讨论（deep-dive）、读/批判一篇论文（critique）、现场提项目（propose）、研究品味问答（taste）；实际面试常常是几种混合。</p><p class="en">Research rounds usually mix five formats: your talk, a deep-dive, a paper critique, a live project proposal, and research-taste questions.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>形式</th><th>典型样子</th><th>面试官真正想看到的</th><th>准备方式</th></tr>
+    <tr><td><b>Job talk / research talk</b></td><td>20–45 分钟讲你的研究，常有 slides，后面 Q&amp;A；有时面向整个组</td><td>能不能把问题讲得"值得做"；能不能分清你的贡献和别人的；结果是否可信</td><td>§3 模板；提前排练 3 遍以上，计时</td></tr>
+    <tr><td><b>Deep-dive</b></td><td>没有 slides，面试官挑你简历上一个项目一路往下追问："为什么这样设计？""如果去掉 X 会怎样？"</td><td>你是否真正理解自己做的东西（而不是跟着导师/代码跑）；对失败和局限的诚实度</td><td>对每个项目准备"设计决策表"和"最难 10 问"（§3）</td></tr>
+    <tr><td><b>Paper discussion / critique</b></td><td>提前给一篇论文，或现场请你讲一篇你喜欢的论文，然后讨论优缺点</td><td>读论文的速度和深度；能否区分"论文声称的"和"证据支持的"；批评是否具体、建设性</td><td>§2 讲论文模板 + §4 批判检查表</td></tr>
+    <tr><td><b>Project proposal</b></td><td>"如果你来我们组 12 周，你会做什么？""怎么提升 X？"</td><td>问题拆解能力、对可行性的判断、是否会设计能出结论的最小实验</td><td>§5 框架 + 6 个范例</td></tr>
+    <tr><td><b>Research taste</b></td><td>"最近最被高估的方向是什么？""你认为 scaling 还能走多远？"</td><td>是否有自己的、有依据的观点；能否同时看到反方论据；会不会人云亦云</td><td>§6 框架 + §8 开放问题</td></tr>
+  </table>
+  <div class="box why"><span class="lbl">直觉</span>把研究轮想象成"试开一次组会"。面试官在模拟：如果这个人下周出现在我们的 meeting 上，讲他的进展、评论别人的结果、提出下一步，我会不会觉得有收获？所有技巧都服务于这个画面。</div>
+  <p>实习（intern）面试和全职面试相比，通常<b>更看重潜力和合作感</b>：面试官知道一年级博士生的成果有限，更关心你学得快不快、想得清不清楚、能不能在 12 周内交付一个有结论的东西。所以"成果不多"不是致命问题，"说不清楚"才是。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）只准备 talk，忽视 deep-dive——很多面试根本不让你放 slides。（2）把研究轮当成知识考试，背了很多事实但没有观点。（3）以为必须讲自己最"厉害"的项目；其实应该讲你<b>理解最深、能经得起追问</b>的项目。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Before the interview, it's completely fine to ask the recruiter: "Could you tell me a bit more about the format of the research round? Should I prepare slides, and roughly how long is the presentation part versus the discussion?" In my experience these rounds are basically a trial lab meeting — the interviewer wants to see how I explain a problem, how I defend design decisions, and how I react to new ideas.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Which of your projects would you like to talk about, and why that one?</b><details><summary>思路</summary><div class="inner">选标准：你主导了关键决策、能讲出"为什么不用别的方法"、有至少一个负面结果或意外发现。回答结构："I'd like to talk about X, because it's the project where I made most of the key decisions, and it has a clear story: [problem] → [what we tried] → [what surprised us]."</div></details></li>
+    <li><b>How much of this was your contribution versus your collaborators'?</b><details><summary>思路</summary><div class="inner">提前想好，诚实而具体："I designed the training setup and ran all the ablations; my collaborator built the evaluation harness; the original idea came out of a discussion with my advisor." 说"we"可以，但被问到时必须能拆开。含糊其辞是大忌。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-signals">
+  <div class="concept-head"><span class="pri p1">★</span><h3>面试官在找的信号（和反信号）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>核心信号是：清晰（能讲明白）、深度（知道为什么）、诚实（分清证据与猜测）、品味（知道什么值得做）、可合作（被挑战时开放而不防御）。</p><p class="en">They look for clarity, depth, intellectual honesty, taste, and how you respond to pushback.</p></div>
+  <div class="deep">
+  <p>下面是一份通用的信号清单（总结自常见的研究面试评价维度，并非任何一家公司的官方 rubric）：</p>
+  <table>
+    <tr><th>维度</th><th>正信号</th><th>反信号</th></tr>
+    <tr><td><b>清晰度</b></td><td>先给结论再给细节；会用一个具体例子说明抽象问题；会画图</td><td>从实现细节开始讲；满屏术语；10 分钟还没说清楚问题是什么</td></tr>
+    <tr><td><b>深度 / first principles</b></td><td>能解释方法<em>为什么</em>有效，能预测改动某个因素会发生什么</td><td>只会复述论文里的步骤；"因为 paper 是这么做的"</td></tr>
+    <tr><td><b>实验素养</b></td><td>主动提 baseline、ablation、seed 方差、算力匹配（compute-matched）比较、污染检查</td><td>只看一个数字；不知道结果的误差范围</td></tr>
+    <tr><td><b>诚实</b></td><td>"I don't know, but here's how I'd find out"；主动说出局限</td><td>编造；夸大贡献；被指出问题时硬撑</td></tr>
+    <tr><td><b>品味</b></td><td>能说明为什么这个问题重要、与领域大趋势的关系；知道什么时候该放弃一个方向</td><td>做的东西只是"把 A 和 B 拼起来"，说不出意义</td></tr>
+    <tr><td><b>合作感</b></td><td>把面试官的质疑当成共同解决问题；"That's a good point — one way to test that would be…"</td><td>防御、打断、把讨论变成辩论比赛</td></tr>
+    <tr><td><b>执行力</b></td><td>能估算一个实验需要多少 GPU 小时、多少天；知道先做什么最小实验</td><td>想法很大但无法落地；不知道第一周做什么</td></tr>
+  </table>
+  <div class="box why"><span class="lbl">直觉</span>面试官在 45 分钟里无法验证你的研究是否正确，但能很好地观察你<em>如何思考</em>。所以"思考过程可见"比"答案完美"重要——边想边说（think out loud）、把假设说出来、说出你打算怎么检验。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把"被挑战"理解为"我答错了"。研究面试官经常故意反驳，看你是会坚持有证据的观点，还是一推就倒，还是硬撑。最好的反应是：先承认对方观点中合理的部分，再说明你的证据，最后提出一个能分辨两种观点的实验。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>That's a fair challenge. I think you're right that our gains could partly come from the longer training schedule rather than the method itself. We did run a compute-matched baseline, and the gap shrank from about five points to three, so I believe some of the effect is real — but if I were to redo it, I'd also add a run where the baseline gets the same number of gradient steps on the same data.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What would convince you that your approach is wrong?</b><details><summary>思路</summary><div class="inner">这是测试"可证伪性"思维。给出一个具体的、可执行的失败条件："If the improvement disappears under a compute-matched baseline, or doesn't transfer to a second model family, I'd conclude it's an artifact of our setup." 能说出这句话本身就是强信号。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-prep">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>两周准备计划（研究轮专用）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>研究轮靠"说出来"的练习，不靠读：每天至少 30 分钟用英文出声讲论文或讲 idea，并录音回听。</p><p class="en">Practice out loud in English every day and record yourself — reading alone doesn't transfer to speaking.</p></div>
+  <div class="deep">
+  <table class="plan-table">
+    <tr><th>天</th><th>任务</th><th>产出</th></tr>
+    <tr><td>D1–2</td><td>写自己研究的 1 句话 / 1 段话 / 5 分钟版本（§3 模板），准备每个项目的"最难 10 问"</td><td>一页纸 + 问题答案表</td></tr>
+    <tr><td>D3–4</td><td>从 §7 的 15 篇最优先论文里选 5 篇，每篇用 §2 模板写提纲并出声讲一遍</td><td>5 份提纲 + 录音</td></tr>
+    <tr><td>D5–6</td><td>做 talk slides（如果需要），计时排练 2 次</td><td>slides v1</td></tr>
+    <tr><td>D7</td><td>对目标组最近 3 篇论文：每篇用 §4 检查表写 3 个问题 + 1 个后续 idea</td><td>"面试官的论文"笔记</td></tr>
+    <tr><td>D8–9</td><td>用 §5 框架为目标组想 3 个 12 周项目，各自写 1 分钟英文版</td><td>3 个 pitch</td></tr>
+    <tr><td>D10</td><td>§6 品味问题，每题写要点（不要背全文）</td><td>要点卡</td></tr>
+    <tr><td>D11–12</td><td>找同学 mock：一人当面试官按 §9 对话的风格追问</td><td>反馈清单</td></tr>
+    <tr><td>D13–14</td><td>修 slides，复习卡片，休息</td><td>—</td></tr>
+  </table>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Before I interview with a team, I usually read their last two or three papers and try to come up with one concrete question and one possible follow-up for each. It makes the conversation much more specific, and it also helps me figure out whether my interests actually overlap with what they're working on.</p></div>
+</section>
+
+<!-- ============================================================ §2 -->
+<h2 class="sec" id="s-paper"><span class="num">§2 · PRESENTING A PAPER</span>讲论文：5 分钟模板</h2>
+<p class="sec-intro">"Tell me about a paper you read recently that you liked" 几乎是必考题。好答案的结构是固定的：先让听者知道<b>为什么要关心</b>，再讲<b>核心想法</b>（一个直觉 + 一个公式），再讲<b>证据</b>，最后给出<b>你自己的看法</b>——最后这一步是区分"读过"和"想过"的关键。</p>
+
+<section class="concept" id="c-5min">
+  <div class="concept-head"><span class="pri p1">★</span><h3>5 分钟讲论文模板（PROBLEM–IDEA–EVIDENCE–LIMITS–TAKE）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>按 问题（30s）→ 之前的做法为什么不够（30s）→ 核心想法（90s）→ 关键证据（60s）→ 局限（45s）→ 我的看法与后续（45s）讲，先给一句话总结。</p><p class="en">Headline first, then problem, gap, key idea, evidence, limitations, and your own take.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>段落</th><th>时间</th><th>要回答的问题</th><th>英文开头句</th></tr>
+    <tr><td>0. Headline</td><td>15s</td><td>一句话：这篇论文做了什么、为什么重要</td><td>"The one-sentence version is: …"</td></tr>
+    <tr><td>1. Problem</td><td>30s</td><td>要解决什么问题？为什么重要？</td><td>"The problem they tackle is … This matters because …"</td></tr>
+    <tr><td>2. Gap</td><td>30s</td><td>现有方法哪里不够（贵、不稳定、不可扩展、有偏差）？</td><td>"The standard approach is …, but it has two issues: …"</td></tr>
+    <tr><td>3. Key idea</td><td>90s</td><td>核心洞察是什么？用一个直觉 + 最多一个公式</td><td>"Their key insight is that … Concretely, …"</td></tr>
+    <tr><td>4. Evidence</td><td>60s</td><td>最有说服力的 1–2 个实验；和什么比；提升多少</td><td>"The most convincing result, in my view, is …"</td></tr>
+    <tr><td>5. Limits</td><td>45s</td><td>证据没覆盖什么？哪些假设可能不成立？</td><td>"What I'm less sure about is …"</td></tr>
+    <tr><td>6. My take</td><td>45s</td><td>你怎么看？它改变了什么？你会做什么后续实验？</td><td>"If I were to follow up, I'd …"</td></tr>
+  </table>
+  <p><b>选论文的标准：</b>(1) 你能在不看论文的情况下讲出核心公式；(2) 有一个清晰的"aha"洞察；(3) 和你的研究或目标组相关；(4) 你对它有一个具体的、非显然的批评或后续想法。经典论文（DPO、Chinchilla、CoT）安全但难以出彩；最近 6 个月的论文能体现你跟进前沿，但要确保你真的读透了——面试官可能比你更熟。</p>
+  <div class="box why"><span class="lbl">直觉</span>听众的注意力在前 30 秒最高。如果你一开始就讲实现细节，面试官会在脑中挣扎"这到底要解决什么？"。Headline 先行等于给听众一张地图。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）按论文章节顺序复述（Abstract → Related work → …），没有重点；（2）讲了 5 分钟方法，没时间讲你的看法；（3）只说优点，被问"有什么缺点"时卡住；（4）数字记错——不确定就说"roughly"或"a few points"，不要编。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Sure — let me start with the one-sentence version, then go into the details. The paper shows that you can do preference fine-tuning without training a separate reward model or running RL, by turning the RLHF objective into a simple classification loss on preference pairs. I'll explain why that works, what evidence they give, and then where I think it breaks down.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why did you pick this paper?</b><details><summary>思路</summary><div class="inner">给出两个理由：内在理由（洞察优雅、改变了领域做法）+ 个人理由（和你研究的联系）。"Partly because the core trick is really elegant, and partly because it changed how I think about [your area]."</div></details></li>
+    <li><b>What's the one experiment you wish they had run?</b><details><summary>思路</summary><div class="inner">这是最常见的追问，一定要提前准备。好答案是针对论文最关键假设的实验，而不是"更多数据集"。例如对 DPO："a compute- and data-matched comparison against a well-tuned PPO baseline at larger scale, with on-policy data."</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-phrases">
+  <div class="concept-head"><span class="pri p1">★</span><h3>英文短语库：讲论文与讨论</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>准备好一组"路标短语"（signposting）和"不确定性短语"（hedging），让你在思考时也能保持流畅。</p><p class="en">Signposting and calibrated hedging phrases keep you fluent while you think.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>场景</th><th>短语</th></tr>
+    <tr><td>开场 / 路标</td><td>"Let me give you the big picture first, then zoom in." · "There are three parts to this." · "The key idea is…" · "To make this concrete, …" · "Going back to your earlier question, …"</td></tr>
+    <tr><td>解释直觉</td><td>"The intuition is…" · "One way to think about it is…" · "If you squint, this is basically…" · "A useful analogy is…"</td></tr>
+    <tr><td>描述证据</td><td>"They compare against … under a matched compute budget." · "The gain is consistent across …" · "The effect size is modest — roughly … — but it holds across seeds."</td></tr>
+    <tr><td>校准的不确定性</td><td>"I'm fairly confident that…" · "My understanding is…, but I might be misremembering the exact number." · "I'd guess…, though I haven't verified it."</td></tr>
+    <tr><td>礼貌地批评</td><td>"One thing I wasn't fully convinced by is…" · "I'd be curious whether this still holds when…" · "An alternative explanation could be…" · "This is a minor point, but…"</td></tr>
+    <tr><td>回应质疑</td><td>"That's a fair point." · "I agree that's a weakness; the way I'd address it is…" · "I see it slightly differently, because…" · "I think we're actually saying the same thing from different angles."</td></tr>
+    <tr><td>争取时间</td><td>"Let me think about that for a second." · "That's a great question — let me make sure I understand it: are you asking whether…?" · "Can I sketch this on the whiteboard?"</td></tr>
+    <tr><td>收尾</td><td>"So, to summarize: …" · "Does that answer your question, or should I go deeper on…?"</td></tr>
+  </table>
+  <p><b>发音和节奏建议：</b>说慢一点（比你觉得的慢 20%），每段结束停顿；术语读准（<i>Bradley–Terry</i>, <i>KL divergence</i>, <i>ablation</i>, <i>heuristic</i>）；用"so"、"basically"适量连接，但不要每句都用。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>One thing I wasn't fully convinced by is the evaluation. They use GPT-4 as the judge, which is reasonable, but I'd be curious whether the ranking still holds with human raters, especially for longer responses, since model judges are known to prefer longer answers.</p></div>
+</section>
+
+<section class="concept" id="c-idk">
+  <div class="concept-head"><span class="pri p1">★</span><h3>处理 "I don't know"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>不知道时：承认 → 说出你知道的相邻事实 → 给出有理有据的猜测并标注置信度 → 说你会如何验证。绝不编造。</p><p class="en">Admit it, anchor on what you do know, reason to a calibrated guess, and say how you'd check.</p></div>
+  <div class="deep">
+  <p>面试官经常故意把问题推到你知识的边界之外——他们想看的是你在边界处的行为。四步法：</p>
+  <ol>
+    <li><b>承认（Acknowledge）：</b>"I haven't read that paper in detail." / "I don't remember the exact number."</li>
+    <li><b>锚定（Anchor）：</b>"What I do know is that…"——把问题连到你熟悉的东西。</li>
+    <li><b>推理（Reason）：</b>"If I had to guess, I'd expect…, because…"——显示推理过程，并说明置信度。</li>
+    <li><b>验证（Verify）：</b>"The way I'd check is…"——一个具体的实验或查找方法。</li>
+  </ol>
+  <p><b>例子：</b>被问"Do you know how much compute DeepSeek-R1's RL stage used?"——"I don't think the exact number for the RL stage is something I can recall reliably. What I know is that the base model, DeepSeek-V3, is a mixture-of-experts model with around 37B active parameters, and RL with long rollouts is dominated by generation cost. So I'd reason about it as (number of RL steps) × (rollouts per step) × (average response length) × (cost per generated token), and I'd check their report for those quantities rather than guess a total."</p>
+  <div class="box why"><span class="lbl">直觉</span>研究工作的大部分时间都在"不知道"的状态里。面试官要的不是百科全书，而是一个在不确定中仍然能有条理地前进、并且不会自欺欺人的合作者。编造一个数字被戳穿，比说"不知道"严重一百倍。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）沉默太久——超过 10 秒就要开口，说出你在想什么；（2）连续说三次"I don't know"不给任何推理；（3）过度道歉。简短承认后立刻进入推理。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'm honestly not sure — I haven't worked with that method directly. But my guess is that it would struggle in the same place most off-policy methods do: once the policy drifts away from the data distribution, the preference signal becomes less informative. If I wanted to check, I'd track how the likelihood of the chosen responses evolves during training; if it drops a lot, that would support this explanation.</p></div>
+</section>
+
+<section class="concept" id="c-dpo-answer">
+  <div class="concept-head"><span class="pri p1">★</span><h3>完整范例：用英文 5 分钟讲 DPO</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>DPO 把"KL 约束下最大化奖励"的最优策略写成闭式解，反解出 reward = β·log(π/π_ref)+常数，代入 Bradley–Terry 偏好模型后常数抵消，得到一个只需要偏好对的分类损失。</p><p class="en">DPO reparameterizes the reward through the optimal KL-regularized policy, so the partition function cancels in the Bradley–Terry likelihood and RLHF becomes a classification loss.</p></div>
+  <div class="deep">
+  <p>论文：Rafailov et al., <a href="https://arxiv.org/abs/2305.18290" target="_blank" rel="noreferrer">Direct Preference Optimization: Your Language Model is Secretly a Reward Model</a> (2023)。下面先给出你必须能在白板上写出来的推导（中文注释），再给完整的英文讲稿。推导的数值验证（闭式最优解、损失与梯度）已在 numpy 中检查。</p>
+  </div>
+  <details class="deep"><summary>白板推导（必须能默写）</summary><div class="inner">
+  <p><b>Step 1：RLHF 目标。</b>给定 prompt \(x\)，奖励 \(r(x,y)\)，参考策略 \(\pi_{\text{ref}}\)：</p>
+  $$\max_{\pi}\; \mathbb{E}_{y\sim\pi(\cdot|x)}\big[r(x,y)\big] - \beta\,\mathrm{KL}\big(\pi(\cdot|x)\,\|\,\pi_{\text{ref}}(\cdot|x)\big)$$
+  <p><b>Step 2：闭式最优解。</b>把目标写成 \(-\beta\,\mathrm{KL}\big(\pi\,\|\,\tfrac{1}{Z(x)}\pi_{\text{ref}}e^{r/\beta}\big)+\beta\log Z(x)\)，KL 在两个分布相等时取最小值 0，所以</p>
+  $$\pi^*(y|x)=\frac{1}{Z(x)}\,\pi_{\text{ref}}(y|x)\exp\!\Big(\frac{r(x,y)}{\beta}\Big),\qquad Z(x)=\sum_y \pi_{\text{ref}}(y|x)\exp\!\Big(\frac{r(x,y)}{\beta}\Big).$$
+  <p><b>Step 3：反解 reward。</b>两边取对数：</p>
+  $$r(x,y)=\beta\log\frac{\pi^*(y|x)}{\pi_{\text{ref}}(y|x)}+\beta\log Z(x).$$
+  <p>\(Z(x)\) 要对所有可能的回复求和，无法计算——但它<em>只依赖 \(x\)</em>。</p>
+  <p><b>Step 4：代入 Bradley–Terry。</b>偏好模型 \(p(y_w\succ y_l|x)=\sigma\big(r(x,y_w)-r(x,y_l)\big)\)。两个回复共享同一个 \(x\)，\(\beta\log Z(x)\) 相减抵消：</p>
+  $$p(y_w\succ y_l|x)=\sigma\Big(\beta\log\frac{\pi^*(y_w|x)}{\pi_{\text{ref}}(y_w|x)}-\beta\log\frac{\pi^*(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\Big).$$
+  <p><b>Step 5：把 \(\pi^*\) 换成可训练的 \(\pi_\theta\)，做最大似然：</b></p>
+  $$\mathcal{L}_{\text{DPO}}(\theta)=-\,\mathbb{E}_{(x,y_w,y_l)}\Big[\log\sigma\Big(\beta\log\frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)}-\beta\log\frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\Big)\Big].$$
+  <p><b>Step 6：梯度（解释"它在做什么"）。</b>记隐式奖励 \(\hat r_\theta(x,y)=\beta\log\frac{\pi_\theta(y|x)}{\pi_{\text{ref}}(y|x)}\)，利用 \(\frac{d}{dz}\log\sigma(z)=\sigma(-z)\)：</p>
+  $$\nabla_\theta\mathcal{L}=-\beta\,\mathbb{E}\Big[\sigma\big(\hat r_\theta(x,y_l)-\hat r_\theta(x,y_w)\big)\big(\nabla_\theta\log\pi_\theta(y_w|x)-\nabla_\theta\log\pi_\theta(y_l|x)\big)\Big].$$
+  <p>含义：提高 \(y_w\) 的概率、降低 \(y_l\) 的概率；权重 \(\sigma(\hat r_l-\hat r_w)\) 在模型"排错序"时大、排对时小——这是自带的 hard-example weighting。初始化时 \(\pi_\theta=\pi_{\text{ref}}\)，损失恰好是 \(\log 2\)。</p>
+  <p><b>注意：</b>梯度只约束 <em>差值</em>，所以训练中 \(\log\pi_\theta(y_w)\) 和 \(\log\pi_\theta(y_l)\) 可能<em>同时下降</em>，只要 \(y_l\) 降得更快（这就是后续工作讨论的 "chosen likelihood decreasing" 问题）。</p>
+  <pre><code class="language-python"># numpy check of the DPO loss / gradient (run in scratchpad/m16/checks.py)
+import numpy as np
+def logsig(x): return -np.logaddexp(0, -x)
+def dpo_loss(pw, pl, rw, rl, beta=0.1):          # summed log-probs per sequence
+    z = beta * ((pw - rw) - (pl - rl))
+    return -logsig(z).mean()
+# at init (policy == reference) the loss is exactly log 2
+rw, rl = np.array([-10.5, -12.]), np.array([-10.5, -11.])
+assert abs(dpo_loss(rw, rl, rw, rl) - np.log(2)) &lt; 1e-12</code></pre>
+  </div></details>
+  <details class="deep" open><summary>英文讲稿（约 5 分钟，大声读 3 遍）</summary><div class="inner">
+  <div class="box say"><span class="lbl">Model answer · DPO</span>
+  <p><b>[Headline]</b> The paper I'd like to talk about is DPO, Direct Preference Optimization, from Stanford in 2023. The one-sentence version: you can do RLHF-style preference tuning without training a separate reward model and without running RL, by turning the problem into a simple classification loss on pairs of responses.</p>
+  <p><b>[Problem &amp; gap]</b> The standard RLHF pipeline, as in InstructGPT, has three stages: supervised fine-tuning, fitting a reward model on human preference pairs, and then optimizing the policy against that reward with PPO while keeping a KL penalty to the reference model. The last stage is the painful one — you need to sample from the policy during training, keep a value network around, and PPO is notoriously sensitive to hyperparameters.</p>
+  <p><b>[Key idea]</b> The key insight is that the KL-regularized objective has a closed-form optimal policy: the reference policy reweighted by the exponentiated reward, divided by a partition function. If you invert that, the reward can be written as beta times the log-ratio between the optimal policy and the reference, plus a term that only depends on the prompt. Now, the Bradley–Terry preference model only cares about the <i>difference</i> in rewards between two responses to the same prompt, so that prompt-dependent term — the intractable partition function — cancels out. What you're left with is a logistic loss on the difference of log-ratios for the chosen and rejected responses. In other words, the language model itself is implicitly the reward model, which is where the title comes from.</p>
+  <p><b>[Evidence]</b> They evaluate on controlled sentiment generation, summarization, and single-turn dialogue. The result I find most convincing is the sentiment task, because there they have a ground-truth reward and can plot reward against KL to the reference: DPO gets a better trade-off frontier than PPO at the same KL. On summarization and dialogue they use GPT-4 as a judge and report win rates that are competitive with or better than their PPO baseline.</p>
+  <p><b>[Limits]</b> What I'm less sure about is how general the comparison is. First, DPO is trained on a fixed, offline preference dataset, whereas PPO samples on-policy; later work, for example a 2024 ICML study by Xu and colleagues, argues that a carefully tuned PPO can outperform DPO, especially when the preference data is out of distribution for the policy. Second, because the loss only depends on the <i>margin</i>, the likelihood of the chosen response can actually go down during training, which several follow-ups observed. And third, the evaluation in the original paper relies heavily on model-based judges at relatively small scale.</p>
+  <p><b>[My take]</b> I still think it's a really important paper: it made preference optimization accessible to anyone who can do supervised fine-tuning, and it reframed the reward model as something implicit in the policy. If I were to follow up, I'd want a clean, compute-matched comparison between offline DPO, iterative or online DPO where you regenerate pairs from the current policy, and PPO — and I'd track not just win rate but how far the policy drifts in KL, to separate "better optimization" from "just moving further from the reference."</p>
+  </div>
+  </div></details>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）说"DPO 不需要 reward"——准确说法是不需要<em>显式训练</em>的 reward model，reward 被隐式参数化在策略里；（2）忘记 \(\pi_{\text{ref}}\) 在训练中是冻结的；（3）说 DPO 一定比 PPO 好——证据是混合的，说"depends on data and setup"并给出理由才是成熟答案。</div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>What does β control, and what happens if it's too small?</b><details><summary>思路</summary><div class="inner">\(\beta\) 是 KL 约束强度：\(\beta\) 大 → 策略贴近参考模型；\(\beta\) 小 → 允许偏离更多、更"相信"偏好数据，容易过拟合偏好数据、出现退化（例如回复变长、重复）。在损失里 \(\beta\) 也缩放 logit，影响 sigmoid 的饱和速度。</div></details></li>
+    <li><b>Why can the log-probability of the chosen response decrease?</b><details><summary>思路</summary><div class="inner">损失只依赖 \(\hat r_w-\hat r_l\)。当 \(y_w\) 和 \(y_l\) 很相似（共享很多 token）时，降低共享 token 的概率会同时降低两者；只要 \(y_l\) 降得更多，损失仍然下降。Smaug（Pal et al. 2024, <a href="https://arxiv.org/abs/2402.13228" target="_blank" rel="noreferrer">arXiv 2402.13228</a>）从理论和实验上分析了这一点，并提出 DPO-Positive 加一项惩罚。</div></details></li>
+    <li><b>Is DPO on-policy or off-policy? Why does that matter?</b><details><summary>思路</summary><div class="inner">标准 DPO 在固定数据集上训练，是 offline / off-policy 的。问题：数据中的回复可能来自别的模型，策略在自己会生成的回复上得不到信号；随训练推进分布偏移越来越大。缓解：iterative/online DPO（周期性用当前策略生成新对并标注）。</div></details></li>
+    <li><b>Does DPO avoid reward over-optimization?</b><details><summary>思路</summary><div class="inner">不能完全避免。Rafailov et al. 2024（<a href="https://arxiv.org/abs/2406.02900" target="_blank" rel="noreferrer">Scaling Laws for Reward Model Overoptimization in Direct Alignment Algorithms</a>）报告：direct alignment 方法同样出现过度优化，在 KL 预算较大时尤其明显，而且常在训练不到一个 epoch 时就开始退化。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-chinchilla-answer">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>第二个范例：90 秒讲 Chinchilla（短版也要会）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Chinchilla 发现固定算力下，参数量和训练 token 应该大致等比例增长（约 20 token/参数），因此当时的大模型普遍"训练不足"；70B 的 Chinchilla 用和 280B Gopher 相同的算力、4 倍数据，表现更好。</p><p class="en">For a fixed compute budget, parameters and tokens should scale roughly equally — about 20 tokens per parameter — so many large models were undertrained.</p></div>
+  <div class="deep">
+  <p>论文：Hoffmann et al., <a href="https://arxiv.org/abs/2203.15556" target="_blank" rel="noreferrer">Training Compute-Optimal Large Language Models</a> (2022)。要点：</p>
+  <ul>
+    <li>训练了 400 多个模型（70M 到 16B+ 参数，5B 到 500B token），用三种方法估计 compute-optimal 的 \(N_{\text{opt}}(C)\) 和 \(D_{\text{opt}}(C)\)：(1) 固定模型大小、变化 token 数，取每个算力下损失包络线；(2) IsoFLOP 曲线；(3) 拟合参数化损失 \(L(N,D)=E+\frac{A}{N^\alpha}+\frac{B}{D^\beta}\)。</li>
+    <li>结论：\(N_{\text{opt}}\propto C^{a}\)，\(D_{\text{opt}}\propto C^{b}\)，\(a\approx b\approx 0.5\)。对比 Kaplan et al. 2020 给出的 \(N_{\text{opt}}\propto C^{0.73}\)（偏向"把算力花在更大的模型上"）。</li>
+    <li>估算：用 \(C\approx 6ND\) 和 \(D\approx 20N\)，得到 \(N\approx\sqrt{C/120}\)。代入 Chinchilla 的算力（与 Gopher 相同，约 \(6\times 280\text{B}\times 300\text{B}\approx 5\times10^{23}\) FLOPs）得 \(N\approx 65\text{–}70\)B、\(D\approx 1.3\text{–}1.4\)T，和实际的 70B / 1.4T 吻合（numpy 已验证）。</li>
+  </ul>
+  <p><b>后续与批评（讨论时加分）：</b></p>
+  <ul>
+    <li>Besiroglu et al. 2024，<a href="https://arxiv.org/abs/2404.10102" target="_blank" rel="noreferrer">Chinchilla Scaling: A replication attempt</a>：从论文图中重建数据重新拟合方法 3，发现原文报告的参数拟合与数据不符、置信区间过窄；他们重新拟合后的结果与方法 1、2 一致。所以"20 token/参数"这个主结论仍然站得住，但方法 3 的具体系数不可靠。</li>
+    <li>Porian et al. 2024，<a href="https://arxiv.org/abs/2406.19146" target="_blank" rel="noreferrer">Resolving Discrepancies in Compute-Optimal Scaling of Language Models</a>：把 Kaplan 与 Chinchilla 的差异归因于最后一层计算量的计入、warmup 长度、以及随模型规模调整优化器超参等因素。</li>
+    <li>Sardana et al. 2023，<a href="https://arxiv.org/abs/2401.00448" target="_blank" rel="noreferrer">Beyond Chinchilla-Optimal</a>：如果考虑推理成本，应训练更小的模型、用远多于 20 token/参数的数据——这解释了为什么现在的开源模型普遍"过度训练"。</li>
+  </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Chinchilla asked a simple question: if you have a fixed compute budget, how should you split it between model size and training tokens? They trained over four hundred models and found that parameters and tokens should grow roughly in proportion — about twenty tokens per parameter. That implied models like Gopher were heavily undertrained, and they showed it by training a 70B model on four times more data with the same compute, which beat the 280B Gopher. The caveat I'd add is that "compute-optimal" only counts training compute; if you care about serving cost, you want to train smaller models for much longer, which is exactly what most open models do today.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Why did Kaplan et al. get a different exponent?</b><details><summary>思路</summary><div class="inner">常见解释：Kaplan 的小模型实验中学习率 schedule 没有随训练长度调整（固定 cosine 长度），导致短训练的模型被低估；以及参数计数（是否包含 embedding）、最后一层计算等口径问题。Porian et al. 2024 系统复现并定位了几个因素。回答时说"several methodological differences, notably…"即可，不要说成单一原因。</div></details></li>
+    <li><b>Does the law still apply when data is limited?</b><details><summary>思路</summary><div class="inner">不完全。Muennighoff et al. 2023（<a href="https://arxiv.org/abs/2305.16264" target="_blank" rel="noreferrer">Scaling Data-Constrained Language Models</a>）研究了重复数据：重复几个 epoch 的收益接近新数据，之后收益迅速递减。数据受限时最优分配会向更多参数/更多 epoch 偏移。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §3 -->
+<h2 class="sec" id="s-own"><span class="num">§3 · PRESENTING YOUR OWN RESEARCH</span>讲自己的研究（通用模板）</h2>
+<p class="sec-intro">这一节只给<b>可填空的模板</b>，方括号 [ ] 处换成你自己的内容。原则：你的 talk 不是论文的朗读版，而是一个"为什么这个问题重要、我们学到了什么"的故事。面试官不一定是你领域的专家——按"聪明的相邻领域研究者"来设计。</p>
+
+<section class="concept" id="c-talk-structure">
+  <div class="concept-head"><span class="pri p1">★</span><h3>20 分钟 / 45 分钟 talk 的结构</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>动机占 20%，方法占 30%，结果占 35%，局限与展望占 15%；第一张内容页就给出 takeaway，最后一张重复 takeaway。</p><p class="en">Spend about a fifth on motivation, a third on method, a third on results, and close with limitations and future work — state the takeaway up front and again at the end.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>部分</th><th>20 分钟版</th><th>45 分钟版</th><th>内容</th></tr>
+    <tr><td>1. Hook + takeaway</td><td>1–2 min, 1 张</td><td>3 min, 2 张</td><td>一个具体例子或惊人现象；"By the end, I want you to remember [one sentence]."</td></tr>
+    <tr><td>2. Problem &amp; why it matters</td><td>2–3 min, 2 张</td><td>5 min, 3 张</td><td>问题定义；与大趋势的联系（为什么现在重要）</td></tr>
+    <tr><td>3. Prior work &amp; gap</td><td>2 min, 1 张</td><td>4 min, 2 张</td><td>一张对比表：现有方法 × 关键性质；你的位置</td></tr>
+    <tr><td>4. Key idea</td><td>3 min, 2 张</td><td>8 min, 4 张</td><td>先直觉图，再公式；只讲一个核心想法</td></tr>
+    <tr><td>5. Results</td><td>6 min, 4 张</td><td>14 min, 7 张</td><td>主结果 → ablation → 分析/可视化 → 失败案例</td></tr>
+    <tr><td>6. Limits &amp; lessons</td><td>2 min, 1 张</td><td>5 min, 2 张</td><td>局限、意外发现、负面结果中学到的东西</td></tr>
+    <tr><td>7. Future &amp; fit</td><td>1–2 min, 1 张</td><td>4 min, 2 张</td><td>下一步；（可选）与面试组方向的联系</td></tr>
+    <tr><td>Backup slides</td><td colspan="2">5–10 张</td><td>额外 ablation、超参、算力、细节推导——留给 Q&amp;A</td></tr>
+  </table>
+  <p><b>"一张 slide 一个信息"规则：</b>每张 slide 的标题写成一句完整的结论（"Longer rollouts help only when the verifier is accurate"），而不是名词短语（"Results"）。只看标题就能听懂整个故事。</p>
+  <p><b>多个项目怎么办？</b>20 分钟只讲 1 个主项目；45 分钟可以 1 个主项目（30 分钟）+ 1–2 个副项目（各 5 分钟），并用一条主线串起来（"All of these are about [theme]"）。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）动机讲太长（超过 1/4）；（2）结果页塞满表格，听众找不到重点——用颜色/方框突出你要他们看的那个数；（3）超时——面试中超时会挤掉 Q&amp;A，而 Q&amp;A 才是面试官评分的主要依据；（4）没有 backup slides，被问细节只能口头描述。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I'll spend about five minutes on why this problem matters, then explain the key idea, and spend most of the time on results — including one experiment that didn't go the way we expected. Please feel free to interrupt me at any point; I'm happy to go deeper on anything.</p></div>
+</section>
+
+<section class="concept" id="c-talk-template">
+  <div class="concept-head"><span class="pri p1">★</span><h3>填空模板：一句话 / 30 秒 / 2 分钟版本</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>任何研究都要能压缩成三个长度：一句话（电梯里）、30 秒（自我介绍里）、2 分钟（深挖前的概览）。</p><p class="en">Have a one-sentence, a thirty-second, and a two-minute version of every project.</p></div>
+  <div class="deep">
+  <h4>一句话版</h4>
+  <div class="box say"><span class="lbl">Template</span><p>"I work on [problem], and my main finding is that [surprising or useful claim], which matters because [consequence]."</p></div>
+  <h4>30 秒版</h4>
+  <div class="box say"><span class="lbl">Template</span><p>"[Big area] has a problem: [specific failure / cost / gap]. Existing approaches [do X], but they [limitation]. In my project, I [key idea in one clause]. We found that [main result with one number], and the surprising part was [unexpected finding]."</p></div>
+  <h4>2 分钟版（深挖开场）</h4>
+  <div class="box say"><span class="lbl">Template</span><p>"Let me give you the context first. [2 sentences on the problem and why now.] The standard approach is [X]; the issue is [Y], which you can see in [concrete example].<br>Our hypothesis was that [hypothesis]. To test it, we [method in 2–3 sentences, one design choice + why].<br>The main result is [result vs. strongest baseline, matched compute]. The ablation that convinced us it's not an artifact was [ablation].<br>What didn't work: [negative result] — which taught us [lesson].<br>The main limitation is [limitation], and the next step I'm most excited about is [next step]."</p></div>
+  <p><b>"设计决策表"</b>——深挖前为每个项目填好这张表：</p>
+  <table>
+    <tr><th>决策</th><th>我们的选择</th><th>备选方案</th><th>为什么选这个（证据 / 约束）</th><th>如果重来会怎样</th></tr>
+    <tr><td>[模型 / 规模]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td></tr>
+    <tr><td>[数据 / 任务]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td></tr>
+    <tr><td>[训练目标 / 损失]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td></tr>
+    <tr><td>[评估指标]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td></tr>
+    <tr><td>[baseline]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td><td>[ ]</td></tr>
+  </table>
+  </div>
+</section>
+
+<section class="concept" id="c-anticipate">
+  <div class="concept-head"><span class="pri p1">★</span><h3>预判追问：最难 10 问</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>深挖问题高度可预测：贡献、baseline 公平性、ablation、泛化、规模、失败、算力、替代解释、下一步、与面试组的关系。提前写好每一题的 2–3 句答案。</p><p class="en">Deep-dive questions are predictable — write two or three sentences for each of the ten classics in advance.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>#</th><th>问题（英文原样）</th><th>考点</th><th>答题骨架</th></tr>
+    <tr><td>1</td><td>What exactly was your contribution?</td><td>诚实、主导性</td><td>"I [designed/implemented/ran]…; [collaborator] did…; the idea came from…"</td></tr>
+    <tr><td>2</td><td>Is the baseline fair? Did you tune it as much as your method?</td><td>实验素养</td><td>调参预算、同算力、同数据；如果不够公平，主动承认并说影响方向</td></tr>
+    <tr><td>3</td><td>Which component matters most? What if you remove X?</td><td>理解机制</td><td>引用 ablation；没做的话说预期和原因</td></tr>
+    <tr><td>4</td><td>Would this work on a different model family / domain?</td><td>泛化</td><td>已有证据 + 理论上可能失败的条件</td></tr>
+    <tr><td>5</td><td>Does it scale? What happens at 10× the model size?</td><td>规模直觉</td><td>已有规模趋势；哪个因素可能在大规模下消失/放大</td></tr>
+    <tr><td>6</td><td>What didn't work?</td><td>诚实、学习能力</td><td>一个具体失败 + 你从中学到什么 + 如何改变了方向</td></tr>
+    <tr><td>7</td><td>How much compute did this take? How long per run?</td><td>执行力</td><td>具体数字：GPU 类型 × 数量 × 小时</td></tr>
+    <tr><td>8</td><td>Could there be a simpler explanation for your result?</td><td>批判性思维</td><td>列出 1–2 个替代解释 + 你如何排除（或还没排除）</td></tr>
+    <tr><td>9</td><td>If you had six more months, what would you do?</td><td>品味、规划</td><td>最有信息量的下一个实验，而不是"更多数据集"</td></tr>
+    <tr><td>10</td><td>How does this relate to [famous paper] / our team's work?</td><td>领域视野</td><td>相同点、不同点、互补点</td></tr>
+  </table>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>被问到没做过的实验时说"we didn't have time"就停下。更好的答法："We didn't run that. My prediction is [X] because [Y]; the cheapest way to check would be [Z]." 这把一个弱点变成了展示推理的机会。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>We didn't run that ablation, unfortunately. My prediction is that removing the curriculum would hurt early in training but the final numbers would be close, because the model eventually sees the hard examples anyway. The cheapest way to check would be a single run at the small scale with the same number of steps — it's maybe a day of compute.</p></div>
+</section>
+
+<!-- ============================================================ §4 -->
+<h2 class="sec" id="s-critique"><span class="num">§4 · CRITIQUING A PAPER</span>批判论文</h2>
+<p class="sec-intro">好的批评有三个特征：<b>具体</b>（指向某个实验或假设），<b>有因果</b>（说明这个问题为什么会影响结论），<b>可检验</b>（提出一个能分辨的实验）。"需要更多实验"不是批评；"他们的提升可能来自更长的训练，因为 baseline 少训练了 30% 的步数，可以用同步数的 baseline 检验"才是。</p>
+
+<section class="concept" id="c-checklist">
+  <div class="concept-head"><span class="pri p1">★</span><h3>批判检查表（10 分钟读完一篇论文）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>按 主张 → 证据 → baseline → 混杂因素 → 评估 → 泛化 → 统计 → 可复现 → 意义 九个问题过一遍，挑出最影响结论的 2–3 个讲。</p><p class="en">Walk through claim, evidence, baselines, confounders, evaluation, generality, statistics, reproducibility and significance — then lead with the two or three that matter most.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>#</th><th>问题</th><th>典型漏洞（LLM 论文常见）</th></tr>
+    <tr><td>1</td><td><b>Claim：</b>论文到底声称了什么？标题/摘要的主张是否比实验支持的更强？</td><td>标题说 "X enables reasoning"，实验只在一个数学 benchmark 上</td></tr>
+    <tr><td>2</td><td><b>Evidence：</b>哪个实验直接支持主张？是相关还是因果？</td><td>只展示相关性（"更长的 CoT 和更高准确率相关"）却给出因果解释</td></tr>
+    <tr><td>3</td><td><b>Baselines：</b>最强的 baseline 在吗？调参预算公平吗？算力匹配吗？</td><td>新方法用 best-of-N，baseline 只用 greedy；baseline 用默认超参</td></tr>
+    <tr><td>4</td><td><b>Confounders：</b>还有什么别的差异能解释结果？</td><td>训练步数、数据量、prompt 模板、回复长度、模型初始化不同</td></tr>
+    <tr><td>5</td><td><b>Evaluation：</b>指标衡量的是我们关心的东西吗？有污染吗？judge 有偏吗？</td><td>LLM-as-judge 偏好长回复；benchmark 题目出现在预训练语料；答案格式解析错误</td></tr>
+    <tr><td>6</td><td><b>Generality：</b>换模型家族 / 规模 / 任务还成立吗？</td><td>只在一个模型家族上有效（例如某些 RLVR 现象主要在 Qwen2.5-Math 上出现）</td></tr>
+    <tr><td>7</td><td><b>Statistics：</b>几个 seed？误差棒？提升是否超过噪声？</td><td>单 seed、AIME 只有 30 题（1 题 ≈ 3.3 个点）</td></tr>
+    <tr><td>8</td><td><b>Reproducibility：</b>代码、数据、超参公开吗？细节够复现吗？</td><td>关键的数据过滤步骤只有一句话描述</td></tr>
+    <tr><td>9</td><td><b>Significance：</b>如果结论成立，会改变什么？</td><td>技术正确但影响很小；或者影响很大但证据薄</td></tr>
+  </table>
+  <p><b>讲批评的顺序：</b>先说优点（真诚而具体，不是客套）→ 最重要的 1 个问题（说清为什么重要）→ 1–2 个次要问题 → 一个能解决最重要问题的实验 → 总体评价（"I'd still accept it because…" 或 "I'd want to see X before believing the headline claim"）。</p>
+  <div class="box why"><span class="lbl">直觉</span>想象你是 reviewer，作者会读你的意见。好的 review 让作者觉得"这个人真的读懂了，而且指出了我也担心的地方"；坏的 review 让作者觉得"他没读懂"或"他在刁难"。面试官就是在判断你会写哪种 review。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）列 10 个小问题，没有优先级；（2）攻击性语气（"This paper is wrong"）——面试官可能是作者的同事，甚至是作者本人；（3）只批评不提出改进；（4）批评"没有在更大模型上做"——这几乎对所有论文都成立，信息量低，除非你能说明为什么规模会改变结论。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I think the core idea is genuinely interesting, and the analysis section is the strongest part. My main concern is about the comparison: the proposed method gets roughly twice as many samples at inference as the baseline, so it's hard to tell how much of the gain is the method versus the extra compute. A compute-matched comparison — say, giving the baseline best-of-two — would make the claim much more convincing. A smaller point is that all results are on a single model family.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>If you were a reviewer, would you accept it?</b><details><summary>思路</summary><div class="inner">给明确立场 + 条件："I'd lean accept: the idea is novel and the main experiment is sound. My score would go up if they added X, and down if the effect disappeared under a compute-matched baseline." 不要说"it depends"后不给立场。</div></details></li>
+    <li><b>What's the strongest version of the authors' argument?</b><details><summary>思路</summary><div class="inner">这是 steelman 测试。先用作者的视角把论证说到最强（"Even if the absolute gains are partly due to compute, the scaling trend is still steeper than the baseline's, which suggests…"），再说你仍然保留的疑问。能做到这一点体现了思想上的公平。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-critique-example">
+  <div class="concept-head"><span class="pri p1">★</span><h3>完整范例：批判 "RL 真的让 LLM 学会新推理了吗？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Yue et al. 2025 用 pass@k 发现：RLVR 模型在小 k 时更强，但在大 k 时被 base model 反超，因此认为 RLVR 主要提高采样效率而非扩展能力边界；批评集中在 pass@k 作为"能力"的代理是否合理、训练时长与规模、以及后续的反例。</p><p class="en">The paper argues RLVR mostly sharpens the base model's distribution rather than expanding it, using a pass@k crossover; the debate is about whether pass@k at large k measures capability, and whether longer RL changes the picture.</p></div>
+  <div class="deep">
+  <p>论文：Yue et al., <a href="https://arxiv.org/abs/2504.13837" target="_blank" rel="noreferrer">Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?</a> (2025)，项目页 <a href="https://limit-of-rlvr.github.io/" target="_blank" rel="noreferrer">limit-of-rlvr.github.io</a>。这是一篇被广泛讨论的论文，非常适合当批判练习——它的主张清楚、证据可检查、争议有文献可查。</p>
+  <h4>1. 先公平地复述（steelman）</h4>
+  <ul>
+    <li><b>主张：</b>RLVR（用可验证奖励做 RL）训练出的模型，能解决的问题集合基本是 base model 在足够多次采样下就能解决的子集；RL 提高的是 pass@1（采样效率），不是能力边界。</li>
+    <li><b>证据：</b>在数学（GSM8K / MATH500 / AIME24）、代码（LiveCodeBench、HumanEval+ 等）和视觉推理任务上，跨多个模型家族，RL 模型在 k 小时 pass@k 更高，但随着 k 增大到几十、几百，base model 追平并反超。作者还指出蒸馏（从更强模型学习）能引入 base model 没有的推理模式。</li>
+    <li><b>已经处理的质疑：</b>AIME 答案是小整数，大 k 时可能"蒙对"——作者用代码任务（单元测试很难蒙过）显示同样趋势，并人工检查了 base model 的 CoT，报告通常能找到至少一条有效推理路径。</li>
+  </ul>
+  <h4>2. 优点</h4>
+  <ul>
+    <li>问题重要且表述清晰：把"RL 是否教会新东西"变成一个可以测量的问题。</li>
+    <li>跨任务、跨模型家族、跨 RL 算法的系统比较，而不是单个 cherry-picked 设置。</li>
+    <li>主动处理了最明显的反驳（猜答案）。</li>
+  </ul>
+  <h4>3. 主要疑问（按重要性排序）</h4>
+  <ol>
+    <li><b>pass@k（大 k）是否等于"能力"？</b>在 k = 256 时 base model 能解出一道题，意味着正确答案在它的分布里有非零概率——但在实际使用中，没有 verifier 就无法从 256 个样本中挑出正确的那个。所以"能力边界"的定义本身是有争议的：一个更实用的定义可能是"在可承受的采样预算内、无需 oracle 就能可靠解决"。这个疑问不推翻论文的观察，但限制了它的解读。</li>
+    <li><b>RL 训练的长度和规模。</b>如果 RL 只训练了相对较少的步数、数据多样性有限，那么"边界不扩展"可能只是"还没训练够"。后续工作 ProRL（Liu et al. 2025, <a href="https://arxiv.org/abs/2505.24864" target="_blank" rel="noreferrer">Prolonged Reinforcement Learning Expands Reasoning Boundaries in Large Language Models</a>）报告：长时间、多样化任务的 RL 训练能让模型找到 base model 大量采样也找不到的策略。两篇论文的结论并不一定矛盾——它们可能在描述不同训练机制下的行为。</li>
+    <li><b>对 base model 的依赖。</b>部分 RLVR 现象对模型家族高度敏感。例如 Shao et al. 2025（<a href="https://arxiv.org/abs/2506.10947" target="_blank" rel="noreferrer">Spurious Rewards: Rethinking Training Signals in RLVR</a>）发现：在 Qwen2.5-Math 上，即使使用随机或弱相关的奖励，GRPO 也能提升数学分数，但这些收益没有迁移到 Llama3 或 OLMo2。这提示：在某些 base model 上，RL 主要在"激发"预训练已有的行为，这与 Yue et al. 的论点一致，但也说明结论可能依赖于预训练分布，不能直接推广到所有模型。</li>
+    <li><b>采样温度等评估细节。</b>pass@k 对温度、top-p 很敏感：RL 后的模型熵通常更低，在同一温度下多样性更差。比较两个模型的大 k 表现时，理想做法是各自在最优采样设置下比较。（这是一个应当检查的问题，不是对论文的断言——提问时说 "I'd want to check whether…"。）</li>
+  </ol>
+  <h4>4. 我会提出的实验</h4>
+  <ul>
+    <li>按 RL 训练步数画"覆盖率曲线"：base 能解但 RL 模型不能解的题、RL 模型能解但 base 不能解的题，各有多少，随训练如何变化。如果后者随长训练持续增加，就是边界扩展的直接证据。</li>
+    <li>对每个模型单独调最优温度后再比 pass@k。</li>
+    <li>加一个"实用边界"指标：用一个固定的、非 oracle 的选择器（如 majority vote 或学习的 verifier）在 k 个样本中选答案的准确率。</li>
+  </ul>
+  <h4>5. 总体评价</h4>
+  <p>这是一篇有价值的论文：它把一个模糊的口号（"RL 让模型学会推理"）变成了可检验的命题，并给出了强有力的反例证据。我认为最稳妥的解读是"在当前常见的 RLVR 训练规模下，RL 主要是在重新分配 base model 已有的概率质量"，而不是"RL 原理上无法扩展能力"。</p>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）把论文说成"证明了 RL 没用"——作者明确说 RL 在实际中仍然有用（提升 pass@1）；（2）引用后续论文时说成"被推翻了"——更准确的说法是"后续工作在不同设置下给出了不同结果"；（3）对没读过的后续论文给出细节——只说你确定的部分。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>I like this paper because it turns a vague slogan into a measurable question. The key observation is a pass@k crossover: RL models win at small k, but base models catch up at large k, which suggests RL mostly sharpens the distribution the base model already has. My main reservation is about using pass@k at very large k as a proxy for capability — if the base model needs 256 samples and an oracle to pick the right one, that's not a capability you can use in practice. I'd also want to see how the overlap changes with much longer RL training, since later work like ProRL reports that prolonged training can find solutions the base model doesn't. So my reading is: under typical RLVR budgets, RL redistributes probability mass rather than creating new strategies — not that it can't in principle.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How is pass@k estimated, and why not just sample k times?</b><details><summary>思路</summary><div class="inner">常用无偏估计（Codex 论文 Chen et al. 2021 提出）：每题采样 \(n\ge k\) 个，其中 \(c\) 个正确，\(\widehat{\text{pass@}k}=1-\binom{n-c}{k}/\binom{n}{k}\)。直接采样 k 次估计方差大；用 n 个样本的所有 k-子集平均更稳定。数值稳定写法：\(1-\prod_{i=n-c+1}^{n}(1-k/i)\)（numpy 中与组合数公式及 Monte Carlo 对照验证过）。</div></details></li>
+    <li><b>Then why does RL help in practice at all?</b><details><summary>思路</summary><div class="inner">因为实际部署只采样一次或少数几次，pass@1 才是用户体验到的。RL 把概率集中到正确的推理路径上，提高了可靠性；同时它常常带来更长的 CoT、更多自我检查——这些即使"在分布内"，也提高了单次成功率。另外，RL 后的模型可以作为蒸馏的教师或下一轮训练的起点。</div></details></li>
+    <li><b>How would you design an RL method that expands the boundary?</b><details><summary>思路</summary><div class="inner">思路：(1) 显式鼓励探索（熵奖励、对低概率正确答案加权、对未解出过的题做 curriculum）；(2) 引入新信息（工具调用、检索、来自更强模型的 off-policy 示范）；(3) 更长、更多样的训练（ProRL 的方向）；(4) 用"覆盖率"而非平均奖励作为监控指标。</div></details></li>
+  </ol></div>
+</section>
+
+<section class="concept" id="c-critique-patterns">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>LLM 论文的 8 个常见"红旗"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>算力不匹配、单 seed 小 benchmark、prompt 敏感、judge 偏差、数据污染、只有一个模型家族、指标造成的"涌现"、长度混杂——见到就问。</p><p class="en">Compute mismatch, single-seed small benchmarks, prompt sensitivity, judge bias, contamination, single model family, metric-induced emergence, and length confounds.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>红旗</th><th>怎么问</th><th>参考</th></tr>
+    <tr><td>Compute mismatch</td><td>"Is the baseline given the same inference / training FLOPs?"</td><td>test-time compute 论文常需对比同预算的 best-of-N，见 <a href="https://arxiv.org/abs/2408.03314" target="_blank" rel="noreferrer">Snell et al. 2024</a></td></tr>
+    <tr><td>小 benchmark + 单 seed</td><td>"How many seeds, and what's the standard error? AIME has 30 problems per year."</td><td>见 <a href="m13-eval.html">13 评估</a></td></tr>
+    <tr><td>Prompt / 模板敏感</td><td>"Does the gain survive a different prompt template?"</td><td><a href="https://arxiv.org/abs/2503.20783" target="_blank" rel="noreferrer">Liu et al. 2025</a> 指出 Qwen2.5 base 不加模板也能答好数学题，模板选择会影响结论</td></tr>
+    <tr><td>LLM-judge 偏差</td><td>"Is the judge biased toward length or toward its own family?"</td><td>常见：长度偏好、位置偏好、自我偏好</td></tr>
+    <tr><td>数据污染</td><td>"Was there a decontamination check against the pretraining / SFT data?"</td><td>n-gram 重叠检查；用发布日期之后的新题</td></tr>
+    <tr><td>单模型家族</td><td>"Does it transfer to Llama / OLMo?"</td><td><a href="https://arxiv.org/abs/2506.10947" target="_blank" rel="noreferrer">Spurious Rewards</a>：部分收益不迁移</td></tr>
+    <tr><td>指标造成"涌现"</td><td>"Would the jump still look sharp under a continuous metric?"</td><td><a href="https://arxiv.org/abs/2304.15004" target="_blank" rel="noreferrer">Schaeffer et al. 2023</a></td></tr>
+    <tr><td>长度混杂</td><td>"Is the improvement explained by longer outputs?"</td><td><a href="https://arxiv.org/abs/2503.20783" target="_blank" rel="noreferrer">Liu et al. 2025</a>：GRPO 的长度归一化会让错误回答变得更长（Dr. GRPO）</td></tr>
+  </table>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Whenever I see a big jump on AIME, my first questions are: how many seeds, and is the comparison compute-matched? With only thirty problems, one problem is more than three points, so a five-point gain from a single seed could easily be noise.</p></div>
+</section>
+
+<!-- ============================================================ §5 -->
+<h2 class="sec" id="s-ideas"><span class="num">§5 · PROPOSING IDEAS LIVE</span>现场提 idea</h2>
+<p class="sec-intro">"If you joined our team for the summer, what would you work on?" 和 "How would you improve X?" 是研究轮最能拉开差距的问题。面试官不期待一个完美的 idea，而是看你<b>如何从一个模糊方向走到一个第一周就能开始的实验</b>。</p>
+
+<section class="concept" id="c-framework">
+  <div class="concept-head"><span class="pri p1">★</span><h3>六步框架：瓶颈 → 假设 → 最小实验 → 指标 → 风险 → 放大</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>先指出一个具体瓶颈，提出一个可证伪的假设，设计一个一周内能跑完的最小实验，定义成功指标和对照，说出最大风险和备选方案，最后说如果成功如何放大。</p><p class="en">Bottleneck, falsifiable hypothesis, minimal experiment, metrics, risks, and how it scales.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>步骤</th><th>要回答的问题</th><th>英文句式</th></tr>
+    <tr><td>1. Bottleneck</td><td>当前系统具体卡在哪里？有什么证据？</td><td>"The bottleneck I see is…, and you can see it in…"</td></tr>
+    <tr><td>2. Hypothesis</td><td>你相信什么能缓解它？为什么？什么结果会推翻它？</td><td>"My hypothesis is that… If that's true, we should see…; if not, …"</td></tr>
+    <tr><td>3. Minimal experiment</td><td>最小、最便宜、能给出信号的实验是什么？用什么模型规模、数据？</td><td>"The cheapest test is… with a [size] model on [task], which takes about [time]."</td></tr>
+    <tr><td>4. Metrics &amp; controls</td><td>主指标、次指标、baseline、算力匹配</td><td>"I'd measure… against… at matched compute, with [n] seeds."</td></tr>
+    <tr><td>5. Risks</td><td>最可能失败的原因；失败时学到什么；plan B</td><td>"The main risk is… If that happens, we'd still learn…, and I'd pivot to…"</td></tr>
+    <tr><td>6. Scale</td><td>如果成功，下一步怎么放大？对团队有什么价值？</td><td>"If it works, the next step is… and it would plug into…"</td></tr>
+  </table>
+  <h4>如何现场找到瓶颈（idea 来源）</h4>
+  <ul>
+    <li><b>失败模式驱动：</b>"当前模型在 X 上会犯什么样的错？"——从具体失败案例出发最可信。</li>
+    <li><b>成本驱动：</b>"哪一部分最贵？"——RL 中 rollout 生成占大头；推理中 KV cache 占内存；评估中人工标注最贵。</li>
+    <li><b>假设检验驱动：</b>"领域里大家默认相信、但没人认真检验过的假设是什么？"</li>
+    <li><b>迁移驱动：</b>"另一个领域的成熟技术能否解决这里的问题？"（例如把经典 RL 的探索方法用于 LLM RL）</li>
+    <li><b>规模驱动：</b>"什么东西在小规模有效、但在大规模可能失效（或反之）？"</li>
+  </ul>
+  <div class="box why"><span class="lbl">直觉</span>面试官心中的问题是："这个人第一周会做什么？第六周会有什么结论？"所以"最小实验"是框架里最重要的一步。能说出"用 1B 模型在 GSM8K 上跑 200 步 GRPO，大约 8 张 GPU 一天"的人，比说"我们可以研究一下 X"的人可信得多。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）idea 太大（"build an AGI agent"）或太小（"tune the learning rate"）；（2）只有方法没有假设——"我用 X 方法"，却说不出预期会看到什么；（3）不谈风险，显得天真；（4）忽视团队已有的工作——提前读他们的论文，idea 要能接上。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>Let me structure this. First, I'd want to pin down the bottleneck — I'll make a guess and you can tell me if it matches what you see internally. Then I'll propose a hypothesis, the smallest experiment that could falsify it, how I'd measure success, what could go wrong, and how it would scale if it works.</p></div>
+</section>
+
+<section class="concept" id="c-scoping">
+  <div class="concept-head"><span class="pri p1">★</span><h3>把 idea 压缩到 12 周实习</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>12 周 ≈ 2 周上手与复现 + 6 周核心实验 + 2 周放大/扩展 + 2 周写作与交接；目标是"一个清晰的结论"，正面或负面都行。</p><p class="en">Two weeks onboarding and reproducing, six weeks of core experiments, two weeks scaling up, two weeks writing — aim for one clear conclusion.</p></div>
+  <div class="deep">
+  <table class="plan-table">
+    <tr><th>周</th><th>阶段</th><th>里程碑</th></tr>
+    <tr><td>W1–2</td><td>上手 + 复现 baseline</td><td>在内部代码库中复现一个已知结果（误差范围内）；搭好评估脚本</td></tr>
+    <tr><td>W3–4</td><td>最小实验</td><td>小规模验证核心假设；决策点：信号是否存在？</td></tr>
+    <tr><td>W5–8</td><td>核心实验 + ablation</td><td>主结果 + 关键 ablation + 多 seed；中期汇报</td></tr>
+    <tr><td>W9–10</td><td>放大 / 泛化</td><td>更大模型或第二个任务；判断趋势</td></tr>
+    <tr><td>W11–12</td><td>写作 + 交接</td><td>内部报告 / 论文草稿；代码清理以便团队继续</td></tr>
+  </table>
+  <p><b>关键原则：</b></p>
+  <ul>
+    <li><b>设置决策点（kill criteria）：</b>"如果第 4 周小规模实验看不到 X 以上的提升，就转向 plan B。"这显示你懂得管理风险。</li>
+    <li><b>先复现再创新：</b>复现 baseline 能暴露评估 bug，也帮你熟悉内部基础设施。</li>
+    <li><b>负面结果也是结果：</b>"我们系统地证明 X 在这种设置下不起作用，原因是 Y"对团队也有价值。</li>
+    <li><b>算力估算：</b>能粗略说出每个实验需要的 GPU 小时（例如 7B 模型、2k token、每步 512 条 rollout 的 RL 大致需要多少），会让面试官放心。如果不确定，就说出估算方法。</li>
+  </ul>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>For a twelve-week internship, I'd plan backwards from one clear deliverable. The first two weeks would go to reproducing a known baseline in your codebase, which also catches evaluation bugs early. Weeks three and four are a small-scale test of the core hypothesis, with an explicit go/no-go decision. If the signal is there, I'd spend the middle of the internship on the main experiments and ablations, then scale up to a larger model in weeks nine and ten, and leave the last two weeks for the write-up and handing off clean code.</p></div>
+</section>
+
+<section class="concept" id="c-idea-examples">
+  <div class="concept-head"><span class="pri p1">★</span><h3>6 个完整范例（每个附 1 分钟英文版）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>推理、RL、agents、可解释性、效率、latent reasoning 各一个：都按六步框架展开，都有第一周能跑的最小实验和明确的失败条件。</p><p class="en">Six worked proposals across reasoning, RL, agents, interpretability, efficiency and latent reasoning — each with a week-one experiment and a kill criterion.</p></div>
+  <div class="deep">
+  <p>这些是<b>示范如何思考</b>的范例，不是保证新颖的研究题目——面试前请检查相关文献的最新进展，并根据目标组的方向改写。范例中的规模和时间是数量级估计，现场请按团队的算力调整。</p>
+  </div>
+
+  <details class="deep" open><summary>范例 1 · Reasoning：自适应思考长度（减少 overthinking）</summary><div class="inner">
+  <table>
+    <tr><th>步骤</th><th>内容</th></tr>
+    <tr><td>Bottleneck</td><td>推理模型在简单题上也生成很长的 CoT（overthinking），浪费推理算力；但硬性截断长度会伤害难题。</td></tr>
+    <tr><td>Hypothesis</td><td>模型在生成早期的内部状态已经包含"这道题有多难 / 我是否已经有答案"的信息；如果能读出这个信号，就能按题分配思考预算，在相同准确率下显著减少 token。推翻条件：线性 probe 预测"最终是否答对"的能力在前 10% token 处不比只看题目长度的 baseline 好。</td></tr>
+    <tr><td>Minimal exp.</td><td>取一个开源推理模型，在 MATH 上每题采样多条回复；在不同位置抽取 hidden states，训练线性 probe 预测"若此刻强制作答是否正确"。一个开源小模型、几千道题，几天 GPU 时间。</td></tr>
+    <tr><td>Metrics</td><td>准确率–平均 token 数的 Pareto 曲线；对比：固定预算截断、按题目长度分配、<a href="https://arxiv.org/abs/2501.19393" target="_blank" rel="noreferrer">s1</a> 风格的 budget forcing。</td></tr>
+    <tr><td>Risks</td><td>probe 信号可能只反映表面特征（题目长度）。Plan B：直接用 RL 加长度惩罚，并按题难度设置不同惩罚强度。</td></tr>
+    <tr><td>Scale</td><td>把 probe 做成训练时的辅助头，或把"何时停止思考"作为 RL 的一个动作。</td></tr>
+  </table>
+  <div class="box say"><span class="lbl">1-minute pitch</span><p>Reasoning models often spend thousands of tokens on problems they could answer almost immediately. My hypothesis is that the model's hidden states already encode whether it has effectively solved the problem, early in the chain of thought. In week one, I'd test that with linear probes: at different points in the reasoning trace, force an answer, label whether it's correct, and see if a probe can predict that from the activations better than a baseline using only problem length. If the probe works, we can use it to stop early on easy problems and plot accuracy against average tokens, compared to fixed budgets and budget forcing. If it doesn't, that's informative too, and I'd fall back to RL with a difficulty-aware length penalty.</p></div>
+  </div></details>
+
+  <details class="deep"><summary>范例 2 · RL：减少"无信号"rollout 的浪费</summary><div class="inner">
+  <table>
+    <tr><th>步骤</th><th>内容</th></tr>
+    <tr><td>Bottleneck</td><td>在 GRPO 这类组内归一化的方法中，如果一个 prompt 的所有 rollout 全对或全错，组内 advantage 全为 0，这批生成对梯度没有贡献——而生成是 RL 中最贵的部分。DAPO（<a href="https://arxiv.org/abs/2503.14476" target="_blank" rel="noreferrer">Yu et al. 2025</a>）的 dynamic sampling 通过过滤这类 prompt 并补采来处理，但补采本身也要花生成算力。</td></tr>
+    <tr><td>Hypothesis</td><td>可以<em>在生成之前</em>预测某个 prompt 在当前策略下的通过率（例如用该 prompt 的历史通过率，或一个小的预测头），优先采样通过率接近 50% 的 prompt，从而在相同生成预算下获得更多有效梯度。推翻条件：在匹配生成 token 数的情况下，最终准确率不优于随机采样 + 过滤。</td></tr>
+    <tr><td>Minimal exp.</td><td>1–1.5B 模型、数学 RLVR、短训练；对比 (a) 均匀采样，(b) 事后过滤，(c) 基于历史通过率的优先采样。</td></tr>
+    <tr><td>Metrics</td><td>以"生成 token 总数"为横轴的验证准确率；有效（非零 advantage）样本比例；训练稳定性。</td></tr>
+    <tr><td>Risks</td><td>只训练"中等难度"题可能导致 curriculum 偏移、遗忘简单题或永远学不会难题。缓解：保留一定比例的均匀采样。</td></tr>
+    <tr><td>Scale</td><td>在大规模 RL 中，生成效率的提升直接转化为成本节省；可与异步 rollout 系统结合。</td></tr>
+  </table>
+  <div class="box say"><span class="lbl">1-minute pitch</span><p>In group-based RL like GRPO, any prompt where every rollout is right, or every rollout is wrong, gives zero advantage — so all that generation is wasted, and generation is the most expensive part of RL. Methods like DAPO filter those groups after the fact. I'd like to predict them before generating: track each prompt's recent pass rate under the current policy and preferentially sample prompts near fifty percent. The key comparison is accuracy as a function of total generated tokens, against uniform sampling and post-hoc filtering. The main risk is a curriculum that's too narrow, so I'd keep a fraction of uniform samples as a safeguard.</p></div>
+  </div></details>
+
+  <details class="deep"><summary>范例 3 · Agents：长程任务中的上下文管理</summary><div class="inner">
+  <table>
+    <tr><th>步骤</th><th>内容</th></tr>
+    <tr><td>Bottleneck</td><td>长程 agent 任务（例如软件工程、网页操作）中，轨迹很快超过上下文窗口；简单截断会丢失关键信息，而模型在长上下文中间的信息利用也较差（<a href="https://arxiv.org/abs/2307.03172" target="_blank" rel="noreferrer">Lost in the Middle</a>）。</td></tr>
+    <tr><td>Hypothesis</td><td>让 agent 自己学会写"工作记忆笔记"（定期把轨迹压缩成结构化摘要：已知事实、已尝试且失败的方案、当前计划），比截断或通用摘要更能保持长程成功率。推翻条件：在相同 token 预算下，学到的笔记策略不优于"保留最近 N 步 + 通用摘要"。</td></tr>
+    <tr><td>Minimal exp.</td><td>选一个能自动判定成功的 agent benchmark（如 <a href="https://arxiv.org/abs/2310.06770" target="_blank" rel="noreferrer">SWE-bench</a> 的子集），人为把上下文限制到较小值以制造压力；对比截断、通用摘要、结构化笔记（先用 prompting，再考虑 RL 训练）。</td></tr>
+    <tr><td>Metrics</td><td>任务成功率 vs 允许的上下文长度；重复犯同一错误的次数；每任务 token 成本。</td></tr>
+    <tr><td>Risks</td><td>摘要可能遗漏后来才发现重要的细节。缓解：允许 agent 检索完整的历史日志（摘要 + 检索）。</td></tr>
+    <tr><td>Scale</td><td>把"何时写笔记、写什么"作为 RL 训练的一部分，用任务成功作为奖励。</td></tr>
+  </table>
+  <div class="box say"><span class="lbl">1-minute pitch</span><p>Long-horizon agents run out of context fast, and simple truncation throws away exactly the information they need — like which approaches already failed. My hypothesis is that a structured working-memory note, with known facts, failed attempts, and the current plan, preserves success rates much better than truncation or generic summaries. The minimal experiment is to artificially shrink the context on a subset of an automatically graded benchmark like SWE-bench and compare the three strategies; I'd start with prompting and only move to RL if prompting shows a signal. I'd track not just success rate but how often the agent repeats a mistake it already made, since that's the failure mode memory should fix.</p></div>
+  </div></details>
+
+  <details class="deep"><summary>范例 4 · Interpretability：检测 CoT 不忠实（unfaithfulness）</summary><div class="inner">
+  <table>
+    <tr><th>步骤</th><th>内容</th></tr>
+    <tr><td>Bottleneck</td><td>CoT 监控（CoT monitoring）被视为安全手段（<a href="https://arxiv.org/abs/2507.11473" target="_blank" rel="noreferrer">Korbak et al. 2025</a>），但研究表明推理模型经常不在 CoT 中说出它实际使用的提示（<a href="https://arxiv.org/abs/2505.05410" target="_blank" rel="noreferrer">Chen et al. 2025</a>）。只读文本无法发现这种情况。</td></tr>
+    <tr><td>Hypothesis</td><td>当模型使用了提示却没说出来时，其激活中存在可被线性 probe 检测的"使用了提示"信号。推翻条件：probe 在"使用提示且说出"与"使用提示但未说出"两类上的表现无法超过只看 CoT 文本的分类器。</td></tr>
+    <tr><td>Minimal exp.</td><td>复现 hint 范式：在多选题中插入提示（如"一位教授认为答案是 C"），通过答案变化判断模型是否使用了提示，再根据 CoT 是否提到提示分成两类；在开源推理模型上训练 probe。</td></tr>
+    <tr><td>Metrics</td><td>检测"未说出的提示使用"的 AUROC；对未见过的提示类型的泛化。</td></tr>
+    <tr><td>Risks</td><td>probe 可能检测的是"提示存在"，而不是"提示被使用"。控制：加入"提示存在但答案未改变"的对照组。</td></tr>
+    <tr><td>Scale</td><td>作为 CoT monitor 的补充信号；研究 RL 训练过程中忠实度如何变化。</td></tr>
+  </table>
+  <div class="box say"><span class="lbl">1-minute pitch</span><p>Chain-of-thought monitoring is attractive for safety, but recent work shows reasoning models often don't mention hints they actually rely on, so reading the text isn't enough. I'd test whether the activations reveal hint use even when the chain of thought doesn't. The setup reuses the hint paradigm: insert a hint, detect whether it changed the answer, and split cases by whether the chain of thought acknowledges it. Then I'd train linear probes and compare them to a text-only classifier. The crucial control is hints that are present but don't change the answer — otherwise the probe might just be detecting the hint's presence.</p></div>
+  </div></details>
+
+  <details class="deep"><summary>范例 5 · Efficiency：用 speculative decoding 加速 RL rollout</summary><div class="inner">
+  <table>
+    <tr><th>步骤</th><th>内容</th></tr>
+    <tr><td>Bottleneck</td><td>RL 中长 CoT 的生成占据大部分 wall-clock 时间，且长尾样本（特别长的回复）拖慢整个 batch。</td></tr>
+    <tr><td>Hypothesis</td><td><a href="https://arxiv.org/abs/2211.17192" target="_blank" rel="noreferrer">Speculative decoding</a> 能在不改变输出分布的前提下加速采样；难点是策略在训练中不断变化，draft model 会过时。假设：周期性地用策略自己最近的 rollout 蒸馏 draft model，可以维持足够高的接受率。推翻条件：接受率随训练快速下降，加速比不足以抵消 draft 更新成本。</td></tr>
+    <tr><td>Minimal exp.</td><td>固定一个 RL 训练过程的多个 checkpoint，离线测量：(a) 固定 draft 模型的接受率随 checkpoint 的变化；(b) 每 K 步更新 draft 后的接受率。不需要先改训练系统。</td></tr>
+    <tr><td>Metrics</td><td>token 接受率、端到端生成吞吐量、额外的 draft 训练成本；由于 speculative sampling 是精确的，正确实现下不应影响分布（需验证）。</td></tr>
+    <tr><td>Risks</td><td>系统复杂度高；高温采样下接受率可能较低。</td></tr>
+    <tr><td>Scale</td><td>集成进 rollout 引擎；与长度长尾调度结合。</td></tr>
+  </table>
+  <div class="box say"><span class="lbl">1-minute pitch</span><p>In RL for reasoning, generating long chains of thought dominates wall-clock time. Speculative decoding speeds up sampling without changing the output distribution, but in RL the policy keeps moving, so a fixed draft model goes stale. I'd start with a cheap offline study: take checkpoints from an existing RL run and measure how the draft's acceptance rate decays, with and without periodically distilling the draft on recent rollouts. That tells us whether the idea is worth the engineering before touching the training system. If acceptance stays high with cheap updates, the speedup applies directly to every future RL run.</p></div>
+  </div></details>
+
+  <details class="deep"><summary>范例 6 · Latent reasoning：循环深度的自适应停止</summary><div class="inner">
+  <table>
+    <tr><th>步骤</th><th>内容</th></tr>
+    <tr><td>Bottleneck</td><td>循环/递归深度模型（如 <a href="https://arxiv.org/abs/2502.05171" target="_blank" rel="noreferrer">Geiping et al. 2025</a> 的 recurrent-depth 模型、<a href="https://arxiv.org/abs/2510.25741" target="_blank" rel="noreferrer">Looped LMs</a>）可以通过增加循环次数在 latent space 中增加计算，但如何决定每个 token 需要循环多少次仍是开放问题；固定次数浪费算力或不足。</td></tr>
+    <tr><td>Hypothesis</td><td>相邻两次循环之间隐状态的变化量（收敛程度）可以作为停止信号：变化很小时，额外循环收益小。推翻条件：基于收敛度的停止规则在相同平均循环次数下不优于固定次数。</td></tr>
+    <tr><td>Minimal exp.</td><td>取一个公开的循环深度模型，在推理任务上测量每个 token 的隐状态变化曲线与"再多循环是否改变预测"的关系；比较阈值停止 vs 固定次数。</td></tr>
+    <tr><td>Metrics</td><td>准确率 vs 平均循环次数；不同难度题目上的循环次数分布。</td></tr>
+    <tr><td>Risks</td><td>隐状态可能在收敛前出现"平台期"；阈值对任务敏感。替代：训练一个小的停止头。</td></tr>
+    <tr><td>Scale</td><td>与显式 CoT 结合：简单步骤 latent 完成，困难步骤再写出 token。</td></tr>
+  </table>
+  <div class="box say"><span class="lbl">1-minute pitch</span><p>Recurrent-depth or looped models let you spend more compute per token by iterating a block, but they usually use a fixed number of iterations. My hypothesis is that convergence of the hidden state — how much it changes between iterations — is a good proxy for whether more iterations will help. The first experiment needs no training: on a public looped model, record per-token hidden-state deltas and check whether extra iterations still change the prediction. If convergence predicts that well, a simple threshold should match the fixed-iteration accuracy with fewer average iterations; if it doesn't, I'd train a small halting head instead.</p></div>
+  </div></details>
+
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>把这些范例背下来照搬。面试官会根据你的回答追问，所以重要的是<b>框架</b>，而不是具体内容。练习方法：随机选一个 §7 中的论文，限时 5 分钟用六步框架为它想一个后续项目。</div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>How would you know if this idea is already done?</b><details><summary>思路</summary><div class="inner">"I'd spend the first day on a literature search — arXiv, recent conference proceedings, and asking people on the team. If something close exists, I'd look for what it didn't test: a different scale, a different setting, or a cleaner comparison." 这也展示了合作意识。</div></details></li>
+    <li><b>What would you do if the first experiment shows nothing?</b><details><summary>思路</summary><div class="inner">先排查：评估是否有 bug、规模是否太小、信号是否被噪声淹没（增加 seed）。然后判断：假设是错的，还是实验设计不对？如果是前者，按事先定好的 kill criterion 转向 plan B，并写下负面结果。</div></details></li>
+  </ol></div>
+</section>
+
+<h4>练习（出声做，限时）</h4>
+<div class="exercise deep"><div class="ex-head"><b>练习 5.1</b> · 难度 ★★</div><p>限时 5 分钟：为 <a href="https://arxiv.org/abs/2501.19393" target="_blank" rel="noreferrer">s1</a>（1,000 条样本 + budget forcing）想一个 12 周后续项目，用六步框架说出 1 分钟英文版。</p><details><summary>提示</summary><div class="inner">瓶颈可以是："Wait" 强制延长思考在某个点之后收益饱和甚至下降——为什么？什么题目上有效？</div></details><details><summary>参考答案</summary><div class="inner">假设：延长思考只在模型"仍有未检查的候选"时有效。最小实验：在同一题集上按强制延长次数画准确率曲线，按题目难度和首次答案是否正确分组；如果收益集中在"首次答错但接近"的题上，就训练一个判断"是否值得继续"的 probe。指标：准确率 vs 平均 token；风险：probe 学到表面特征；放大：把停止决策做成 RL 动作。</div></details></div>
+<div class="exercise deep"><div class="ex-head"><b>练习 5.2</b> · 难度 ★★</div><p>面试官说："Our RL runs are bottlenecked by generation." 在 2 分钟内给出 3 个从便宜到昂贵排序的方向，并为最便宜的那个说出第一周的实验。</p><details><summary>参考答案</summary><div class="inner">(1) 系统层：长度长尾调度 / 异步 rollout、截断过长样本（便宜，先测量长度分布与 GPU 空闲率）；(2) 数据层：过滤预计全对/全错的 prompt（见范例 2）；(3) 算法层：speculative decoding + 周期性更新 draft（见范例 5）。第一周：统计现有 run 的回复长度分布和每步 GPU 利用率，估算长尾造成的空闲比例。</div></details></div>
+<div class="exercise deep"><div class="ex-head"><b>练习 5.3</b> · 难度 ★★★</div><p>为目标组最近的一篇论文写出：3 个问题（按 §4 检查表）、1 个后续实验、1 句英文开场白。</p><details><summary>提示</summary><div class="inner">开场白模板："I really enjoyed your paper on X — especially Y. I was curious whether Z…" 问题要具体到某个表格或实验。</div></details></div>
+
+<!-- ============================================================ §6 -->
+<h2 class="sec" id="s-taste"><span class="num">§6 · RESEARCH TASTE</span>研究品味</h2>
+<p class="sec-intro">品味问题没有标准答案，面试官看的是：你有没有自己的观点、观点有没有证据支撑、你能不能同时说出最强的反方论据。下面先给框架，再给几个平衡的示范回答。</p>
+
+<section class="concept" id="c-taste-framework">
+  <div class="concept-head"><span class="pri p1">★</span><h3>判断一个问题是否值得做：五个维度</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>重要性 × 可解性 × 时机 × 比较优势 × 可检验性：一个好问题要重要、现在可解、你/团队有优势，并且有清晰的成功信号。</p><p class="en">Importance, tractability, timing, comparative advantage, and a clear success signal.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>维度</th><th>问自己</th><th>反例</th></tr>
+    <tr><td><b>Importance</b></td><td>如果完全成功，会改变什么？谁会用？</td><td>把一个 benchmark 提高 0.5 个点</td></tr>
+    <tr><td><b>Tractability</b></td><td>现在有工具和算力做吗？有没有中间里程碑？</td><td>需要 100 倍于可用算力才能看到信号</td></tr>
+    <tr><td><b>Timing</b></td><td>为什么是现在？（新模型能力、新数据、新工具让它变得可行）</td><td>三年前就该做，或已经有十个组在做</td></tr>
+    <tr><td><b>Comparative advantage</b></td><td>你或团队有什么独特的东西：数据、基础设施、洞察？</td><td>和大实验室拼纯规模</td></tr>
+    <tr><td><b>Testability</b></td><td>怎么知道成功了？指标能被"刷"吗？</td><td>"让模型更聪明"——没有可测量的定义</td></tr>
+  </table>
+  <p><b>两个常被引用的思想参照：</b></p>
+  <ul>
+    <li>Rich Sutton，<a href="http://www.incompleteideas.net/IncIdeas/BitterLesson.html" target="_blank" rel="noreferrer">The Bitter Lesson</a> (2019)：长期来看，能利用更多计算的通用方法胜过人工设计的知识。讨论时要能说出它的适用范围：它说的是长期趋势，并不意味着所有归纳偏置都没价值（例如数据效率、可解释性、安全性方面）。</li>
+    <li>"Scaling 能解决什么、不能解决什么"——一个成熟的回答会区分：随规模可预测改善的部分（如困惑度、很多知识类任务），和不明显随规模改善、需要新方法的部分（如某些可靠性、长程规划、评估本身）。</li>
+  </ul>
+  <div class="box why"><span class="lbl">直觉</span>品味 ≈ 对"什么会成功"的预测能力。最好的展示方式是说出一个你曾经改变过的看法："I used to think X, but after seeing Y, I now think Z." 这同时展示了观点、证据和更新能力。</div>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>（1）给出极端观点（"RL is all you need" / "LLMs can't reason"）而没有限定；（2）只复述流行观点；（3）贬低别的方向或机构；（4）说"I don't have an opinion"——一定要有一个可以被讨论的立场，哪怕标注了不确定性。</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>When I decide whether a problem is worth working on, I ask three things: if it fully works, does it change how people build models; is there a version I can test in a few weeks; and why is now the right time — usually because a new capability or tool makes it newly tractable. I also try to be honest about comparative advantage: I shouldn't pick a problem whose only lever is having more compute than everyone else.</p></div>
+</section>
+
+<section class="concept" id="c-taste-answers">
+  <div class="concept-head"><span class="pri p1">★</span><h3>常见品味问题与平衡的示范回答</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>结构：立场（一句话）→ 支持证据（1–2 条，带出处）→ 最强反方论据 → 什么证据会改变你的看法。</p><p class="en">Position, evidence, strongest counter-argument, and what would change your mind.</p></div>
+  <div class="deep">
+  <details open><summary>Q1 · "What's a research direction you think is overrated, and one that's underrated?"</summary><div class="inner">
+  <p><b>思路：</b>避免攻击具体的组；选"大家投入很多但证据薄"的方向和"重要但投入少"的方向。下面只是示范，换成你真正相信的观点。</p>
+  <div class="box say"><span class="lbl">Example answer</span><p>I'd say what's somewhat overrated is reporting single-number gains on small reasoning benchmarks. With thirty AIME problems, one question is over three points, and results can be sensitive to prompt templates and the base model — the spurious-rewards paper showed that even random rewards can improve some Qwen models but not others. Underrated, I think, is careful evaluation infrastructure: better held-out tests, multiple seeds, and compute-matched baselines. It's less exciting, but it determines whether everything else is real. The counter-argument is that fast, noisy iteration is how the field discovered a lot of things, so I don't want to slow that down — I just want the claims to match the evidence.</p></div>
+  </div></details>
+  <details><summary>Q2 · "Do you think scaling RL for reasoning will keep working?"</summary><div class="inner">
+  <div class="box say"><span class="lbl">Example answer</span><p>My guess is yes for domains with reliable verifiers, but with diminishing returns per unit of compute and a strong dependence on the base model. On the positive side, OpenAI reported that o1's performance improves with both more RL training compute and more test-time thinking, and DeepSeek-R1 showed large gains from RL with verifiable rewards. On the skeptical side, work like Yue et al. suggests that under typical budgets RL mostly sharpens what the base model can already do. I think the open question is whether longer and more diverse RL can genuinely expand capabilities — ProRL gives some evidence it can. And the bigger bottleneck may be domains without clean verifiers, like open-ended writing or research itself.</p></div>
+  </div></details>
+  <details><summary>Q3 · "Is chain-of-thought actual reasoning?"</summary><div class="inner">
+  <div class="box say"><span class="lbl">Example answer</span><p>I'd separate two questions: whether chain of thought helps, and whether it faithfully reflects the computation. It clearly helps — accuracy improves with more reasoning tokens on many tasks. But faithfulness is weaker than it looks: Turpin and colleagues showed that biasing features in the prompt can change the answer without being mentioned in the explanation, and later work found that reasoning models often don't verbalize hints they use. So my view is that chain of thought is a useful computational scratchpad that's partially, but not reliably, interpretable — which matters a lot if we want to use it for monitoring.</p></div>
+  </div></details>
+  <details><summary>Q4 · "Should we reason in tokens or in latent space?"</summary><div class="inner">
+  <div class="box say"><span class="lbl">Example answer</span><p>I think both have a role, and the trade-off is roughly bandwidth and efficiency versus interpretability and trainability. Latent approaches like Coconut or recurrent-depth models can, in principle, carry more information per step and avoid committing to discrete tokens too early. But token-level reasoning is easy to supervise, easy to sample diversely, and readable, which matters for RL and for safety monitoring. My current bet is on hybrids — latent computation for local steps, explicit tokens for high-level structure — but I'd change my mind if latent methods start matching token-based reasoning at scale on hard benchmarks.</p></div>
+  </div></details>
+  <details><summary>Q5 · "What's a belief you've changed recently?"</summary><div class="inner">
+  <p><b>思路：</b>这是最能展示品味的问题之一。结构："I used to think X. Then I saw Y (具体证据). Now I think Z, with the caveat W."</p>
+  <div class="box say"><span class="lbl">Template</span><p>"I used to think [prior belief], mostly because [reason]. What changed my mind was [specific paper/result/experience], which showed [evidence]. Now I think [updated belief] — though I'm still unsure about [remaining uncertainty]."</p></div>
+  </div></details>
+  <details><summary>Q6 · "How do you choose what to work on?"</summary><div class="inner">
+  <div class="box say"><span class="lbl">Example answer</span><p>I usually start from a failure mode I've seen in practice, rather than from a method I want to apply. Then I check three things: is there a cheap experiment that could show whether the idea has signal, why it hasn't been done already — is there a new tool or capability that makes it tractable now — and whether the result would be useful even if it's negative. I also try to set a kill criterion upfront, so I don't keep a dead project alive for months.</p></div>
+  </div></details>
+  </div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Which researcher's taste do you admire, and why?</b><details><summary>思路</summary><div class="inner">选一个你真正读过多篇论文的人；说具体的特点（"they consistently pick problems where a simple experiment settles a big question"），并举一篇论文为例。不要只说名气大的人而说不出具体原因。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §7 -->
+<h2 class="sec" id="s-papers"><span class="num">§7 · READING LIST</span>必读论文清单（核心 60 篇，15 篇最优先）</h2>
+<p class="sec-intro">每篇的标题、年份和链接都已核对（arXiv / 官方页面）；"一句话贡献"是我自己的概括，不是摘要原文。标 <b>★</b> 的 15 篇是最优先：你应该能对每一篇用 §2 模板讲 2 分钟，并回答"面试常问点"。其余的至少知道一句话贡献。技术细节请看对应模块（06 / 07 / 10 / 11 等）。</p>
+
+<section class="concept" id="c-papers-scaling">
+  <div class="concept-head"><span class="pri p1">★</span><h3>A. Transformer、规模与架构（7 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>Transformer 架构 → scaling law（Kaplan → Chinchilla）→ in-context learning（GPT-3）→ "涌现"之争 → 现代组件（RoPE、MoE）。</p><p class="en">From the Transformer to scaling laws, in-context learning, the emergence debate, and modern components like RoPE and MoE.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/1706.03762" target="_blank" rel="noreferrer">Attention Is All You Need</a> (Vaswani et al., 2017)</td><td>完全用注意力替代循环结构，实现并行训练的序列模型</td><td>为什么除以 \(\sqrt{d_k}\)；多头的作用；复杂度 \(O(n^2d)\)；位置编码</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2001.08361" target="_blank" rel="noreferrer">Scaling Laws for Neural Language Models</a> (Kaplan et al., 2020)</td><td>损失随参数、数据、算力呈幂律下降，且跨多个数量级可预测</td><td>与 Chinchilla 结论的差异及原因</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2005.14165" target="_blank" rel="noreferrer">Language Models are Few-Shot Learners</a> (Brown et al., 2020)</td><td>175B 的 GPT-3 展示了无需梯度更新的 in-context few-shot 学习</td><td>ICL 是什么、为什么会出现（与 induction heads 的联系）</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2203.15556" target="_blank" rel="noreferrer">Training Compute-Optimal LLMs (Chinchilla)</a> (Hoffmann et al., 2022)</td><td>固定算力下参数与 token 应等比例扩展（约 20 token/参数）</td><td>\(C\approx6ND\) 估算；三种拟合方法；推理成本下为何要"过度训练"</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2206.07682" target="_blank" rel="noreferrer">Emergent Abilities of Large Language Models</a> (Wei et al., 2022)</td><td>定义并汇总了"小模型没有、大模型才有"的能力</td><td>与下面 Mirage 论文对照讨论</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2304.15004" target="_blank" rel="noreferrer">Are Emergent Abilities of LLMs a Mirage?</a> (Schaeffer et al., 2023)</td><td>论证很多"涌现"来自不连续的评估指标，换成连续指标后变化平滑</td><td>指标选择如何制造相变；对能力预测的启示</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2412.19437" target="_blank" rel="noreferrer">DeepSeek-V3 Technical Report</a> (DeepSeek-AI, 2024)</td><td>671B 总参数 / 37B 激活的 MoE 模型，结合 MLA 等效率设计</td><td>MoE 的负载均衡；总参数 vs 激活参数；训练效率</td></tr>
+  </table>
+  <p><b>延伸（不计入 60 篇）：</b><a href="https://arxiv.org/abs/2104.09864" target="_blank" rel="noreferrer">RoFormer: Rotary Position Embedding</a> (Su et al., 2021)：用旋转变换编码位置，使注意力分数只依赖相对位置。</p></div>
+</section>
+
+<section class="concept" id="c-papers-data">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>B. 预训练数据（4 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>数据质量和数量的权衡：过滤与去重（FineWeb、DCLM）、合成教科书数据、数据受限时的重复、完整的工业训练配方（Llama 3）。</p><p class="en">Data quality versus quantity: filtering, synthetic data, repetition under data constraints, and full industrial recipes.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><a href="https://arxiv.org/abs/2406.17557" target="_blank" rel="noreferrer">The FineWeb Datasets</a> (Penedo et al., 2024)</td><td>公开了大规模网页数据的过滤/去重流程并逐项消融，以及教育质量分类器筛选的子集</td><td>如何评估数据过滤（训练小模型对比）；去重的利弊</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2406.11794" target="_blank" rel="noreferrer">DataComp-LM</a> (Li et al., 2024)</td><td>把"数据集设计"变成固定训练配方下的受控 benchmark</td><td>为什么固定模型与训练、只改数据；基于模型的质量过滤</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2305.16264" target="_blank" rel="noreferrer">Scaling Data-Constrained Language Models</a> (Muennighoff et al., 2023)</td><td>研究重复数据的价值：重复少数 epoch 接近新数据，之后快速递减</td><td>数据用完了怎么办；与 Chinchilla 的关系</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2407.21783" target="_blank" rel="noreferrer">The Llama 3 Herd of Models</a> (Llama Team, 2024)</td><td>详细公开了一个前沿规模模型从数据到后训练的完整配方</td><td>数据配比、退火（annealing）、长上下文扩展、后训练流程</td></tr>
+  </table>
+  <p><b>延伸（不计入 60 篇）：</b><a href="https://arxiv.org/abs/2306.11644" target="_blank" rel="noreferrer">Textbooks Are All You Need</a> (Gunasekar et al., 2023)：用高质量"教科书式"数据（含合成数据）训练小代码模型取得强结果。</p></div>
+</section>
+
+<section class="concept" id="c-papers-post">
+  <div class="concept-head"><span class="pri p1">★</span><h3>C. 后训练与 RLHF（7 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>从人类偏好学习（Christiano）→ PPO → InstructGPT 三阶段 → AI 反馈（Constitutional AI）→ 奖励过优化 → DPO 及其争议 → 开放配方（Tülu 3）。</p><p class="en">Preference learning, PPO, the InstructGPT pipeline, AI feedback, reward over-optimization, DPO and its debate, and open recipes.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><a href="https://arxiv.org/abs/1706.03741" target="_blank" rel="noreferrer">Deep RL from Human Preferences</a> (Christiano et al., 2017)</td><td>从人类对轨迹片段的成对比较中学习奖励模型，再用 RL 优化</td><td>Bradley–Terry 模型；为什么比较比打分更可靠</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/1707.06347" target="_blank" rel="noreferrer">Proximal Policy Optimization</a> (Schulman et al., 2017)</td><td>用 clipped surrogate 限制每次更新幅度的简单稳定策略梯度算法</td><td>clip 的作用；GAE；为什么 LLM 中需要 value model</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2203.02155" target="_blank" rel="noreferrer">Training LMs to Follow Instructions with Human Feedback (InstructGPT)</a> (Ouyang et al., 2022)</td><td>SFT → 奖励模型 → PPO 三阶段，使小模型在人类偏好上胜过大得多的 GPT-3</td><td>三阶段各自作用；KL 惩罚为什么必要；"alignment tax"</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2212.08073" target="_blank" rel="noreferrer">Constitutional AI</a> (Bai et al., 2022)</td><td>用一组原则让模型自我批评修改，并用 AI 反馈代替人类有害性标注（RLAIF）</td><td>AI 反馈的优缺点；原则如何影响行为</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2210.10760" target="_blank" rel="noreferrer">Scaling Laws for Reward Model Overoptimization</a> (Gao et al., 2022)</td><td>用"金标准"奖励模型系统测量 Goodhart 效应：代理奖励上升而真实奖励先升后降</td><td>Goodhart's law；与 KL 距离的函数关系；缓解方法</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2305.18290" target="_blank" rel="noreferrer">Direct Preference Optimization</a> (Rafailov et al., 2023)</td><td>把 KL 约束 RLHF 变成偏好对上的分类损失，无需显式奖励模型与 RL</td><td>完整推导（见 <a href="#c-dpo-answer">§2</a>）；β 的作用；offline 的局限</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2411.15124" target="_blank" rel="noreferrer">Tülu 3</a> (Lambert et al., 2024)</td><td>完全公开数据、代码与配方的后训练流程，包括可验证奖励的 RL（RLVR）</td><td>SFT → DPO → RLVR 的组合；开放配方的价值</td></tr>
+  </table>
+  <p><b>延伸（不计入 60 篇）：</b><a href="https://arxiv.org/abs/2404.10719" target="_blank" rel="noreferrer">Is DPO Superior to PPO for LLM Alignment?</a> (Xu et al., 2024)：分析 DPO 的局限，并指出调好的 PPO 在多项任务上更强；<a href="https://arxiv.org/abs/2402.01306" target="_blank" rel="noreferrer">KTO: Model Alignment as Prospect Theoretic Optimization</a> (Ethayarajh et al., 2024)：只需"好/坏"二元标签（无需成对）的对齐目标，受前景理论启发。</p></div>
+</section>
+
+<section class="concept" id="c-papers-rl">
+  <div class="concept-head"><span class="pri p1">★</span><h3>D. 面向推理的 RL（8 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>自我训练（STaR、ReST-EM）→ 过程 vs 结果监督（PRM）→ GRPO → R1 → 训练配方与偏差修正（DAPO、Dr. GRPO）→ "RL 是否扩展能力"之争（Yue、ProRL、Spurious Rewards）。</p><p class="en">Self-training, process versus outcome supervision, GRPO, R1, recipe fixes, and the debate about whether RL expands capability.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><a href="https://arxiv.org/abs/2203.14465" target="_blank" rel="noreferrer">STaR: Bootstrapping Reasoning With Reasoning</a> (Zelikman et al., 2022)</td><td>让模型生成推理、保留答对的样本微调并迭代；答错时提供答案做"合理化"</td><td>与 expert iteration 的关系；rationalization 的作用</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2305.20050" target="_blank" rel="noreferrer">Let's Verify Step by Step</a> (Lightman et al., 2023)</td><td>大规模逐步标注（PRM800K）训练过程奖励模型，在重排序上优于结果奖励模型</td><td>PRM vs ORM；标注成本；PRM 在 RL 中被 hack 的风险</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2402.03300" target="_blank" rel="noreferrer">DeepSeekMath (introduces GRPO)</a> (Shao et al., 2024)</td><td>提出 GRPO：用组内奖励的相对值作为 advantage，省去 value model</td><td>GRPO 公式；与 PPO 的区别；组内归一化的偏差</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2501.12948" target="_blank" rel="noreferrer">DeepSeek-R1</a> (DeepSeek-AI, 2025)</td><td>展示纯规则奖励的大规模 RL 可激发长 CoT 推理（R1-Zero），并给出多阶段训练与蒸馏配方</td><td>R1-Zero vs R1；"aha moment"；为何蒸馏到小模型比小模型直接 RL 更好</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2503.14476" target="_blank" rel="noreferrer">DAPO</a> (Yu et al., 2025)</td><td>开源的大规模 RL 系统与若干训练技巧（如非对称 clip、动态采样、token 级损失）</td><td>每个技巧解决什么问题（熵塌缩、零梯度组、长度偏差）</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2503.20783" target="_blank" rel="noreferrer">Understanding R1-Zero-Like Training</a> (Liu et al., 2025)</td><td>发现多数 base model 在 RL 前就有"顿悟"式自我反思，并指出 GRPO 的归一化带来长度偏差（提出 Dr. GRPO）</td><td>"aha moment" 是否由 RL 产生；长度增长是否等于推理能力</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2504.13837" target="_blank" rel="noreferrer">Does RL Really Incentivize Reasoning Capacity Beyond the Base Model?</a> (Yue et al., 2025)</td><td>pass@k 交叉现象：RLVR 提高小 k 表现，但大 k 时 base model 反超</td><td>pass@k 估计；能力 vs 采样效率；见 <a href="#c-critique-example">§4 批判</a></td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2505.24864" target="_blank" rel="noreferrer">ProRL</a> (Liu et al., 2025)</td><td>长时间、多样化任务的 RL 能找到 base model 大量采样也找不到的策略</td><td>与 Yue et al. 的结论如何调和</td></tr>
+  </table>
+  <p><b>延伸（不计入 60 篇）：</b><a href="https://arxiv.org/abs/2312.06585" target="_blank" rel="noreferrer">Beyond Human Data: Scaling Self-Training (ReST-EM)</a> (Singh et al., 2023)：生成 → 用奖励过滤 → 微调 的 EM 式自训练可扩展且可超过人类数据微调；<a href="https://arxiv.org/abs/2110.14168" target="_blank" rel="noreferrer">Training Verifiers to Solve Math Word Problems</a> (Cobbe et al., 2021)：提出 GSM8K，并训练 verifier 对多个候选重排序以提升准确率；<a href="https://arxiv.org/abs/2211.14275" target="_blank" rel="noreferrer">Process- and Outcome-based Feedback</a> (Uesato et al., 2022)：结果监督的最终答案准确率接近过程监督，但要减少"答案对、推理错"需要过程监督。</p>
+  <p>延伸：<a href="https://arxiv.org/abs/2506.10947" target="_blank" rel="noreferrer">Spurious Rewards</a> (Shao et al., 2025) 显示 RLVR 收益对 base model 极其敏感；<a href="https://arxiv.org/abs/2502.01456" target="_blank" rel="noreferrer">PRIME</a> (Cui et al., 2025) 用隐式过程奖励做在线 RL。形式化证明方向的 RLVR 可参考 <a href="https://arxiv.org/abs/2507.23726" target="_blank" rel="noreferrer">Seed-Prover</a> (2025)。</p>
+  </div>
+</section>
+
+<section class="concept" id="c-papers-ttc">
+  <div class="concept-head"><span class="pri p1">★</span><h3>E. 测试时计算（5 篇 + 1 博客）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>CoT → 自洽投票 → 树搜索 → 重复采样的 scaling → 按难度最优分配 → 极简的 budget forcing；o1 把"测试时计算"变成新的 scaling 轴。</p><p class="en">Chain of thought, self-consistency, tree search, repeated sampling, compute-optimal allocation, and budget forcing.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2201.11903" target="_blank" rel="noreferrer">Chain-of-Thought Prompting</a> (Wei et al., 2022)</td><td>在 few-shot 示例中加入中间推理步骤，大幅提升大模型的多步推理</td><td>为什么 CoT 有效（额外计算、分解问题）；只在大模型上有效？</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2203.11171" target="_blank" rel="noreferrer">Self-Consistency</a> (Wang et al., 2022)</td><td>采样多条推理路径后对最终答案多数投票</td><td>为什么投票有效；与 best-of-N + verifier 的对比</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2407.21787" target="_blank" rel="noreferrer">Large Language Monkeys</a> (Brown et al., 2024)</td><td>重复采样的覆盖率随样本数近似对数线性增长；有自动验证器时收益显著</td><td>coverage vs 可选出正确答案；verifier 是瓶颈</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2408.03314" target="_blank" rel="noreferrer">Scaling LLM Test-Time Compute Optimally</a> (Snell et al., 2024)</td><td>按题目难度自适应分配测试时计算，效率比 best-of-N 高 4 倍以上；某些情况下小模型 + 测试时计算胜过大 14 倍的模型</td><td>何时用测试时计算替代参数；revision vs search</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2501.19393" target="_blank" rel="noreferrer">s1: Simple Test-Time Scaling</a> (Muennighoff et al., 2025)</td><td>只用 1,000 条精选样本 SFT + budget forcing（强制继续/停止思考）实现测试时 scaling</td><td>数据少为何有效；"Wait" token 技巧</td></tr>
+    <tr><td><a href="https://openai.com/index/learning-to-reason-with-llms/" target="_blank" rel="noreferrer">Learning to Reason with LLMs (o1 blog)</a> (OpenAI, 2024)</td><td>报告性能随 RL 训练计算和测试时思考时间两方面增加而提升</td><td>"两个 scaling 轴"；细节未公开，讨论时注意措辞</td></tr>
+  </table>
+  <p><b>延伸（不计入 60 篇）：</b><a href="https://arxiv.org/abs/2305.10601" target="_blank" rel="noreferrer">Tree of Thoughts</a> (Yao et al., 2023)：把推理建模为对"思维"节点的树搜索，结合自我评估与回溯。</p></div>
+</section>
+
+<section class="concept" id="c-papers-latent">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>F. Latent reasoning 与循环深度（5 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>不写出 token 也能增加计算：pause token → Quiet-STaR → 连续思维（Coconut）→ 循环深度模型（recurrent depth、Looped LMs）。</p><p class="en">Adding computation without emitting tokens: pause tokens, Quiet-STaR, continuous thoughts, and looped or recurrent-depth models.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><a href="https://arxiv.org/abs/2310.02226" target="_blank" rel="noreferrer">Think Before You Speak: Pause Tokens</a> (Goyal et al., 2023)</td><td>插入可学习的 pause token 给模型额外计算步，需在预训练阶段引入才明显有效</td><td>额外计算 vs 额外"内容"</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2403.09629" target="_blank" rel="noreferrer">Quiet-STaR</a> (Zelikman et al., 2024)</td><td>在每个 token 处生成内部"思考"并用 REINFORCE 训练，使其有助于预测后续文本</td><td>把推理训练推广到一般文本</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2412.06769" target="_blank" rel="noreferrer">Coconut: Reasoning in a Continuous Latent Space</a> (Hao et al., 2024)</td><td>把最后一层隐状态直接作为下一步输入（连续思维），可同时保留多个候选推理路径</td><td>连续 vs 离散；类 BFS 的行为；训练课程</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2502.05171" target="_blank" rel="noreferrer">Scaling Test-Time Compute with Latent Reasoning: A Recurrent Depth Approach</a> (Geiping et al., 2025)</td><td>3.5B 模型通过循环一个模块在 latent space 中扩展测试时计算，无需专门的推理数据</td><td>循环次数如何选择；与 CoT 的互补</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2510.25741" target="_blank" rel="noreferrer">Scaling Latent Reasoning via Looped Language Models</a> (Zhu et al., 2025)</td><td>在预训练阶段引入循环（权重共享）层的大规模研究，比较参数效率与推理能力</td><td>参数共享 vs 计算深度；自适应退出</td></tr>
+  </table></div>
+</section>
+
+<section class="concept" id="c-papers-agents">
+  <div class="concept-head"><span class="pri p1">★</span><h3>G. Agents（6 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>推理与行动交替（ReAct）→ 自学工具使用 → 语言化反思 → 真实软件工程 benchmark 与 agent 接口 → 工具-用户交互评估 → 用"任务时长"衡量能力增长。</p><p class="en">Interleaving reasoning and acting, tool use, verbal reflection, software-engineering benchmarks and interfaces, and time-horizon metrics.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2210.03629" target="_blank" rel="noreferrer">ReAct</a> (Yao et al., 2022)</td><td>交替生成推理轨迹和环境动作，使推理指导行动、观察修正推理</td><td>与纯 CoT / 纯行动的比较；错误传播</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2303.11366" target="_blank" rel="noreferrer">Reflexion</a> (Shinn et al., 2023)</td><td>把失败反馈转化为语言化反思存入记忆，在后续尝试中使用</td><td>"verbal RL" 与权重更新的区别</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2310.06770" target="_blank" rel="noreferrer">SWE-bench</a> (Jimenez et al., 2023)</td><td>用真实 GitHub issue 和单元测试评估模型解决软件工程问题的能力</td><td>为什么是好 benchmark（可验证、真实）；污染与 Verified 子集</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2405.15793" target="_blank" rel="noreferrer">SWE-agent</a> (Yang et al., 2024)</td><td>说明为 agent 专门设计的 agent-computer interface 能显著提升表现</td><td>接口设计 vs 模型能力</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2406.12045" target="_blank" rel="noreferrer">τ-bench</a> (Yao et al., 2024)</td><td>评估 agent 在遵守领域规则的同时与（模拟）用户和工具交互的能力，并强调多次运行的一致性</td><td>pass^k（k 次都成功）vs pass@k</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2503.14499" target="_blank" rel="noreferrer">Measuring AI Ability to Complete Long Software Tasks</a> (Kwa et al., 2025)</td><td>以"人类完成所需时间"衡量 AI 能完成的任务长度，估计 50% 成功率对应的时长约每 7 个月翻倍</td><td>度量方法的假设；外推的风险</td></tr>
+  </table>
+  <p><b>延伸（不计入 60 篇）：</b><a href="https://arxiv.org/abs/2302.04761" target="_blank" rel="noreferrer">Toolformer</a> (Schick et al., 2023)：模型自监督地学习何时调用 API：只保留能降低后续 token 损失的调用。</p></div>
+</section>
+
+<section class="concept" id="c-papers-interp">
+  <div class="concept-head"><span class="pri p1">★</span><h3>H. 可解释性与 CoT 忠实度（7 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>机制（induction heads、叠加）→ 字典学习（SAE 及其扩展）→ 知识定位与编辑 → 电路追踪（attribution graphs）→ CoT 是否忠实。</p><p class="en">Mechanisms, sparse dictionary learning, knowledge editing, circuit tracing, and chain-of-thought faithfulness.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><a href="https://arxiv.org/abs/2209.11895" target="_blank" rel="noreferrer">In-context Learning and Induction Heads</a> (Olsson et al., 2022)</td><td>论证 induction heads（"找到上次出现的位置并复制下一个 token"）是 ICL 的重要机制</td><td>两层注意力如何组成 induction head；训练中的相变</td></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2209.10652" target="_blank" rel="noreferrer">Toy Models of Superposition</a> (Elhage et al., 2022)</td><td>在玩具模型中展示：特征稀疏时，网络用比维度更多的方向表示特征（叠加）</td><td>为什么神经元是多义的；稀疏性与叠加的关系</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2309.08600" target="_blank" rel="noreferrer">Sparse Autoencoders Find Highly Interpretable Features</a> (Cunningham et al., 2023)</td><td>用稀疏自编码器把激活分解为更可解释的特征方向</td><td>SAE 目标函数；重建 vs 稀疏的权衡</td></tr>
+    <tr><td><b>★</b> <a href="https://transformer-circuits.pub/2024/scaling-monosemanticity/index.html" target="_blank" rel="noreferrer">Scaling Monosemanticity</a> (Templeton et al., Anthropic, 2024)</td><td>把 SAE 扩展到生产级模型（Claude 3 Sonnet），提取出数百万个抽象、多语言、多模态的特征，并用于 steering</td><td>特征是否"真实"；dead latents；steering 的证据</td></tr>
+    <tr><td><a href="https://transformer-circuits.pub/2025/attribution-graphs/biology.html" target="_blank" rel="noreferrer">On the Biology of a Large Language Model</a> (Lindsey et al., Anthropic, 2025)</td><td>用基于替代模型的 attribution graphs 追踪 Claude 3.5 Haiku 在多种任务中的内部步骤，并用干预验证</td><td>替代模型的忠实度；多步推理、规划的证据</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2305.04388" target="_blank" rel="noreferrer">Language Models Don't Always Say What They Think</a> (Turpin et al., 2023)</td><td>提示中的偏置特征能改变答案，而 CoT 解释不提及它们</td><td>不忠实的定义与测量</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2505.05410" target="_blank" rel="noreferrer">Reasoning Models Don't Always Say What They Think</a> (Chen et al., 2025)</td><td>推理模型经常不在 CoT 中说出它实际使用的提示，CoT 监控难以捕捉罕见的严重问题</td><td>对 CoT monitoring 的启示；RL 是否改善忠实度</td></tr>
+  </table>
+  <p><b>延伸（不计入 60 篇）：</b><a href="https://arxiv.org/abs/2406.04093" target="_blank" rel="noreferrer">Scaling and Evaluating Sparse Autoencoders</a> (Gao et al., 2024)：使用 TopK SAE，研究 SAE 的 scaling law 与评估指标；<a href="https://arxiv.org/abs/2202.05262" target="_blank" rel="noreferrer">Locating and Editing Factual Associations (ROME)</a> (Meng et al., 2022)：用因果追踪定位事实存储于中间层 MLP，并通过秩一更新编辑。</p></div>
+</section>
+
+<section class="concept" id="c-papers-eff">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>I. 效率与推理系统（5 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>IO 感知的精确注意力、KV cache 分页管理、推测解码、线性时间序列模型、低比特微调、注意力汇聚点。</p><p class="en">IO-aware attention, paged KV cache, speculative decoding, linear-time sequence models, quantized fine-tuning, and attention sinks.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><b>★</b> <a href="https://arxiv.org/abs/2205.14135" target="_blank" rel="noreferrer">FlashAttention</a> (Dao et al., 2022)</td><td>通过分块（tiling）和在线 softmax 减少 HBM 读写，实现精确且更快、更省内存的注意力</td><td>为什么是 IO bound；online softmax；计算量没减少但更快</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2309.06180" target="_blank" rel="noreferrer">PagedAttention (vLLM)</a> (Kwon et al., 2023)</td><td>借鉴操作系统分页管理 KV cache，减少碎片、提高 batch 吞吐</td><td>KV cache 大小估算；continuous batching</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2211.17192" target="_blank" rel="noreferrer">Fast Inference via Speculative Decoding</a> (Leviathan et al., 2022)</td><td>小模型起草、大模型并行验证，并用拒绝采样保证输出分布不变</td><td>接受概率 \(\min(1,p/q)\)；为什么分布精确</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2312.00752" target="_blank" rel="noreferrer">Mamba</a> (Gu &amp; Dao, 2023)</td><td>输入依赖的选择性状态空间模型，线性时间、可与 Transformer 竞争</td><td>与注意力的取舍：召回能力 vs 效率</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2305.14314" target="_blank" rel="noreferrer">QLoRA</a> (Dettmers et al., 2023)</td><td>在 4-bit 量化的冻结模型上训练 LoRA 适配器，使单卡微调大模型成为可能</td><td>NF4；与 <a href="https://arxiv.org/abs/2106.09685" target="_blank" rel="noreferrer">LoRA</a> 的关系</td></tr>
+  </table>
+  <p><b>延伸（不计入 60 篇）：</b><a href="https://arxiv.org/abs/2309.17453" target="_blank" rel="noreferrer">Attention Sinks (StreamingLLM)</a> (Xiao et al., 2023)：发现初始 token 会吸收大量注意力；保留它们 + 滑动窗口即可稳定流式生成。</p></div>
+</section>
+
+<section class="concept" id="c-papers-eval">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>J. 评估（5 篇）</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>pass@k 与代码评估、"防谷歌"的专家级问答、人类偏好竞技场、LLM-as-judge 的偏差、长上下文中的位置效应。</p><p class="en">pass@k for code, Google-proof expert QA, preference arenas, LLM-judge biases, and position effects in long contexts.</p></div>
+  <div class="deep"><table>
+    <tr><th>论文</th><th>一句话贡献</th><th>面试常问点</th></tr>
+    <tr><td><a href="https://arxiv.org/abs/2107.03374" target="_blank" rel="noreferrer">Evaluating LLMs Trained on Code (Codex / HumanEval)</a> (Chen et al., 2021)</td><td>提出 HumanEval 和 pass@k 的无偏估计</td><td>推导 \(1-\binom{n-c}{k}/\binom{n}{k}\)</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2311.12022" target="_blank" rel="noreferrer">GPQA</a> (Rein et al., 2023)</td><td>由领域专家编写、非专家即使上网搜索也难以答对的研究生级问答</td><td>为什么"防谷歌"重要；题目少带来的方差</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2403.04132" target="_blank" rel="noreferrer">Chatbot Arena</a> (Chiang et al., 2024)</td><td>众包的成对比较 + Bradley–Terry 排名的开放评估平台</td><td>风格/长度偏差；可被刷吗</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2306.05685" target="_blank" rel="noreferrer">Judging LLM-as-a-Judge (MT-Bench)</a> (Zheng et al., 2023)</td><td>系统研究用强模型当评委的一致性及位置、冗长、自我偏好等偏差</td><td>如何减轻 judge 偏差（交换位置、参考答案）</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2307.03172" target="_blank" rel="noreferrer">Lost in the Middle</a> (Liu et al., 2023)</td><td>模型对长上下文开头和结尾的信息利用最好，中间较差</td><td>对 RAG 和 agent 上下文设计的启示</td></tr>
+  </table>
+  <p>另见可解释性"开放问题"综述：<a href="https://arxiv.org/abs/2501.16496" target="_blank" rel="noreferrer">Open Problems in Mechanistic Interpretability</a> (Sharkey et al., 2025)；以及 <a href="https://arxiv.org/abs/2312.09390" target="_blank" rel="noreferrer">Weak-to-Strong Generalization</a> (Burns et al., 2023)。</p>
+  </div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>If I had to pick three papers that shaped how I think about post-training today, I'd say InstructGPT for establishing the pipeline, DPO for showing the reward model can be implicit in the policy, and DeepSeek-R1 for showing that large-scale RL with simple verifiable rewards can produce long-form reasoning — with the caveat that follow-up work is still debating how much of that is new capability versus sharpening what the base model already knew.</p></div>
+</section>
+
+<!-- ============================================================ §8 -->
+<h2 class="sec" id="s-open"><span class="num">§8 · OPEN PROBLEMS</span>开放问题（12 个）</h2>
+<p class="sec-intro">面试官常问"你觉得领域里最重要的开放问题是什么？"。下面每个问题都给出：为什么重要、两方观点（带出处）、你可以怎么回答。答案不需要"正确"，但要<b>平衡</b>、<b>有证据</b>、<b>说出你会如何检验</b>。</p>
+
+<section class="concept" id="c-open">
+  <div class="concept-head"><span class="pri p2">☆</span><h3>12 个开放问题与平衡观点</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>RL 是否扩展能力、没有 verifier 的领域怎么办、CoT 是否可信、latent vs token 推理、数据墙、评估是否可靠、奖励 hacking、长程 agent、SAE 是否找到"真实"特征、测试时计算的极限、弱监督强模型、scaling 的外推。</p><p class="en">Twelve open questions spanning RL, verification, faithfulness, latent reasoning, data, evaluation, reward hacking, agents, interpretability, and scaling.</p></div>
+  <div class="deep">
+  <table>
+    <tr><th>#</th><th>问题</th><th>一方</th><th>另一方 / 复杂之处</th><th>你可以提的检验</th></tr>
+    <tr><td>1</td><td><b>RLVR 是扩展能力还是只提高采样效率？</b></td><td>pass@k 交叉现象支持"只是重新分配概率"（<a href="https://arxiv.org/abs/2504.13837" target="_blank" rel="noreferrer">Yue et al.</a>）</td><td>长时间多样化训练可能扩展边界（<a href="https://arxiv.org/abs/2505.24864" target="_blank" rel="noreferrer">ProRL</a>）；"能力"的定义本身有争议</td><td>跟踪 base 不能解、RL 模型能解的题目集合随训练的变化</td></tr>
+    <tr><td>2</td><td><b>没有可靠 verifier 的领域如何做 RL？</b></td><td>用 AI 反馈、rubric、偏好模型（<a href="https://arxiv.org/abs/2212.08073" target="_blank" rel="noreferrer">Constitutional AI</a>）</td><td>学到的奖励会被过度优化（<a href="https://arxiv.org/abs/2210.10760" target="_blank" rel="noreferrer">Gao et al.</a>）</td><td>在有金标准的代理任务上测量不同奖励来源的过度优化曲线</td></tr>
+    <tr><td>3</td><td><b>CoT 能作为监控手段吗？</b></td><td>CoT 提供了一个难得的可监控窗口（<a href="https://arxiv.org/abs/2507.11473" target="_blank" rel="noreferrer">Korbak et al. 2025</a>）</td><td>推理模型常不说出实际使用的提示（<a href="https://arxiv.org/abs/2505.05410" target="_blank" rel="noreferrer">Chen et al. 2025</a>）；对 CoT 施加优化压力可能让它更不忠实</td><td>测量 RL 训练过程中忠实度指标的变化</td></tr>
+    <tr><td>4</td><td><b>推理应该在 token 还是 latent space 中进行？</b></td><td>latent 带宽更高、更省 token（<a href="https://arxiv.org/abs/2412.06769" target="_blank" rel="noreferrer">Coconut</a>、<a href="https://arxiv.org/abs/2502.05171" target="_blank" rel="noreferrer">recurrent depth</a>）</td><td>token 推理易于监督、采样和监控；latent 方法在大规模难题上的证据仍有限</td><td>在相同 FLOPs 下比较二者在难 benchmark 上的 scaling 曲线</td></tr>
+    <tr><td>5</td><td><b>高质量数据会用完吗？</b></td><td>重复和合成数据能延长（<a href="https://arxiv.org/abs/2305.16264" target="_blank" rel="noreferrer">Muennighoff et al.</a>）</td><td>合成数据的多样性与模型崩溃风险；RL 产生的数据是另一种来源</td><td>控制变量比较真实 vs 合成数据的 scaling 斜率</td></tr>
+    <tr><td>6</td><td><b>Benchmark 还可信吗？</b></td><td>新的、防污染的 benchmark 不断出现（<a href="https://arxiv.org/abs/2311.12022" target="_blank" rel="noreferrer">GPQA</a>）</td><td>污染、饱和、小样本方差；对 prompt 和模板敏感</td><td>使用发布后的新题、多 seed、报告置信区间</td></tr>
+    <tr><td>7</td><td><b>如何检测和防止 reward hacking？</b></td><td>KL 正则、奖励模型集成、过程监督</td><td>更强的模型更擅长找漏洞；监控本身可能被优化掉</td><td>在奖励中植入已知漏洞，测量检测率</td></tr>
+    <tr><td>8</td><td><b>长程 agent 的瓶颈是什么？</b></td><td>能完成的任务时长在快速增长（<a href="https://arxiv.org/abs/2503.14499" target="_blank" rel="noreferrer">Kwa et al.</a>）</td><td>可靠性（k 次都成功）远低于单次成功率（<a href="https://arxiv.org/abs/2406.12045" target="_blank" rel="noreferrer">τ-bench</a>）；错误累积</td><td>分解失败原因：规划、记忆、工具使用、恢复能力</td></tr>
+    <tr><td>9</td><td><b>SAE 找到的是模型"真正使用"的特征吗？</b></td><td>大规模 SAE 能找到可解释、可 steering 的特征（<a href="https://transformer-circuits.pub/2024/scaling-monosemanticity/index.html" target="_blank" rel="noreferrer">Scaling Monosemanticity</a>）</td><td>重建误差、特征分裂、对字典大小的依赖；见 <a href="https://arxiv.org/abs/2501.16496" target="_blank" rel="noreferrer">Open Problems in Mech Interp</a></td><td>比较 SAE 特征与有监督 probe 在下游任务上的有用性</td></tr>
+    <tr><td>10</td><td><b>测试时计算的收益有上限吗？</b></td><td>按难度分配能大幅提升效率（<a href="https://arxiv.org/abs/2408.03314" target="_blank" rel="noreferrer">Snell et al.</a>）</td><td>没有好的 verifier 时，重复采样的覆盖率难以转化为准确率（<a href="https://arxiv.org/abs/2407.21787" target="_blank" rel="noreferrer">Large Language Monkeys</a>）</td><td>分离"生成正确答案"与"识别正确答案"两种能力</td></tr>
+    <tr><td>11</td><td><b>弱监督者能可靠地监督更强的模型吗？</b></td><td>强模型能超越弱标签（<a href="https://arxiv.org/abs/2312.09390" target="_blank" rel="noreferrer">Weak-to-Strong Generalization</a>）</td><td>恢复的差距不完整；模型可能学会模仿弱监督者的错误</td><td>测量不同任务上的"恢复差距比例"</td></tr>
+    <tr><td>12</td><td><b>scaling law 能外推多远？</b></td><td>幂律在多个数量级上成立（<a href="https://arxiv.org/abs/2001.08361" target="_blank" rel="noreferrer">Kaplan</a>、<a href="https://arxiv.org/abs/2203.15556" target="_blank" rel="noreferrer">Chinchilla</a>）</td><td>拟合方法敏感（<a href="https://arxiv.org/abs/2404.10102" target="_blank" rel="noreferrer">Besiroglu et al.</a>）；下游能力不一定平滑（<a href="https://arxiv.org/abs/2304.15004" target="_blank" rel="noreferrer">Schaeffer et al.</a>）</td><td>用小模型预测、再在大模型上验证（预注册的预测）</td></tr>
+  </table>
+  </div>
+  <div class="box pitfall deep"><span class="lbl">常见误区</span>只列问题而不给自己的判断。好的回答格式："I think the most important open question is X. The evidence for one side is…, against is…. My bet is…, and the experiment that would update me is…"</div>
+  <div class="box say"><span class="lbl">Say it in English</span><p>The open question I find most important is how to do reinforcement learning in domains without a reliable verifier. Math and code have unit tests and exact answers, which is a big reason RL has worked so well there. But for most of what we actually want — research, writing, long-horizon tasks — the reward has to be learned, and learned rewards get over-optimized. My bet is on combining several imperfect signals with strong regularization, but I'd want to measure over-optimization curves on proxy tasks where we do have ground truth before trusting any of it.</p></div>
+  <div class="followups deep"><span class="lbl" style="font:10.5px var(--mono);color:var(--muted)">追问链</span><ol>
+    <li><b>Which of these would you bet your PhD on?</b><details><summary>思路</summary><div class="inner">选一个与你研究兴趣一致的问题，说明：为什么它重要且长期有价值；你有什么切入点（技能、视角）；第一个具体项目是什么。延伸阅读可以链接自己公开的研究地图（如 <a href="https://mkj69.github.io/long-horizon-agents/" target="_blank" rel="noreferrer">Long-Horizon Agents</a>、<a href="https://mkj69.github.io/weak_to_strong/" target="_blank" rel="noreferrer">Weak → Strong</a>、<a href="https://mkj69.github.io/low-precision-rl/" target="_blank" rel="noreferrer">Low-Precision RL</a> 等），但面试中要能脱离材料独立讲清楚。</div></details></li>
+  </ol></div>
+</section>
+
+<!-- ============================================================ §9 -->
+<h2 class="sec" id="s-mock"><span class="num">§9 · MOCK DISCUSSIONS</span>模拟研究讨论（3 段完整对话）</h2>
+<p class="sec-intro">下面三段对话展示真实研究讨论的节奏：面试官不断追问、改变条件、故意反驳。<b>I</b> = Interviewer，<b>C</b> = Candidate。灰色框是中文点评，解释每一步为什么这样回答。练习方法：遮住 C 的回答，自己先说，再对照。</p>
+
+<section class="concept" id="c-mock-rl">
+  <div class="concept-head"><span class="pri p1">★</span><h3>对话 1 · Reasoning / RL："你的 RL 训练回复越来越长，为什么？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>考点：区分"长度增长 = 学会推理"与"长度增长 = 目标函数偏差"，设计能分辨的实验，并在被反驳时保持开放。</p><p class="en">Tests whether you can separate genuine reasoning gains from objective-induced length bias, and design a discriminating experiment.</p></div>
+  <div class="deep">
+  <div class="box say"><span class="lbl">Dialogue</span>
+  <p><b>I:</b> Let's say you're training a 7B model with GRPO on math problems. Over training, the average response length goes from about 500 tokens to 3,000, and accuracy improves. A colleague says this shows the model is learning to reason more. Do you buy it?</p>
+  <p><b>C:</b> Partly. Accuracy going up is real progress, but I wouldn't attribute it to the length increase without more evidence. There are at least two alternative explanations. One is that the objective itself has a length bias — for example, if the loss is normalized per response by its length, long wrong answers get a smaller per-token penalty, so there's pressure toward longer incorrect responses. The other is that length and accuracy both increase because of a third factor, like the model learning a better output format early in training.</p>
+  <p><b>I:</b> How would you tell these apart?</p>
+  <p><b>C:</b> First, I'd split the length curve by correctness. If the growth is concentrated in incorrect responses, that points to an objective artifact. Second, I'd rerun with a length-unbiased loss — something like the Dr. GRPO modification that removes the per-response length normalization — and see whether accuracy still improves while length grows less. Third, at a fixed checkpoint, I'd truncate or budget-force responses at different lengths and measure accuracy. If accuracy keeps rising with allowed length, the extra tokens are doing useful work.</p>
+  <p><b>I:</b> Suppose you do the first analysis, and both correct and incorrect responses get longer at about the same rate.</p>
+  <p><b>C:</b> Then the pure length-bias story is less likely, though not ruled out. I'd look at what the extra tokens contain. If they're mostly verification steps — re-checking arithmetic, trying an alternative method — that's consistent with learned reasoning. If they're repetitive loops, that suggests degeneration. A cheap way to quantify that is n-gram repetition rates and counting phrases like "let me verify."</p>
+  <p><b>I:</b> I'd push back a bit. Isn't "the model checks its work more" exactly what we want? Why do you care whether it's caused by the objective?</p>
+  <p><b>C:</b> That's fair — if the behavior is useful, the cause matters less for this model. I care for two reasons. One is cost: if half the extra tokens come from an artifact, we're paying for inference that doesn't help, and fixing the objective could give the same accuracy more cheaply. The other is generalization: a behavior that emerges from a real incentive is more likely to transfer to other tasks than one produced by a quirk of the loss. So I'd still run the unbiased-loss ablation, mostly as a cost-efficiency question.</p>
+  <p><b>I:</b> Good. Last one: the base model was Qwen2.5-Math. Does that change your interpretation?</p>
+  <p><b>C:</b> It would make me more cautious. There's evidence that Qwen2.5-Math models respond to RL in unusual ways — for example, the spurious-rewards paper found that even random rewards improved their math scores, but not for Llama or OLMo. So I'd want to replicate the key finding on a second model family before drawing general conclusions about what RL teaches.</p>
+  </div>
+  <div class="box why"><span class="lbl">点评</span>
+  <ul>
+    <li><b>开场"Partly"：</b>既不全盘接受也不否定，立刻给出两个替代解释——这是批判性思维的标志。</li>
+    <li><b>三个实验各针对一个解释：</b>按正确性拆分（检验目标偏差）、换无偏损失（干预）、截断测试（检验 token 是否有用）。每个实验都说清"如果结果是 A 意味着什么"。</li>
+    <li><b>面试官改变条件：</b>候选人没有坚持原来的解释，而是更新判断并提出下一步（看 token 内容）。</li>
+    <li><b>被反驳时：</b>先承认"That's fair"，再给出两个仍然关心的理由（成本、泛化）——立场保持但不防御。</li>
+    <li><b>最后提到模型家族：</b>引用具体文献，显示对领域最新争议的了解。</li>
+  </ul></div>
+  </div>
+</section>
+
+<section class="concept" id="c-mock-agents">
+  <div class="concept-head"><span class="pri p1">★</span><h3>对话 2 · Agents："如何提高 coding agent 的成功率？"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>考点：先诊断再开药方——要求看失败分类，提出与失败类型对应的干预，讨论评估的可靠性和成本。</p><p class="en">Tests whether you diagnose before prescribing, match interventions to failure types, and think about evaluation reliability and cost.</p></div>
+  <div class="deep">
+  <div class="box say"><span class="lbl">Dialogue</span>
+  <p><b>I:</b> We have a coding agent that solves about 40% of tasks on an internal benchmark similar to SWE-bench. You have twelve weeks. How would you improve it?</p>
+  <p><b>C:</b> Before proposing anything, I'd want to know where it fails. Do we have a breakdown of failures? Roughly, I'd bucket them into: never finding the right file, finding it but writing a wrong patch, writing a plausible patch that breaks other tests, and running out of steps or context.</p>
+  <p><b>I:</b> Assume you look at 100 failures and find: 35% wrong localization, 30% wrong patch, 15% breaks other tests, 20% runs out of steps.</p>
+  <p><b>C:</b> Localization is the biggest bucket, and it's also upstream of everything else, so I'd start there. A cheap first experiment is an oracle study: give the agent the correct file and see how much success goes up. That gives an upper bound on what better localization is worth. If it jumps from 40 to, say, 55, localization is worth a big investment; if it only goes to 43, the patch-writing is the real bottleneck even when localization is right.</p>
+  <p><b>I:</b> Say the oracle gives you 52%. What do you actually build?</p>
+  <p><b>C:</b> A few options, from cheapest to most expensive. One: improve the tools — better code search, for example symbol-level search instead of grep — since the SWE-agent work showed that interface design matters a lot. Two: have the agent write and run a reproduction test before editing, which helps both localization and verifying the patch. Three: if those plateau, train with RL on the localization step, using whether the edited file matches the gold patch as an intermediate reward. I'd do one and two in the first month, since they don't require training.</p>
+  <p><b>I:</b> What about the 20% that run out of steps?</p>
+  <p><b>C:</b> I'd check whether they're long because the tasks are genuinely hard or because the agent is looping — repeating the same failed command. If it's looping, a simple memory of failed attempts or a loop detector could help a lot. If the tasks are genuinely long, then it's more about context management, like summarizing earlier steps.</p>
+  <p><b>I:</b> How do you know your improvements are real and not noise?</p>
+  <p><b>C:</b> Agent runs are pretty stochastic, so I'd run each configuration several times and report the mean with a confidence interval — and also something like pass-to-the-k, whether it solves the task consistently across runs, since reliability matters for users. I'd also keep a held-out split that I don't look at during development, and check for contamination if any tasks come from public repositories that might be in the pretraining data. And I'd track cost per task, since some fixes improve success by spending far more tokens.</p>
+  </div>
+  <div class="box why"><span class="lbl">点评</span>
+  <ul>
+    <li><b>先要数据：</b>"Before proposing anything, I'd want to know where it fails"——面试官最喜欢的开场之一。</li>
+    <li><b>Oracle 实验：</b>用"给出正确答案时上限是多少"来估计投资回报，是非常有力的研究工具，适用于任何多阶段系统。</li>
+    <li><b>从便宜到昂贵排序：</b>先改工具/prompt，后训练——显示了对实习时间和资源的现实判断。</li>
+    <li><b>评估的严谨性：</b>多次运行、置信区间、一致性指标、held-out、污染、成本——一次说全。</li>
+  </ul></div>
+  </div>
+</section>
+
+<section class="concept" id="c-mock-critique">
+  <div class="concept-head"><span class="pri p1">★</span><h3>对话 3 · Paper critique："这篇说'模型在中间层已经知道答案'的论文"</h3></div>
+  <div class="box tldr"><span class="lbl">一句话</span><p>考点：对 probing 类结论的标准质疑——相关 vs 因果、probe 太强、对照基线、干预实验，以及礼貌而具体的表达。</p><p class="en">Tests standard skepticism toward probing claims: correlation versus causation, probe capacity, control baselines, and interventions.</p></div>
+  <div class="deep">
+  <p>（为了让对话聚焦方法论，这里讨论的是一篇<b>虚构的典型论文</b>："我们用线性 probe 在 CoT 开始前的中间层激活上预测最终答案，准确率达到 80%，因此模型在写 CoT 之前就已经知道答案，CoT 是事后合理化。"）</p>
+  <div class="box say"><span class="lbl">Dialogue</span>
+  <p><b>I:</b> Here's the claim: a linear probe on middle-layer activations, before any chain of thought is generated, predicts the final answer with 80% accuracy. The authors conclude that the CoT is post-hoc rationalization. What do you think?</p>
+  <p><b>C:</b> It's an interesting result, and I think the probing finding itself is plausible. But I'd separate the observation from the conclusion. The observation is that the answer is linearly decodable early. The conclusion — that the CoT is post-hoc — is a causal claim, and a probe alone can't establish it.</p>
+  <p><b>I:</b> Why not?</p>
+  <p><b>C:</b> A few reasons. First, decodable doesn't mean used: the information could be present in the representation without the model relying on it for the final answer. Second, I'd want to know what 80% means relative to baselines. What's the probe accuracy for a model that never sees the question, or a probe on a randomly initialized model with the same architecture? And what's the accuracy of the model itself without CoT? If the model already gets 75% with no CoT, then a probe at 80% is not surprising — the question is what happens on problems where CoT actually changes the answer.</p>
+  <p><b>I:</b> Okay, suppose they restrict to problems where the model is wrong without CoT and right with CoT, and the probe still predicts the final answer at 70%.</p>
+  <p><b>C:</b> That's much more interesting, and it would change my view somewhat. Then I'd want an intervention. For example, steer the activations along the probe direction toward a different answer and see if the CoT changes to justify the new answer. If it does, that's strong evidence of rationalization. Conversely, corrupt a step in the CoT — insert an arithmetic error — and check whether the final answer follows the corrupted reasoning. If the final answer doesn't depend on the CoT content, that also supports their claim. Lanham and colleagues used this kind of truncation and corruption test to measure CoT faithfulness.</p>
+  <p><b>I:</b> Would you accept the paper as is?</p>
+  <p><b>C:</b> I'd lean toward a weak reject in its current form, mainly because the headline claim is causal and the evidence is correlational. But I'd be enthusiastic about it with the restricted-subset analysis and at least one intervention experiment. I'd also suggest softening the title from "CoT is post-hoc" to something like "Answers are often decodable before CoT," which is what the evidence supports.</p>
+  <p><b>I:</b> One of the authors is on our team, by the way.</p>
+  <p><b>C:</b> <i>(laughs)</i> Then I hope the feedback is useful! I do think the core observation is valuable — it's exactly the kind of result that motivates the intervention experiments, and I'd be happy to talk about how to design them.</p>
+  </div>
+  <div class="box why"><span class="lbl">点评</span>
+  <ul>
+    <li><b>分离观察与结论：</b>"I'd separate the observation from the conclusion" 是批判论文的万能起点。</li>
+    <li><b>要基线：</b>probe 准确率本身没有意义，必须和"不用 CoT 的模型准确率"等基线比较。</li>
+    <li><b>面试官补充条件后更新观点：</b>"That's much more interesting, and it would change my view"——展示校准与开放。</li>
+    <li><b>提出干预实验并引用相关方法：</b>引用 <a href="https://arxiv.org/abs/2307.13702" target="_blank" rel="noreferrer">Lanham et al. 2023（Measuring Faithfulness in CoT Reasoning）</a> 的截断/篡改测试。</li>
+    <li><b>明确立场 + 建设性：</b>给出"weak reject"，同时说明什么能改变决定，并建议更准确的标题。</li>
+    <li><b>"作者在我们组"：</b>这类陷阱很常见。因为前面的批评始终具体、礼貌、建设性，所以不需要收回任何话。</li>
+  </ul></div>
+  </div>
+</section>
+
+<!-- ============================================================ CHEAT SHEET -->
+<h2 class="sec" id="s-cheat"><span class="num">§ · CHEAT SHEET</span>一页速查</h2>
+<p class="sec-intro">面试前一晚看这一页就够了。</p>
+
+<section class="concept" id="c-cheat">
+  <div class="concept-head"><span class="pri p1">★</span><h3>必记模板、公式与句子</h3></div>
+  <table>
+    <tr><th>场景</th><th>结构 / 要点</th><th>关键英文句</th></tr>
+    <tr><td>讲论文（5 min）</td><td>Headline → Problem → Gap → Key idea → Evidence → Limits → My take</td><td>"The one-sentence version is…" · "What I'm less sure about is…"</td></tr>
+    <tr><td>讲研究</td><td>动机 20% · 方法 30% · 结果 35% · 局限/展望 15%；slide 标题写成结论</td><td>"By the end, I want you to remember…"</td></tr>
+    <tr><td>深挖</td><td>贡献、baseline 公平、ablation、泛化、规模、失败、算力、替代解释、下一步、关联</td><td>"We didn't run that. My prediction is… because…; the cheapest check is…"</td></tr>
+    <tr><td>批判</td><td>Claim · Evidence · Baselines · Confounders · Eval · Generality · Stats · Repro · Significance；先优点，再最重要的 1 个问题 + 实验</td><td>"I'd separate the observation from the conclusion." · "A compute-matched comparison would…"</td></tr>
+    <tr><td>提 idea</td><td>Bottleneck → Hypothesis（含推翻条件）→ Minimal exp. → Metrics → Risks → Scale</td><td>"The cheapest test is… If that fails, we'd still learn…"</td></tr>
+    <tr><td>12 周</td><td>2 周复现 · 2 周最小实验（go/no-go）· 4 周核心 · 2 周放大 · 2 周写作</td><td>"I'd plan backwards from one clear deliverable."</td></tr>
+    <tr><td>品味</td><td>重要性 × 可解性 × 时机 × 比较优势 × 可检验性；立场 → 证据 → 反方 → 什么会改变我</td><td>"I used to think X; after seeing Y, I now think Z."</td></tr>
+    <tr><td>不知道</td><td>承认 → 锚定已知 → 推理并标注置信度 → 说如何验证</td><td>"I'm not sure, but my guess is… because…; I'd check by…"</td></tr>
+    <tr><td>被反驳</td><td>承认合理部分 → 给证据 → 提出分辨实验</td><td>"That's a fair point. One way to test that would be…"</td></tr>
+  </table>
+  <table>
+    <tr><th>公式 / 数字</th><th>内容</th></tr>
+    <tr><td>DPO 损失</td><td>\(-\log\sigma\big(\beta\log\frac{\pi_\theta(y_w)}{\pi_{\text{ref}}(y_w)}-\beta\log\frac{\pi_\theta(y_l)}{\pi_{\text{ref}}(y_l)}\big)\)；初始化时 = \(\log 2\)</td></tr>
+    <tr><td>KL-RLHF 最优解</td><td>\(\pi^*\propto\pi_{\text{ref}}\exp(r/\beta)\) ⇒ \(r=\beta\log\frac{\pi^*}{\pi_{\text{ref}}}+\beta\log Z(x)\)</td></tr>
+    <tr><td>Chinchilla</td><td>\(C\approx6ND\)，\(D\approx20N\) ⇒ \(N\approx\sqrt{C/120}\)；70B / 1.4T vs Gopher 280B</td></tr>
+    <tr><td>pass@k（无偏）</td><td>\(1-\binom{n-c}{k}/\binom{n}{k}\)</td></tr>
+    <tr><td>小 benchmark</td><td>AIME 每年 30 题：1 题 ≈ 3.3 个点 ⇒ 多 seed、报告置信区间</td></tr>
+    <tr><td>Snell et al. 2024</td><td>按难度分配测试时计算：比 best-of-N 效率高 4× 以上</td></tr>
+    <tr><td>Kwa et al. 2025</td><td>AI 能完成的任务时长（50% 成功率）约每 7 个月翻倍</td></tr>
+    <tr><td>DeepSeek-V3</td><td>671B 总参数 / 37B 激活（MoE）</td></tr>
+    <tr><td>s1</td><td>1,000 条 SFT 样本 + budget forcing</td></tr>
+  </table>
+</section>
+
+<section class="concept" id="c-faq">
+  <div class="concept-head"><span class="pri p1">★</span><h3>高频面试题清单</h3></div>
+  <table>
+    <tr><th>问题</th><th>去哪里看</th></tr>
+    <tr><td>Tell me about a paper you read recently that you liked.</td><td><a href="#c-5min">5 分钟模板</a> · <a href="#c-dpo-answer">DPO 范例</a> · <a href="#c-chinchilla-answer">Chinchilla 范例</a></td></tr>
+    <tr><td>Walk me through your research. / What was your contribution?</td><td><a href="#c-talk-structure">talk 结构</a> · <a href="#c-talk-template">填空模板</a></td></tr>
+    <tr><td>What didn't work? What would you do differently?</td><td><a href="#c-anticipate">最难 10 问</a></td></tr>
+    <tr><td>Is your baseline fair? Could there be a simpler explanation?</td><td><a href="#c-anticipate">最难 10 问</a> · <a href="#c-checklist">批判检查表</a></td></tr>
+    <tr><td>What are the weaknesses of this paper? Would you accept it?</td><td><a href="#c-checklist">检查表</a> · <a href="#c-critique-example">RLVR 批判范例</a> · <a href="#c-mock-critique">对话 3</a></td></tr>
+    <tr><td>If you joined us for 12 weeks, what would you work on?</td><td><a href="#c-framework">六步框架</a> · <a href="#c-scoping">12 周规划</a> · <a href="#c-idea-examples">6 个范例</a></td></tr>
+    <tr><td>How would you improve our [agent / model / RL pipeline]?</td><td><a href="#c-mock-agents">对话 2</a> · <a href="#c-framework">六步框架</a></td></tr>
+    <tr><td>Does RL teach models new reasoning abilities?</td><td><a href="#c-critique-example">RLVR 批判</a> · <a href="#c-open">开放问题 #1</a></td></tr>
+    <tr><td>Why is the response length increasing during RL?</td><td><a href="#c-mock-rl">对话 1</a></td></tr>
+    <tr><td>Is chain-of-thought faithful? Tokens or latent reasoning?</td><td><a href="#c-taste-answers">品味 Q3、Q4</a> · <a href="#c-papers-latent">F 组论文</a></td></tr>
+    <tr><td>What's overrated / underrated? How do you choose problems?</td><td><a href="#c-taste-framework">五维度</a> · <a href="#c-taste-answers">示范回答</a></td></tr>
+    <tr><td>What's the most important open problem?</td><td><a href="#c-open">12 个开放问题</a></td></tr>
+    <tr><td>(Anything you don't know)</td><td><a href="#c-idk">处理 "I don't know"</a></td></tr>
+  </table>
+  <p class="deep">延伸阅读（作者的公开研究地图，可作为你自己整理领域地图的参考）：<a href="https://mkj69.github.io/multi-agent-scaling/" target="_blank" rel="noreferrer">Beyond More Agents</a> · <a href="https://mkj69.github.io/long-horizon-agents/" target="_blank" rel="noreferrer">Long-Horizon Agents</a> · <a href="https://mkj69.github.io/weak_to_strong/" target="_blank" rel="noreferrer">Weak → Strong</a> · <a href="https://mkj69.github.io/steerability/" target="_blank" rel="noreferrer">Steerability</a> · <a href="https://mkj69.github.io/low-precision-rl/" target="_blank" rel="noreferrer">Low-Precision RL</a> · <a href="https://mkj69.github.io/flow_of_thoughs/" target="_blank" rel="noreferrer">Flow of Thoughts</a>。</p>
+</section>
+
+<h2 class="sec" id="cards"><span class="num">§ · RECALL</span>自测卡片</h2>
+<p class="sec-intro">先自己说出答案（最好用英文出声），再点开对照并打分。</p>
+<div data-deck="m16" data-title="模块 16 自测卡片"></div>
+<div class="footer-nav"><a href="m15-algorithms.html">← 15 算法题（按题型）</a><a href="m18-behavioral.html">18 Behavioral 与面试策略 →</a></div>
+
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/modules.js"></script>
+<script src="../assets/cards/m16.js"></script>
+<script src="../assets/app.js"></script>
+</body></html>
